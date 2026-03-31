@@ -1,0 +1,79 @@
+{
+  "name": "aether",
+  "productName": "Aether",
+  "version": "12.11.1-SOVEREIGN",
+  "description": "Standalone Aether Desktop Application",
+  "main": "desktop/main.js",
+  "scripts": {
+    "start": "NODE_ENV=production electron .",
+    "dev": "electron .",
+    "build-frontend": "cd frontend && npm install && npm run build",
+    "package": "npm run build-frontend && electron-builder build --mac --dir",
+    "dist": "npm run build-frontend && electron-builder build --mac",
+    "dist:win": "npm run build-frontend && electron-builder build --win --x64",
+    "dist:all": "npm run build-frontend && electron-builder build --mac --win --x64",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "react-scripts build",
+    "electron": "electron .",
+  "electron:build": "electron-builder"
+  },
+  "keywords": [
+    "music",
+    "aether",
+    "desktop"
+  ],
+  "author": "GSUS_2K",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@distube/yt-dlp": "^2.0.1",
+    "axios": "^1.13.6",
+    "chokidar": "^5.0.0",
+    "cors": "^2.8.6",
+    "discord-rpc": "^4.0.1",
+    "dotenv": "^17.3.1",
+    "electron-store": "^8.1.0",
+    "express": "^5.2.1",
+    "fast-average-color": "^9.5.0",
+    "ffmpeg-static": "^5.3.0",
+    "youtube-dl-exec": "^3.1.4"
+  },
+  "devDependencies": {
+    "electron": "^41.1.0",
+    "electron-builder": "^26.8.1",
+    "electron-is-dev": "^3.0.1"
+  },
+  "build": {
+    "appId": "com.GSUS_2K.aether-studio",
+    "productName": "Aether",
+    "directories": {
+      "output": "dist"
+    },
+    "mac": {
+      "category": "public.app-category.music",
+      "target": "dmg",
+      "icon": "icon.png"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "files": [
+      "desktop/**/*",
+      "frontend/dist/**/*",
+      "package.json",
+      "icon.png",
+      "lyrics-fetcher.js",
+      ".env"
+    ],
+    "asarUnpack": [
+      "**/node_modules/@distube/yt-dlp/bin/*",
+      "**/node_modules/ffmpeg-static/*",
+      "desktop/bin/*"
+    ]
+  }
+}

@@ -1,0 +1,96 @@
+/* Essential animations and utility classes that are easier to define in CSS than pure Tailwind */
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.15; transform: scale(1); }
+  50% { opacity: 0.25; transform: scale(1.05); }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 8s ease-in-out infinite;
+}
+
+.draggable {
+  -webkit-app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Custom visualizer bars */
+.visual-bar {
+  width: 3px;
+  height: 12px;
+  background: var(--color-brand-accent);
+  border-radius: 2px;
+  animation: bar-dance 0.8s ease-in-out infinite alternate;
+  transition: background 1.2s ease-in-out;
+}
+
+@keyframes bar-dance {
+  from { height: 4px; opacity: 0.5; }
+  to { height: 16px; opacity: 1; }
+}
+
+/* Form input adjustments */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  height: 12px;
+  width: 12px;
+  border-radius: 50%;
+  background: var(--color-brand-accent);
+  margin-top: -4px;
+  box-shadow: 0 0 10px var(--color-brand-accent);
+  cursor: pointer;
+}
+
+/* Professional Custom Scrollbar (V7.3.0) */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(16, 185, 129, 0.2);
+  border-radius: 10px;
+  transition: all 0.3s ease;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(16, 185, 129, 0.5);
+}
+
+
+
+
+/* Vertical Stack Mode - Single Column Scrollable Layout */
+.vertical-stack-mode main {
+    padding-top: 1rem !important;
+    padding-bottom: 5rem !important;
+}
+
+.vertical-stack-mode .glass-card {
+    width: 100% !important;
+    max-width: 1200px !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+}
+
+@media (max-width: 768px) {
+    .vertical-stack-mode main {
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+}

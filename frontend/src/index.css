@@ -1,0 +1,185 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-dark: #050505;
+  --color-brand-surface: rgba(255, 255, 255, 0.05);
+  --color-brand-accent: #00ffbf;
+  --color-brand-accent-hover: #00e6ac;
+  --color-brand-border: rgba(255, 255, 255, 0.1);
+  --color-brand-text-dim: rgba(255, 255, 255, 0.4);
+  
+  --font-inter: "Inter", "Outfit", sans-serif;
+  --font-mono: "JetBrains Mono", "ui-monospace", monospace;
+  
+  --radius-2xl: 1.25rem;
+  --radius-3xl: 1.5rem;
+  
+  --shadow-neon: 0 0 20px rgba(0, 255, 191, 0.2);
+  --shadow-neon-strong: 0 0 40px rgba(0, 255, 191, 0.4);
+
+  --studio-offset: 14rem;
+}
+
+@media (min-height: 900px) {
+  @theme {
+    --studio-offset: 4.5rem;
+  }
+}
+
+@layer base {
+  html, body {
+    @apply bg-brand-dark text-white font-inter antialiased;
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+    width: 100vw;
+    overflow: hidden !important;
+    -webkit-user-select: none;
+  }
+}
+
+@layer utilities {
+  .bg-mesh {
+    background-color: #050505;
+    background-image: 
+      radial-gradient(at 0% 0%, var(--color-brand-accent) 0, transparent 50%), 
+      radial-gradient(at 100% 100%, var(--color-brand-accent) 0, transparent 50%);
+    background-blend-mode: soft-light;
+    opacity: 0.25;
+  }
+
+  .glass-card {
+    @apply bg-brand-surface border border-brand-border backdrop-blur-xl rounded-2xl shadow-2xl;
+  }
+
+  .btn-mint {
+    @apply bg-brand-accent text-brand-dark font-black rounded-xl px-6 py-3 transition-all duration-300
+           hover:shadow-[0_0_30px_rgba(0,255,191,0.4)] hover:scale-[1.02] active:scale-95 disabled:opacity-50;
+  }
+
+  .input-mint {
+    @apply bg-brand-surface border border-brand-border rounded-xl px-4 py-3 text-sm 
+           focus:border-brand-accent focus:ring-1 focus:ring-brand-accent outline-none transition-all;
+  }
+
+  .label-caps {
+    @apply text-[10px] uppercase font-black tracking-[0.2em] text-brand-text-dim mb-2;
+  }
+
+  .drag {
+    -webkit-app-region: drag;
+  }
+
+  .no-drag {
+    -webkit-app-region: no-drag;
+  }
+}
+
+/* Custom Scrollbar for a premium look */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(5, 5, 5, 0.5);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 255, 191, 0.2);
+  border-radius: 20px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-brand-accent);
+}
+
+/* V5.2.0 - Ultra Compact Adaptive Utilities */
+@media (max-height: 600px) {
+  .compact-hide { display: none !important; }
+  .compact-padding { padding-top: 1rem !important; padding-bottom: 1rem !important; }
+  .compact-gap { gap: 0.5rem !important; }
+  .compact-header { height: 3.5rem !important; }
+  .compact-mt { margin-top: 3.5rem !important; }
+}
+
+@media (max-width: 600px), (max-height: 500px) {
+  .ultra-compact-hide { display: none !important; }
+  .compact-island-hide { display: none !important; }
+}
+
+/* V5.2.5 - Ultra-Mini (Discord PIP / Minimized) */
+@media (max-height: 280px) {
+  .mini-hide { display: none !important; }
+  .mini-header { height: 0 !important; min-height: 0 !important; border: 0 !important; padding: 0 !important; overflow: hidden !important; }
+  .mini-mt { margin-top: 0.5rem !important; }
+  .mini-card { padding: 0.75rem !important; gap: 1rem !important; background: transparent !important; border: 0 !important; box-shadow: none !important; }
+  .mini-thumb { width: 60px !important; height: 60px !important; border-radius: 1rem !important; }
+  .mini-title { font-size: 1.25rem !important; }
+  .mini-controls { gap: 1rem !important; }
+  .mini-btn { width: 3.5rem !important; height: 3.5rem !important; }
+  .mini-btn-sm { width: 2.75rem !important; height: 2.75rem !important; }
+}
+
+@layer base {
+  ::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
+  ::-webkit-scrollbar-track {
+    background: rgba(5, 5, 5, 0.8);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(0, 255, 191, 0.4);
+    border-radius: 10px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+    box-shadow: inset 0 0 10px rgba(0, 255, 191, 0.2);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 255, 191, 0.8);
+  }
+}
+@keyframes marquee-scroll {
+  0%, 10% { transform: translateX(0); }
+  90%, 100% { transform: translateX(min(0px, calc(-100% + 100%))); }
+}
+.animate-marquee-slow {
+  display: inline-block;
+  white-space: nowrap;
+  animation: marquee-scroll 15s ease-in-out infinite alternate;
+}
+
+@keyframes marquee-loop {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+.animate-marquee-loop {
+  display: flex;
+  width: max-content;
+  white-space: nowrap;
+  animation: marquee-loop 30s linear infinite;
+}
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.95; transform: scale(0.98); }
+}
+.animate-pulse-subtle {
+  animation: pulse-subtle 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.custom-scrollbar-heavy::-webkit-scrollbar {
+  width: 8px;
+  display: block !important;
+}
+.custom-scrollbar-heavy::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 10px;
+}
+.custom-scrollbar-heavy::-webkit-scrollbar-thumb {
+  background: rgba(0, 255, 191, 0.3);
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.custom-scrollbar-heavy::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 255, 191, 0.5);
+}
