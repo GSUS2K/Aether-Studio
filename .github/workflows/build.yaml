@@ -9,6 +9,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     strategy:
+      fail-fast: false
       matrix:
         os: [ macos-latest, windows-latest, ubuntu-latest ]
 
@@ -22,7 +23,7 @@ jobs:
         node-version: 22
 
     - name: Install deps
-      run: npm install
+      run: npm install --include=dev
 
     - name: Build React
       run: npm run build
