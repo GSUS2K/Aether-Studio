@@ -13,7 +13,6 @@
     "dist:win": "npm run build-frontend && electron-builder build --win --x64",
     "dist:all": "npm run build-frontend && electron-builder build --mac --win --x64",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "react-scripts build",
     "electron": "electron .",
   "electron:build": "electron-builder"
   },
@@ -64,7 +63,7 @@
     },
     "files": [
       "desktop/**/*",
-      "frontend/dist/**/*",
+      "frontend/build/**/*",
       "package.json",
       "icon.png",
       "lyrics-fetcher.js",

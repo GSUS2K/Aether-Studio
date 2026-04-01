@@ -22,15 +22,54 @@ jobs:
       with:
         node-version: 22
 
-    - name: Install deps
-      run: npm install --include=dev
+    # Cache dependencies (faster builds)
+    - name: Cache node modules
+      uses: actions/cache@v4
+      with:
+        path: |
+          node_modules
+          frontend/node_modules
+        key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
 
-    - name: Build React
-      run: npm run build
+    # Linux dependencies for Electron
+    - name: Install Linux dependencies
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libgtk-3-dev \
+          libnotify-dev \
+          libnss3 \
+          libxss1 \
+          libasound2 \
+          libxtst6 \
+          xauth \
+          xvfb
 
+    # Install root deps (skip scripts to avoid yt-dlp issues)
+    - name: Install root deps
+      run: npm install --include=dev --ignore-scripts
+
+    # Install frontend deps
+    - name: Install frontend deps
+      run: cd frontend && npm install --ignore-scripts
+
+    # Install yt-dlp manually (avoid GitHub API rate limit)
+    - name: Install yt-dlp manually
+      run: |
+        mkdir -p desktop/bin
+        curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o desktop/bin/yt-dlp
+        chmod +x desktop/bin/yt-dlp
+
+    # Build React frontend
+    - name: Build frontend
+      run: cd frontend && npm run build
+
+    # Build Electron app
     - name: Build Electron
       run: npx electron-builder
 
+    # Upload artifacts
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
