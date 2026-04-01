@@ -67,7 +67,7 @@ jobs:
 
     # Build Electron app
     - name: Build Electron
-      run: npx electron-builder
+      run: npx electron-builder --publish=never
 
     # Upload artifacts
     - name: Upload artifacts
