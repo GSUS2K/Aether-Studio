@@ -63,7 +63,7 @@
     },
     "files": [
       "desktop/**/*",
-      "frontend/build/**/*",
+      "frontend/dist/**/*",
       "package.json",
       "icon.png",
       "lyrics-fetcher.js",
