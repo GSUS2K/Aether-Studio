@@ -457,7 +457,8 @@ streamApp.get('/api/lyrics', async (req, res) => {
     const { track, artist, duration, url, query } = req.query;
     try {
         console.log('[Aether/API] GET /api/lyrics', { track, artist, duration, url, query });
-        const results = await fetchSyncedLyrics(track, artist, (duration || 0) / 1000, query, url);
+        const durationSec = Number.isFinite(Number(duration)) ? Number(duration) : 0;
+        const results = await fetchSyncedLyrics(track, artist, durationSec, query, url);
         console.log('[Aether/API] GET /api/lyrics result', { track, artist, hasLyrics: !!results?.lyrics?.length, count: results?.lyrics?.length || 0, source: results?.source });
         res.json(results?.lyrics || []);
     } catch (e) {
@@ -567,7 +568,8 @@ streamApp.post('/api/heartbeat/:id', (req, res) => {
 streamApp.get('/api/lyrics', async (req, res) => {
     const { track, artist, duration, url, query } = req.query;
     try {
-        const results = await fetchSyncedLyrics(track, artist, (duration || 0) / 1000, query, url);
+        const durationSec = Number.isFinite(Number(duration)) ? Number(duration) : 0;
+        const results = await fetchSyncedLyrics(track, artist, durationSec, query, url);
         res.json(results?.lyrics || []);
     } catch (e) { res.json([]); }
 });

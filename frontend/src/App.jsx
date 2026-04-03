@@ -243,6 +243,9 @@ function App() {
       console.log("[Aether/Audio] Web playing", { currentTime: audio.currentTime });
       setIsAudioBuffering(false);
     };
+    audio.ontimeupdate = () => {
+      setCurrentTime(Math.floor(audio.currentTime * 1000));
+    };
     audio.onwaiting = () => {
       console.log("[Aether/Audio] Web waiting", { currentTime: audio.currentTime, readyState: audio.readyState });
       setIsAudioBuffering(true);
@@ -1034,6 +1037,11 @@ function App() {
         setIsPlaying(false);
         setCurrentTime(0);
         setCurrentTrackTitle('');
+        if (localAudioRef.current) {
+          localAudioRef.current.pause();
+          localAudioRef.current.removeAttribute('src');
+          localAudioRef.current.load();
+        }
       }
       
       const serverMs = resp.data.currentMs || 0;
@@ -1081,7 +1089,12 @@ function App() {
             localAudioRef.current.play().catch(e => console.error("[Aether] Playback blocked:", e));
         }
       }
-    } catch (err) {}
+    } catch (err) {
+      console.error("[Aether/Queue] Fetch failed", err, {
+        apiBase: API_BASE,
+        guildId: getEffectiveGuildId(),
+      });
+    }
   };
 
   useEffect(() => {
@@ -1517,10 +1530,41 @@ function App() {
 
     try {
       const effectiveGuildId = getEffectiveGuildId();
-      if (action === 'clear' || action === 'stop') setQueue([]); 
+
+      // Web-mode immediate transport sync so UI/audio do not drift while waiting for polling.
+      if (action === 'pause') {
+        setIsPlaying(false);
+        if (localAudioRef.current) localAudioRef.current.pause();
+      }
+      if (action === 'resume') {
+        setIsPlaying(true);
+        if (localAudioRef.current) localAudioRef.current.play().catch(() => {});
+      }
+      if (action === 'skip') {
+        setCurrentTime(0);
+        if (localAudioRef.current) {
+          localAudioRef.current.pause();
+        }
+      }
+      if (action === 'clear' || action === 'stop') {
+        setQueue([]);
+        setIsPlaying(false);
+        setCurrentTime(0);
+        if (localAudioRef.current) {
+          localAudioRef.current.pause();
+          localAudioRef.current.removeAttribute('src');
+          localAudioRef.current.load();
+        }
+      }
+
       await axios.post(`${API_BASE}/api/control/${effectiveGuildId}`, { action });
       fetchQueue();
-    } catch (err) {}
+    } catch (err) {
+      console.error("[Aether/Control] Web control failed", err, {
+        action,
+        guildId: getEffectiveGuildId(),
+      });
+    }
   }, [isStandalone, API_BASE, history, isAutoplayEnabled, getEffectiveGuildId]);
 
   const [uiPulse, setUiPulse] = useState(1);
