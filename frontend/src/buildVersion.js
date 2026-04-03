@@ -1,1 +1,2 @@
-export const BUILD_VERSION = '12.11.1-SOVEREIGN-f8e22d0-2026-04-03 15:36:14 UTC';
+const shortHash = (import.meta.env.VITE_BUILD_VERSION || 'local').slice(0, 8);
+export const BUILD_VERSION = `BUILD-${shortHash}`;

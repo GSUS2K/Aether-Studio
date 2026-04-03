@@ -23,6 +23,7 @@ jobs:
       # Set this in GitHub: Settings -> Secrets and variables -> Actions -> Variables
       # Example: https://api.aetherstudio.me (or temporary trycloudflare URL)
       VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+      VITE_BUILD_VERSION: ${{ github.sha }}
 
     steps:
     - name: Checkout

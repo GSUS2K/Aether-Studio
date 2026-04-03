@@ -1,25 +1,12 @@
-name: Update Build Version
+name: Disabled Auto Version Push
 
 on:
-  push:
-    branches: [ main ]
+  workflow_dispatch:
+
 
 jobs:
-  update-version:
+  disabled:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-    - uses: actions/checkout@v4
-    - name: Update build version file
-      run: |
-        TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
-        COMMIT_SHA=$(git rev-parse --short HEAD)
-        echo "export const BUILD_VERSION = '12.11.1-SOVEREIGN-${COMMIT_SHA}-${TIMESTAMP}';" > frontend/src/buildVersion.js
-    - name: Commit version update
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        git add frontend/src/buildVersion.js
-        git commit -m "chore: auto-update build version [skip ci]" || true
-        git push
+    - name: Auto push disabled
+      run: echo "Auto version commit/push workflow is intentionally disabled."
