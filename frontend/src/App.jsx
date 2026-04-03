@@ -248,7 +248,9 @@ function App() {
     };
     audio.onended = () => {
       console.log("[Aether/Audio] Web ended", { title: currentTrack.title });
-      handleControl('skip');
+      axios.post(`${API_BASE}/api/control/${DEFAULT_GUILD_ID}`, { action: 'skip' })
+        .then(() => fetchQueue())
+        .catch((err) => console.error("[Aether/Audio] Web skip failed", err));
     };
     audio.onerror = (e) => {
       console.error("[Aether/Audio] Web error", e, {
@@ -284,7 +286,7 @@ function App() {
       console.log("[Aether/Audio] Web paused by state", { title: currentTrack.title });
       audio.pause();
     }
-  }, [isStandalone, currentTrack?.title, currentTrack?.actualUrl, currentTrack?.url, currentTrack?.id, isPlaying, volume, API_BASE, handleControl]);
+  }, [isStandalone, currentTrack?.title, currentTrack?.actualUrl, currentTrack?.url, currentTrack?.id, isPlaying, volume, API_BASE]);
 
   useEffect(() => {
     let pollInterval;
