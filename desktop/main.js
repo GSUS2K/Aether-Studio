@@ -361,21 +361,38 @@ streamApp.use(express.json());
 // 1. QUEUE STATUS
 streamApp.get('/api/queue/:id', (req, res) => {
     const queue = getQueue(req.params.id);
+    console.log('[Aether/API] GET /api/queue', {
+        id: req.params.id,
+        songs: queue.songs?.length || 0,
+        isPlaying: queue.isPlaying,
+        currentMs: queue.currentMs,
+    });
     res.json(queue);
 });
 
 // 2. SEARCH (Direct Integration)
 streamApp.get('/api/search', async (req, res) => {
     try {
+        console.log('[Aether/API] GET /api/search', { q: req.query.q });
         const results = await search(req.query.q, ytdlpPath);
+        console.log('[Aether/API] GET /api/search result', { q: req.query.q, count: results?.length || 0 });
         res.json(results);
-    } catch (e) { res.json([]); }
+    } catch (e) {
+        console.error('[Aether/API] GET /api/search failed', e.message);
+        res.json([]);
+    }
 });
 
 // 3. ADD TRACK
 streamApp.post('/api/add/:id', (req, res) => {
     const queue = getQueue(req.params.id);
     const { track } = req.body;
+    console.log('[Aether/API] POST /api/add', {
+        id: req.params.id,
+        title: track?.title,
+        author: track?.author,
+        url: track?.actualUrl || track?.url,
+    });
     queue.songs.push(track);
     res.json({ success: true, position: queue.songs.length - 1 });
 });
@@ -384,6 +401,7 @@ streamApp.post('/api/add/:id', (req, res) => {
 streamApp.post('/api/control/:id', (req, res) => {
     const queue = getQueue(req.params.id);
     const { action, time } = req.body;
+    console.log('[Aether/API] POST /api/control', { id: req.params.id, action, time });
     
     switch (action) {
         case 'pause': queue.isPlaying = false; break;
@@ -416,6 +434,7 @@ streamApp.post('/api/control/:id', (req, res) => {
 streamApp.post('/api/heartbeat/:id', (req, res) => {
     const queue = getQueue(req.params.id);
     const { currentTime, isPlaying } = req.body;
+    console.log('[Aether/API] POST /api/heartbeat', { id: req.params.id, currentTime, isPlaying });
     queue.currentMs = currentTime;
     queue.isPlaying = isPlaying;
     res.json({ success: true });
@@ -425,9 +444,12 @@ streamApp.post('/api/heartbeat/:id', (req, res) => {
 streamApp.get('/api/lyrics', async (req, res) => {
     const { track, artist, duration, url, query } = req.query;
     try {
+        console.log('[Aether/API] GET /api/lyrics', { track, artist, duration, url, query });
         const results = await fetchSyncedLyrics(track, artist, (duration || 0) / 1000, query, url);
+        console.log('[Aether/API] GET /api/lyrics result', { track, artist, hasLyrics: !!results?.lyrics?.length, count: results?.lyrics?.length || 0, source: results?.source });
         res.json(results?.lyrics || []);
     } catch (e) {
+        console.error('[Aether/API] GET /api/lyrics failed', e.message);
         res.json([]);
     }
 });
@@ -435,9 +457,13 @@ streamApp.get('/api/lyrics', async (req, res) => {
 // 7. METADATA (Converged Sync)
 streamApp.get('/api/metadata', async (req, res) => {
     try {
+        console.log('[Aether/API] GET /api/metadata', { url: req.query.url });
         const meta = await getMetadata(req.query.url, ytdlpPath);
         res.json(meta);
-    } catch (e) { res.status(500).end(); }
+    } catch (e) {
+        console.error('[Aether/API] GET /api/metadata failed', e.message);
+        res.status(500).end();
+    }
 });
 
 const SERVER_PORT = 3333;

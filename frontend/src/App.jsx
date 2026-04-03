@@ -289,6 +289,19 @@ function App() {
     if (!isStandalone || !queue || queue.length === 0) return;
     const track = queue[0];
     const loadStartTime = Date.now();
+    const trackUrl = track.actualUrl || track.url;
+
+    console.log("[Aether/Audio] Queue head details", {
+      id: track.id,
+      title: track.title,
+      author: track.author,
+      youtubeId: track.youtubeId,
+      actualUrl: track.actualUrl,
+      url: track.url,
+      trackUrl,
+      isPlaying,
+      downloaded: downloadedTracks.includes(track.id),
+    });
 
     // Pre-warm next queue tracks
     queue.slice(0, 3).forEach((item) => {
@@ -341,7 +354,13 @@ function App() {
         };
         localAudioRef.current.onerror = (e) => {
             // HIGH-FIDELITY FAULT TOLERANCE: Do not skip on initial connection fault
-            console.error("[Aether/Audio] Signal Disturbance Detected:", e);
+          console.error("[Aether/Audio] Signal Disturbance Detected:", e, {
+            src: localAudioRef.current?.src,
+            networkState: localAudioRef.current?.networkState,
+            readyState: localAudioRef.current?.readyState,
+            currentTime: localAudioRef.current?.currentTime,
+            paused: localAudioRef.current?.paused,
+          });
             console.log("[Aether/Audio] Attempting signal recovery. Skip suppressed.");
             // Maintain buffering state instead of skipping to Standby
             setIsAudioBuffering(true);
@@ -356,7 +375,12 @@ function App() {
         const streamUrl = isLocalDownloaded
           ? `${streamBase}/offline/${track.id}.m4a`
           : `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}`;
-        console.log("[Aether/Audio] Initializing Stream:", streamUrl, { isLocalDownloaded });
+        console.log("[Aether/Audio] Initializing Stream:", streamUrl, {
+            isLocalDownloaded,
+            streamBase,
+            youtubeUrl,
+            trackId: track.id,
+        });
         
         localAudioRef.current.crossOrigin = "anonymous";
         localAudioRef.current.src = streamUrl;
@@ -368,8 +392,18 @@ function App() {
         }
         
         if (isPlaying) {
+          console.log("[Aether/Audio] Attempting play()", {
+            src: localAudioRef.current?.src,
+            readyState: localAudioRef.current?.readyState,
+            networkState: localAudioRef.current?.networkState,
+          });
             localAudioRef.current.play().catch(e => {
-                console.error("[Aether/Audio] Autoplay Blocked or Failed:", e);
+            console.error("[Aether/Audio] Autoplay Blocked or Failed:", e, {
+              src: localAudioRef.current?.src,
+              readyState: localAudioRef.current?.readyState,
+              networkState: localAudioRef.current?.networkState,
+              paused: localAudioRef.current?.paused,
+            });
                 handleControl('skip');
             });
         }
@@ -881,7 +915,14 @@ function App() {
   const fetchQueue = async () => {
     try {
       const guildId = DEFAULT_GUILD_ID;
+      console.log("[Aether/Queue] Fetching queue", { guildId, isStandalone, currentTime, currentTrackTitle });
       const resp = await axios.get(`${API_BASE}/api/queue/${guildId}`);
+      console.log("[Aether/Queue] Response", {
+        isPlaying: resp.data?.isPlaying,
+        currentMs: resp.data?.currentMs,
+        queueLength: resp.data?.songs?.length,
+        topTrack: resp.data?.songs?.[0]?.title,
+      });
       
       // Only pull remote queue if acting as Discord client (Standalone manages its own state)
       if (resp.data.songs && !isStandalone) setQueue(resp.data.songs);
@@ -892,12 +933,24 @@ function App() {
 
       const track = resp.data.songs && resp.data.songs[0];
       if (track && track.title !== currentTrackTitle) {
+        console.log("[Aether/Queue] New head track", {
+          id: track.id,
+          title: track.title,
+          author: track.author,
+          actualUrl: track.actualUrl,
+          url: track.url,
+        });
         setCurrentTrackTitle(track.title);
         updateDiscordRichPresence(track, serverMs);
 
         // --- AETHER: LOCAL PLAYBACK SYNC (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN ---
         if (isStandalone && track.actualUrl) {
             const loadStartTime = Date.now();
+          console.log("[Aether/Audio] Standalone queue fetch stream load", {
+            trackId: track.id,
+            actualUrl: track.actualUrl,
+            url: track.url,
+          });
             if (!localAudioRef.current) {
                 localAudioRef.current = new Audio();
                 localAudioRef.current.volume = 0.5;
@@ -1058,22 +1111,47 @@ function App() {
     if (!trackTitle) return;
     setIsLyricsLoading(true);
     try {
+      console.log("[Aether/Lyrics] Fetch start", {
+        trackTitle,
+        trackAuthor,
+        trackDuration,
+        trackUrl,
+        isStandalone,
+      });
       if (isStandalone) {
           const results = await window.aether.getLyrics(trackTitle, trackAuthor, trackDuration, trackTitle, trackUrl);
           // Backend returns { lyrics: Array<{time, text}>, source: string } OR Array directly
           const lyricsArray = Array.isArray(results) ? results : (results?.lyrics || []);
+          console.log("[Aether/Lyrics] Standalone result", {
+            count: lyricsArray.length,
+            source: results?.source,
+          });
           setLyrics(lyricsArray);
           setIsLyricsLoading(false);
           return;
       }
       const resp = await fetch(`${API_BASE}/api/lyrics?track=${encodeURIComponent(trackTitle)}&artist=${encodeURIComponent(trackAuthor || '')}&duration=${(trackDuration || 0)/1000}&url=${encodeURIComponent(trackUrl || '')}&format=json`);
       const data = await resp.json();
+      console.log("[Aether/Lyrics] Web result", {
+        ok: resp.ok,
+        status: resp.status,
+        count: Array.isArray(data) ? data.length : 0,
+        sample: Array.isArray(data) ? data[0] : data,
+      });
       setLyrics(Array.isArray(data) ? data : []);
       if (trackTitle !== currentTrackTitle) {
         setCurrentTime(0);
         setCurrentTrackTitle(trackTitle);
       }
-    } catch (err) { setLyrics([]); } finally { setIsLyricsLoading(false); }
+    } catch (err) {
+      console.error("[Aether/Lyrics] Fetch failed", err, {
+        trackTitle,
+        trackAuthor,
+        trackDuration,
+        trackUrl,
+      });
+      setLyrics([]);
+    } finally { setIsLyricsLoading(false); }
   };
 
   useEffect(() => {
@@ -1188,7 +1266,16 @@ function App() {
     
     setAddingIds(prev => new Set(prev).add(track.id));
     try {
+      console.log("[Aether/Add] Web add request", {
+        effectiveGuildId,
+        trackId: track.id,
+        title: track.title,
+        author: track.author,
+        actualUrl: track.actualUrl,
+        url: track.url,
+      });
       await axios.post(`${API_BASE}/api/add/${effectiveGuildId}`, { track, userId: auth?.user?.id });
+      console.log("[Aether/Add] Track posted, sending resume", { effectiveGuildId });
       await axios.post(`${API_BASE}/api/control/${effectiveGuildId}`, { action: 'resume' }).catch(() => {});
       setIsPlaying(true);
       setIsManualStop(false);
