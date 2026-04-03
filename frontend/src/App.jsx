@@ -192,6 +192,101 @@ function App() {
   }, [isStandalone]);
 
   useEffect(() => {
+    if (isStandalone || !currentTrack?.title) return;
+
+    const trackUrl = currentTrack.actualUrl || currentTrack.url;
+    if (!trackUrl) {
+      console.warn("[Aether/Audio] Web playback skipped: no track URL", {
+        title: currentTrack.title,
+        author: currentTrack.author,
+        id: currentTrack.id,
+      });
+      return;
+    }
+
+    if (!localAudioRef.current) {
+      localAudioRef.current = new Audio();
+      localAudioRef.current.crossOrigin = "anonymous";
+    }
+
+    const audio = localAudioRef.current;
+    const streamUrl = `${API_BASE}/stream?url=${encodeURIComponent(trackUrl)}`;
+
+    console.log("[Aether/Audio] Web stream init", {
+      title: currentTrack.title,
+      author: currentTrack.author,
+      trackUrl,
+      streamUrl,
+      isPlaying,
+      volume,
+      readyState: audio.readyState,
+      networkState: audio.networkState,
+    });
+
+    audio.volume = volume;
+    audio.onloadedmetadata = () => {
+      console.log("[Aether/Audio] Web loadedmetadata", {
+        currentTime: audio.currentTime,
+        duration: audio.duration,
+        readyState: audio.readyState,
+      });
+    };
+    audio.oncanplay = () => {
+      console.log("[Aether/Audio] Web canplay", { readyState: audio.readyState });
+    };
+    audio.onplaying = () => {
+      console.log("[Aether/Audio] Web playing", { currentTime: audio.currentTime });
+      setIsAudioBuffering(false);
+    };
+    audio.onwaiting = () => {
+      console.log("[Aether/Audio] Web waiting", { currentTime: audio.currentTime, readyState: audio.readyState });
+      setIsAudioBuffering(true);
+    };
+    audio.onstalled = () => {
+      console.log("[Aether/Audio] Web stalled", { currentTime: audio.currentTime, readyState: audio.readyState });
+      setIsAudioBuffering(true);
+    };
+    audio.onended = () => {
+      console.log("[Aether/Audio] Web ended", { title: currentTrack.title });
+      handleControl('skip');
+    };
+    audio.onerror = (e) => {
+      console.error("[Aether/Audio] Web error", e, {
+        src: audio.src,
+        networkState: audio.networkState,
+        readyState: audio.readyState,
+        currentTime: audio.currentTime,
+        paused: audio.paused,
+      });
+      setIsAudioBuffering(true);
+    };
+
+    if (audio.src !== streamUrl) {
+      audio.src = streamUrl;
+    }
+
+    if (isPlaying) {
+      console.log("[Aether/Audio] Web play() attempt", {
+        src: audio.src,
+        paused: audio.paused,
+        readyState: audio.readyState,
+        networkState: audio.networkState,
+      });
+      audio.play().catch(err => {
+        console.error("[Aether/Audio] Web play() failed", err, {
+          src: audio.src,
+          paused: audio.paused,
+          readyState: audio.readyState,
+          networkState: audio.networkState,
+        });
+      });
+    } else {
+      console.log("[Aether/Audio] Web paused by state", { title: currentTrack.title });
+      audio.pause();
+    }
+  }, [isStandalone, currentTrack?.title, currentTrack?.actualUrl, currentTrack?.url, currentTrack?.id, isPlaying, volume, API_BASE, handleControl]);
+
+  useEffect(() => {
     let pollInterval;
     
     if (isStandalone) {
@@ -1130,7 +1225,8 @@ function App() {
           setIsLyricsLoading(false);
           return;
       }
-      const resp = await fetch(`${API_BASE}/api/lyrics?track=${encodeURIComponent(trackTitle)}&artist=${encodeURIComponent(trackAuthor || '')}&duration=${(trackDuration || 0)/1000}&url=${encodeURIComponent(trackUrl || '')}&format=json`);
+      const query = `${trackTitle} ${trackAuthor || ''}`.trim();
+      const resp = await fetch(`${API_BASE}/api/lyrics?track=${encodeURIComponent(trackTitle)}&artist=${encodeURIComponent(trackAuthor || '')}&duration=${(trackDuration || 0)/1000}&url=${encodeURIComponent(trackUrl || '')}&query=${encodeURIComponent(query)}&format=json`);
       const data = await resp.json();
       console.log("[Aether/Lyrics] Web result", {
         ok: resp.ok,
