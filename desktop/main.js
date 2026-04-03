@@ -77,12 +77,15 @@ const resolveYtDlpPath = () => {
     const candidates = [];
 
     if (process.platform === 'win32') {
+        candidates.push(getBundledPath('desktop/bin/yt-dlp.exe'));
         candidates.push(getBinaryPath('@distube/yt-dlp/bin/yt-dlp.exe'));
     } else if (process.platform === 'darwin') {
         const bundledMacSource = path.join(__dirname, '..', 'desktop/bin/yt-dlp_macos');
         if (fs.existsSync(bundledMacSource)) {
             candidates.push(unpackNativeEngine('yt-dlp_macos'));
         }
+        candidates.push(getBundledPath('desktop/bin/yt-dlp_macos'));
+        candidates.push(getBundledPath('desktop/bin/yt-dlp'));
         candidates.push(getBinaryPath('@distube/yt-dlp/bin/yt-dlp'));
     } else {
         candidates.push(getBundledPath('desktop/bin/yt-dlp'));
