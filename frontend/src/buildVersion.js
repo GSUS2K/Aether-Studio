@@ -1,1 +1,1 @@
-export const BUILD_VERSION = '12.11.1-SOVEREIGN-dev';
+export const BUILD_VERSION = '12.11.1-SOVEREIGN-6f0ea38-2026-04-03 15:18:57 UTC';
