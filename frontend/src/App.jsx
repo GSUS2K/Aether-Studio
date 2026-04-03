@@ -3,6 +3,7 @@ import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Glob
 import { motion, AnimatePresence } from 'framer-motion';
 import { setupDiscordSdk } from './discord';
 import axios from 'axios';
+import { BUILD_VERSION } from './buildVersion';
 import './App.css';
 
 const getApiBase = () => {
@@ -351,9 +352,10 @@ function App() {
         const youtubeUrl = track.youtubeId 
             ? `https://www.youtube.com/watch?v=${track.youtubeId}`
             : track.actualUrl || track.url;
+        const streamBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
         const streamUrl = isLocalDownloaded
-            ? `http://localhost:${streamPort}/offline/${track.id}.m4a`
-            : `http://localhost:${streamPort}/stream?url=${encodeURIComponent(youtubeUrl)}`;
+          ? `${streamBase}/offline/${track.id}.m4a`
+          : `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}`;
         console.log("[Aether/Audio] Initializing Stream:", streamUrl, { isLocalDownloaded });
         
         localAudioRef.current.crossOrigin = "anonymous";
@@ -1489,7 +1491,7 @@ function App() {
                </div>
                <div className="flex flex-col">
                   <span className="text-[10px] font-black tracking-tighter text-white/90">AETHER</span>
-                  <span className="text-[7px] font-mono text-brand-accent/60 font-black tracking-[0.2em] uppercase">V12.11.1-SOVEREIGN</span>
+                  <span className="text-[7px] font-mono text-brand-accent/60 font-black tracking-[0.2em] uppercase">{BUILD_VERSION}</span>
                 </div>
             </div>
             
