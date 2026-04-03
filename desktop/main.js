@@ -245,7 +245,10 @@ streamApp.get('/stream', (req, res) => {
         // Stream from cached file
         console.log(`[Aether] Cache hit for ${trackId}: ${cachedFile}`);
         const stat = fs.statSync(cachedFile);
-        res.setHeader('Content-Type', 'audio/mpeg');
+        const ext = path.extname(cachedFile).toLowerCase();
+        const contentType = ext === '.m4a' || ext === '.mp4' ? 'audio/mp4' : 'audio/mpeg';
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Accept-Ranges', 'bytes');
         res.setHeader('Content-Length', stat.size);
         const stream = fs.createReadStream(cachedFile);
         stream.pipe(res);
@@ -308,7 +311,9 @@ streamApp.get('/stream', (req, res) => {
         if (!res.headersSent) res.status(500).send(`Neural Engine failed: ${err.message}`);
     });
 
-    res.setHeader('Content-Type', 'audio/mpeg');
+    // yt-dlp primary format is m4a, so expose mp4 audio MIME for browser compatibility.
+    res.setHeader('Content-Type', 'audio/mp4');
+    res.setHeader('Accept-Ranges', 'bytes');
     proc.stdout.pipe(res);
     res.on('finish', () => {
         console.log(`[Aether] yt-dlp stream for ${trackId} took ${Date.now() - startTime}ms`);
@@ -394,6 +399,9 @@ streamApp.post('/api/add/:id', (req, res) => {
         url: track?.actualUrl || track?.url,
     });
     queue.songs.push(track);
+    if (queue.songs.length === 1) {
+        queue.currentMs = 0;
+    }
     res.json({ success: true, position: queue.songs.length - 1 });
 });
 
@@ -410,6 +418,10 @@ streamApp.post('/api/control/:id', (req, res) => {
         case 'skip': 
             queue.songs.shift(); 
             queue.seekOffset = 0;
+            if (queue.songs.length === 0) {
+                queue.isPlaying = false;
+                queue.currentMs = 0;
+            }
             break;
         case 'shuffle':
             if (queue.songs.length > 1) {
@@ -503,6 +515,9 @@ streamApp.post('/api/add/:id', (req, res) => {
     const queue = getQueue(req.params.id);
     const { track } = req.body;
     queue.songs.push(track);
+    if (queue.songs.length === 1) {
+        queue.currentMs = 0;
+    }
     res.json({ success: true, position: queue.songs.length - 1 });
 });
 
@@ -517,6 +532,10 @@ streamApp.post('/api/control/:id', (req, res) => {
         case 'skip': 
             queue.songs.shift(); 
             queue.seekOffset = 0;
+            if (queue.songs.length === 0) {
+                queue.isPlaying = false;
+                queue.currentMs = 0;
+            }
             break;
         case 'shuffle':
             if (queue.songs.length > 1) {

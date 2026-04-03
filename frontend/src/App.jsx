@@ -185,6 +185,11 @@ function App() {
   }, [isStandalone, isPlaying, currentTime, currentTrack, streamPort]);
   const localAudioRef = useRef(null);
 
+  const getEffectiveGuildId = useCallback(() => {
+    const guildId = auth?.guild_id || new URLSearchParams(window.location.search).get('guild_id');
+    return guildId && guildId !== '0' ? guildId : DEFAULT_GUILD_ID;
+  }, [auth]);
+
   useEffect(() => {
      if (isStandalone && window.aether?.getLocalIp) {
          window.aether.getLocalIp().then(setLocalIp);
@@ -1011,7 +1016,7 @@ function App() {
 
   const fetchQueue = async () => {
     try {
-      const guildId = DEFAULT_GUILD_ID;
+      const guildId = getEffectiveGuildId();
       console.log("[Aether/Queue] Fetching queue", { guildId, isStandalone, currentTime, currentTrackTitle });
       const resp = await axios.get(`${API_BASE}/api/queue/${guildId}`);
       console.log("[Aether/Queue] Response", {
@@ -1023,9 +1028,16 @@ function App() {
       
       // Only pull remote queue if acting as Discord client (Standalone manages its own state)
       if (resp.data.songs && !isStandalone) setQueue(resp.data.songs);
+
+      const queueLength = resp.data?.songs?.length || 0;
+      if (!isStandalone && queueLength === 0) {
+        setIsPlaying(false);
+        setCurrentTime(0);
+        setCurrentTrackTitle('');
+      }
       
       const serverMs = resp.data.currentMs || 0;
-      if (!isStandalone && (Math.abs(currentTime - serverMs) > 1000 || currentTime === 0)) setCurrentTime(serverMs);
+      if (!isStandalone && queueLength > 0 && (Math.abs(currentTime - serverMs) > 1000 || currentTime === 0)) setCurrentTime(serverMs);
       if (!isStandalone && typeof resp.data.isPlaying === 'boolean') setIsPlaying(resp.data.isPlaying);
 
       const track = resp.data.songs && resp.data.songs[0];
@@ -1208,8 +1220,16 @@ function App() {
     if (!trackTitle) return;
     setIsLyricsLoading(true);
     try {
+      const normalizedTitle = String(trackTitle)
+        .replace(/\(official[^)]*\)/gi, '')
+        .replace(/\[[^\]]*\]/g, '')
+        .replace(/\(lyrics?\)/gi, '')
+        .replace(/\(audio\)/gi, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
       console.log("[Aether/Lyrics] Fetch start", {
         trackTitle,
+        normalizedTitle,
         trackAuthor,
         trackDuration,
         trackUrl,
@@ -1227,8 +1247,8 @@ function App() {
           setIsLyricsLoading(false);
           return;
       }
-      const query = `${trackTitle} ${trackAuthor || ''}`.trim();
-      const resp = await fetch(`${API_BASE}/api/lyrics?track=${encodeURIComponent(trackTitle)}&artist=${encodeURIComponent(trackAuthor || '')}&duration=${(trackDuration || 0)/1000}&url=${encodeURIComponent(trackUrl || '')}&query=${encodeURIComponent(query)}&format=json`);
+      const query = `${normalizedTitle || trackTitle} ${trackAuthor || ''}`.trim();
+      const resp = await fetch(`${API_BASE}/api/lyrics?track=${encodeURIComponent(normalizedTitle || trackTitle)}&artist=${encodeURIComponent(trackAuthor || '')}&duration=${(trackDuration || 0)/1000}&url=${encodeURIComponent(trackUrl || '')}&query=${encodeURIComponent(query)}&format=json`);
       const data = await resp.json();
       console.log("[Aether/Lyrics] Web result", {
         ok: resp.ok,
@@ -1357,10 +1377,7 @@ function App() {
         return;
     }
 
-    const guildId = auth?.guild_id || new URLSearchParams(window.location.search).get('guild_id');
-    
-    // Web mode: use local_studio as default guild for non-Discord instances
-    const effectiveGuildId = guildId && guildId !== '0' ? guildId : 'local_studio';
+    const effectiveGuildId = getEffectiveGuildId();
     
     setAddingIds(prev => new Set(prev).add(track.id));
     try {
@@ -1498,12 +1515,13 @@ function App() {
         return;
     }
 
-    try { 
+    try {
+      const effectiveGuildId = getEffectiveGuildId();
       if (action === 'clear' || action === 'stop') setQueue([]); 
-      await axios.post(`${API_BASE}/api/control/${guildId}`, { action }); 
-      fetchQueue(guildId); 
+      await axios.post(`${API_BASE}/api/control/${effectiveGuildId}`, { action });
+      fetchQueue();
     } catch (err) {}
-  }, [isStandalone, auth, API_BASE, history, isAutoplayEnabled]);
+  }, [isStandalone, API_BASE, history, isAutoplayEnabled, getEffectiveGuildId]);
 
   const [uiPulse, setUiPulse] = useState(1);
   const [accentColor, setAccentColor] = useState('#00ffbf');
@@ -1532,7 +1550,7 @@ function App() {
 
   const handleSeek = useCallback(async (time) => {
     // Neural Seek Link
-    const guildId = auth?.guild_id || new URLSearchParams(window.location.search).get('guild_id');
+    const guildId = getEffectiveGuildId();
     try {
         await axios.post(`${API_BASE}/api/control/${guildId}`, { action: 'seek', time });
     } catch (e) {}
@@ -1554,7 +1572,7 @@ function App() {
         setCurrentTime(time);
         setLyricOffsetMs(0);
     }
-  }, [auth, API_BASE, isStandalone, currentTrack, streamPort]);
+  }, [API_BASE, isStandalone, currentTrack, streamPort, getEffectiveGuildId]);
 
   const handleRemove = useCallback(async (index) => {
     if (isStandalone) {
@@ -1565,18 +1583,18 @@ function App() {
         });
         return;
     }
-    const guildId = auth?.guild_id || new URLSearchParams(window.location.search).get('guild_id');
-    try { await axios.post(`${API_BASE}/api/remove/${guildId}/${index}`); fetchQueue(guildId); } catch (err) {}
-  }, [isStandalone, auth, API_BASE]);
+    const guildId = getEffectiveGuildId();
+    try { await axios.post(`${API_BASE}/api/remove/${guildId}/${index}`); fetchQueue(); } catch (err) {}
+  }, [isStandalone, API_BASE, getEffectiveGuildId]);
 
   const handleSync = async (offset) => {
       if (isStandalone) {
           setLyricOffsetMs(prev => prev + offset);
           return;
       }
-      const guildId = auth?.guild_id || new URLSearchParams(window.location.search).get('guild_id');
+        const guildId = getEffectiveGuildId();
       await axios.post(`${API_BASE}/api/sync/${guildId}`, { offset });
-      fetchQueue(guildId);
+        fetchQueue();
   }
 
   if (loading) return (
@@ -1913,7 +1931,7 @@ function App() {
                     <button onClick={() => handleSync(500)} className="p-2 hover:text-brand-accent"><ChevronRight size={18} /></button>
                  </div>
                   {!isStandalone && <button onClick={() => {
-                    const guildId = auth?.guild_id || new URLSearchParams(window.location.search).get('guild_id');
+                    const guildId = getEffectiveGuildId();
                     axios.post(`${API_BASE}/api/source/${guildId}`).catch(e => console.error('Rotate error:', e));
                   }} className="hidden md:flex px-5 py-2.5 glass-card text-[10px] font-black hover:border-brand-accent transition-all uppercase tracking-widest active:scale-95 border-white/10">Rotate</button>}
                 <button 
