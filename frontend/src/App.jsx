@@ -888,6 +888,7 @@ function App() {
       
       const serverMs = resp.data.currentMs || 0;
       if (!isStandalone && (Math.abs(currentTime - serverMs) > 1000 || currentTime === 0)) setCurrentTime(serverMs);
+      if (!isStandalone && typeof resp.data.isPlaying === 'boolean') setIsPlaying(resp.data.isPlaying);
 
       const track = resp.data.songs && resp.data.songs[0];
       if (track && track.title !== currentTrackTitle) {
@@ -1086,7 +1087,7 @@ function App() {
       prevTrackRef.current = currentTrack;
     }
     if (currentTrack?.syncedLyrics) setLyrics(currentTrack.syncedLyrics.lyrics || []);
-    else if (currentTrack?.title) fetchLyrics(currentTrack.title, currentTrack.author, currentTrack.totalDurationMs || currentTrack.duration, currentTrack.actualUrl);
+    else if (currentTrack?.title) fetchLyrics(currentTrack.title, currentTrack.author, currentTrack.totalDurationMs || currentTrack.duration, currentTrack.actualUrl || currentTrack.url);
     else setLyrics([]);
   }, [currentTrack?.title]);
 
@@ -1188,7 +1189,10 @@ function App() {
     setAddingIds(prev => new Set(prev).add(track.id));
     try {
       await axios.post(`${API_BASE}/api/add/${effectiveGuildId}`, { track, userId: auth?.user?.id });
-      fetchQueue(effectiveGuildId);
+      await axios.post(`${API_BASE}/api/control/${effectiveGuildId}`, { action: 'resume' }).catch(() => {});
+      setIsPlaying(true);
+      setIsManualStop(false);
+      fetchQueue();
       setLastAdded(track.title);
       setTimeout(() => setLastAdded(null), 3000);
     } catch (err) {} finally {
