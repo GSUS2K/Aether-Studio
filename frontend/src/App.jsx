@@ -1179,11 +1179,14 @@ function App() {
     }
 
     const guildId = auth?.guild_id || new URLSearchParams(window.location.search).get('guild_id');
-    if (!guildId || guildId === '0') return alert("Join a server to play music.");
+    
+    // Web mode: use local_studio as default guild for non-Discord instances
+    const effectiveGuildId = guildId && guildId !== '0' ? guildId : 'local_studio';
+    
     setAddingIds(prev => new Set(prev).add(track.id));
     try {
-      await axios.post(`${API_BASE}/api/add/${guildId}`, { track, userId: auth?.user?.id });
-      fetchQueue(guildId);
+      await axios.post(`${API_BASE}/api/add/${effectiveGuildId}`, { track, userId: auth?.user?.id });
+      fetchQueue(effectiveGuildId);
       setLastAdded(track.title);
       setTimeout(() => setLastAdded(null), 3000);
     } catch (err) {} finally {
