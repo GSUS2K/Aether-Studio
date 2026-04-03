@@ -6,7 +6,10 @@ import axios from 'axios';
 import './App.css';
 
 const getApiBase = () => {
-  // If running in Standalone (Mac), use the local Express server on port 3333
+  const configuredBase = import.meta.env.VITE_API_BASE_URL?.trim();
+  if (configuredBase) return configuredBase.replace(/\/$/, '');
+
+  // Standalone Electron app keeps using the local Express server.
   return 'http://localhost:3333';
 };
 const API_BASE = getApiBase();
