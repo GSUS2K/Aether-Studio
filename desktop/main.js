@@ -70,9 +70,30 @@ const unpackNativeEngine = (binaryName) => {
     return getBundledPath(`desktop/bin/${binaryName}`);
 };
 
-const ytdlpPath = process.env.YOUTUBE_DL_PATH || 
-    (process.platform === 'win32' ? getBinaryPath('@distube/yt-dlp/bin/yt-dlp.exe') : 
-     (process.platform === 'darwin' ? unpackNativeEngine('yt-dlp_macos') : getBundledPath('desktop/bin/yt-dlp')));
+const resolveYtDlpPath = () => {
+    const envPath = process.env.YOUTUBE_DL_PATH;
+    if (envPath && fs.existsSync(envPath)) return envPath;
+
+    const candidates = [];
+
+    if (process.platform === 'win32') {
+        candidates.push(getBinaryPath('@distube/yt-dlp/bin/yt-dlp.exe'));
+    } else if (process.platform === 'darwin') {
+        const bundledMacSource = path.join(__dirname, '..', 'desktop/bin/yt-dlp_macos');
+        if (fs.existsSync(bundledMacSource)) {
+            candidates.push(unpackNativeEngine('yt-dlp_macos'));
+        }
+        candidates.push(getBinaryPath('@distube/yt-dlp/bin/yt-dlp'));
+    } else {
+        candidates.push(getBundledPath('desktop/bin/yt-dlp'));
+        candidates.push(getBinaryPath('@distube/yt-dlp/bin/yt-dlp'));
+    }
+
+    const found = candidates.find(p => p && fs.existsSync(p));
+    return found || 'yt-dlp';
+};
+
+const ytdlpPath = resolveYtDlpPath();
 const ffmpegPath = process.env.FFMPEG_PATH || (process.platform === 'win32' ? getBinaryPath('ffmpeg-static/ffmpeg.exe') : getBinaryPath('ffmpeg-static/ffmpeg'));
 console.log(`[Aether] ytdlpPath: ${ytdlpPath}, ffmpegPath: ${ffmpegPath}`);
 
@@ -807,6 +828,36 @@ app.whenReady().then(async () => {
             return { success: true, filePath };
         } catch (e) {
             console.error(`[Aether] Download failed for ${trackId}: ${e.message}`);
+            return { success: false, error: e.message };
+        }
+    });
+
+    ipcMain.handle('aether:save-to-disk', async (event, { url, title, author }) => {
+        try {
+            if (!url) return { success: false, error: 'Missing URL' };
+
+            const match = String(url).match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+            const youtubeId = match ? match[1] : null;
+            const baseName = `${title || 'track'}-${author || 'unknown'}`
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '-')
+                .replace(/^-+|-+$/g, '')
+                .slice(0, 48) || 'track';
+            const trackId = youtubeId || `${baseName}-${Date.now().toString(36)}`;
+
+            const result = await offlineEngine.download(url, trackId, ytdlpPath, ffmpegPath);
+            const downloaded = await offlineEngine.getDownloadedTracks();
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('aether:library-update', downloaded);
+            }
+
+            return {
+                success: true,
+                trackId,
+                filePath: result?.filePath || result
+            };
+        } catch (e) {
+            console.error(`[Aether] save-to-disk failed: ${e.message}`);
             return { success: false, error: e.message };
         }
     });
