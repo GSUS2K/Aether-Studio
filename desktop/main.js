@@ -150,6 +150,10 @@ streamApp.post('/api/device/sync', (req, res) => {
     res.json({ success: true });
 });
 
+streamApp.get('/api/system', (req, res) => {
+    res.json({ status: 'ok', version: app.getVersion() });
+});
+
 streamApp.get('/api/device/state', (req, res) => {
     res.json(remoteState);
 });
