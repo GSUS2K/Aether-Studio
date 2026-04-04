@@ -11,6 +11,30 @@ class OfflineEngine {
         }
     }
 
+    _cleanupResidualArtifacts(trackId) {
+        try {
+            const files = fs.readdirSync(this.downloadDir);
+            const preservedExt = new Set(['.m4a', '.lrc']);
+            const removableExt = new Set(['.webm', '.mp4', '.mkv', '.part', '.tmp', '.ytdl', '.orig']);
+
+            for (const file of files) {
+                if (!file.startsWith(`${trackId}.`)) continue;
+                const ext = path.extname(file).toLowerCase();
+                if (preservedExt.has(ext)) continue;
+                if (!removableExt.has(ext)) continue;
+                const fullPath = path.join(this.downloadDir, file);
+                try {
+                    fs.unlinkSync(fullPath);
+                    console.log(`[OfflineEngine] Removed residual artifact: ${file}`);
+                } catch (e) {
+                    console.warn(`[OfflineEngine] Failed removing residual artifact ${file}: ${e.message}`);
+                }
+            }
+        } catch (e) {
+            console.warn(`[OfflineEngine] Artifact cleanup failed for ${trackId}: ${e.message}`);
+        }
+    }
+
     async download(url, trackId, ytdlpPath, ffmpegPath) {
         const startTime = Date.now();
         const fileName = `${trackId}.m4a`;
@@ -60,11 +84,13 @@ class OfflineEngine {
                 console.log(`[OfflineEngine] yt-dlp exited with code ${code} for ${trackId} in ${duration}ms`);
 
                 if (code === 0) {
+                    this._cleanupResidualArtifacts(trackId);
                     console.log(`[OfflineEngine] Download success: ${filePath}`);
                     resolve(outputInfo);
                 } else {
                     // If file exists from another race, resolve it
                     if (fs.existsSync(filePath)) {
+                        this._cleanupResidualArtifacts(trackId);
                         console.warn(`[OfflineEngine] yt-dlp failed but file exists for ${trackId}: ${filePath}`);
                         return resolve({ ...outputInfo, success: true, filePath });
                     }

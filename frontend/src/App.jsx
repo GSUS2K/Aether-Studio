@@ -1,5 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, Component } from 'react';
-import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, Cpu, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, Shuffle, Timer, Download, Upload, Save } from 'lucide-react';
+import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, Cpu, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, Shuffle, Timer, Download, Upload, Save, Lock, Fingerprint } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { setupDiscordSdk } from './discord';
 import axios from 'axios';
@@ -7,14 +7,31 @@ import { BUILD_VERSION } from './buildVersion';
 import './App.css';
 
 const getApiBase = () => {
+  const isElectronStandalone = typeof window !== 'undefined' && !!window.aether;
+  if (isElectronStandalone) {
+    return 'http://localhost:3333';
+  }
+
   const configuredBase = import.meta.env.VITE_API_BASE_URL?.trim();
   if (configuredBase) return configuredBase.replace(/\/$/, '');
 
-  // Standalone Electron app keeps using the local Express server.
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    const origin = window.location.origin.replace(/\/$/, '');
+    if (!/^https?:\/\/localhost(?::\d+)?$/i.test(origin) && !/^https?:\/\/127\.0\.0\.1(?::\d+)?$/i.test(origin)) {
+      return origin;
+    }
+  }
+
   return 'http://localhost:3333';
 };
 const API_BASE = getApiBase();
 const DEFAULT_GUILD_ID = 'local_studio';
+const UX_VERSION = 'AURA-R3.8';
+const LYRIC_PRESETS_STORAGE_KEY = 'aether.lyricOffsetPresets.v1';
+const SESSION_UI_STORAGE_KEY = 'aether.sessionUi.v1';
+const SESSION_PLAYBACK_STORAGE_KEY = 'aether.sessionPlayback.v1';
+const SKIP_EVENTS_STORAGE_KEY = 'aether.skipEvents.v1';
+const LOCK_PREFS_STORAGE_KEY = 'aether.lockPrefs.v1';
 
 const IDLE_PHRASES = [
   "Exploring the Neural Vault",
@@ -49,6 +66,81 @@ const formatTime = (ms) => {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+};
+
+const parseLyricOffsetValue = (value) => {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
+  const raw = String(value ?? '').trim();
+  if (!raw) return 0;
+  const direct = Number(raw);
+  if (Number.isFinite(direct)) return Math.trunc(direct);
+  const match = raw.match(/-?\d+/);
+  if (!match) return 0;
+  const parsed = Number(match[0]);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
+};
+
+const formatBytes = (bytes) => {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const power = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024)));
+  const scaled = value / (1024 ** power);
+  return `${scaled >= 100 ? scaled.toFixed(0) : scaled.toFixed(1)} ${units[power]}`;
+};
+
+const clamp01 = (v) => Math.max(0, Math.min(1, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const alphaHex = (a) => Math.round(clamp01(a) * 255).toString(16).padStart(2, '0');
+const AETHER_SHARE_ORIGIN = 'https://aetherstudio.me';
+const encodeScenePayload = (payload) => {
+  try {
+    const json = JSON.stringify(payload);
+    const bytes = encodeURIComponent(json).replace(/%([0-9A-F]{2})/g, (_, p1) => String.fromCharCode(parseInt(p1, 16)));
+    return btoa(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  } catch {
+    return null;
+  }
+};
+const decodeScenePayload = (encoded) => {
+  try {
+    const normalized = String(encoded || '').replace(/-/g, '+').replace(/_/g, '/');
+    const pad = '='.repeat((4 - (normalized.length % 4 || 4)) % 4);
+    const raw = atob(normalized + pad);
+    const json = decodeURIComponent(Array.from(raw).map((c) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`).join(''));
+    const parsed = JSON.parse(json);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+const extractSceneYouTubeId = (value) => {
+  const text = String(value || '');
+  const match = text.match(/(?:v=|\/vi\/|\/v\/|youtu\.be\/|\/shorts\/)([A-Za-z0-9_-]{11})/);
+  return match?.[1] || null;
+};
+const normalizeScenePayload = (raw) => {
+  if (!raw || typeof raw !== 'object') return null;
+  const youtubeId = String(raw.youtubeId || raw.y || extractSceneYouTubeId(raw.thumbnail || raw.th || raw.source || ''));
+  const thumbnail = String(raw.thumbnail || raw.th || (youtubeId ? `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg` : ''));
+  return {
+    title: String(raw.title || raw.t || 'Aether Scene').slice(0, 140),
+    author: String(raw.author || raw.a || 'Unknown Artist').slice(0, 100),
+    lyric: String(raw.lyric || raw.l || 'No lyric locked yet').slice(0, 180),
+    thumbnail,
+    youtubeId,
+    at: Math.max(0, Number(raw.at || raw.time || 0)),
+    total: Math.max(0, Number(raw.total || raw.to || 0)),
+    state: String(raw.state || (raw.s === 1 ? 'playing' : 'paused')),
+    mode: String(raw.mode || (raw.m === 1 ? 'pulse' : 'bars')),
+    pulse: {
+      e: Math.max(0, Number(raw?.pulse?.e ?? raw?.p?.[0] ?? 0)),
+      b: Math.max(0, Number(raw?.pulse?.b ?? raw?.p?.[1] ?? 0)),
+      m: Math.max(0, Number(raw?.pulse?.m ?? raw?.p?.[2] ?? 0)),
+      h: Math.max(0, Number(raw?.pulse?.h ?? raw?.p?.[3] ?? 0)),
+    },
+    theme: String(raw.theme || raw.c || '#00ffbf'),
+  };
 };
 
 class ErrorBoundary extends Component {
@@ -116,6 +208,25 @@ function App() {
   const [isSearching, setIsSearching] = useState(false);
   const [addingIds, setAddingIds] = useState(new Set());
   const [isAutoScrollPaused, setIsAutoScrollPaused] = useState(false);
+  const [lyricOffsetPresets, setLyricOffsetPresets] = useState({});
+  const [isLyricPresetSaved, setIsLyricPresetSaved] = useState(false);
+  const [sessionRestoreNotice, setSessionRestoreNotice] = useState('');
+  const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
+  const [diagnostics, setDiagnostics] = useState({
+    lastQueueFetchMs: null,
+    lastQueueFetchAt: null,
+    lastQueueError: null,
+    lastSystemFetchMs: null,
+    lastSystemFetchAt: null,
+    lastSystemError: null,
+    lastSongFetchMs: null,
+    lastSongFetchAt: null,
+    lastSongSource: '-',
+    lastLyricsSource: '-',
+    lastLyricsFetchMs: null,
+    lastLyricsFetchAt: null,
+    lastLyricsError: null,
+  });
   const [lastAdded, setLastAdded] = useState(null);
   const [currentTrackTitle, setCurrentTrackTitle] = useState("");
   const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
@@ -123,7 +234,10 @@ function App() {
   const [isLyricsExpanded, setIsLyricsExpanded] = useState(false);
   const [isStatsExpanded, setIsStatsExpanded] = useState(false);
   const [typedBuffer, setTypedBuffer] = useState("");
-  const [isPacmanOpen, setIsPacmanOpen] = useState(false);
+  const [isMixtapeVaultOpen, setIsMixtapeVaultOpen] = useState(false);
+  const [sharedScene, setSharedScene] = useState(null);
+  const [isSharedSceneOpen, setIsSharedSceneOpen] = useState(false);
+  const [vaultPulse, setVaultPulse] = useState({ bass: 0, mids: 0, highs: 0, energy: 0, spin: 0, stamp: 'AETHER-PULSE' });
   const [playlists, setPlaylists] = useState({});
   const [viewingPlaylist, setViewingPlaylist] = useState(null);
   const [newPlaylistName, setNewPlaylistName] = useState('');
@@ -138,6 +252,30 @@ function App() {
   const [sleepRemainingStr, setSleepRemainingStr] = useState('');
   const [localIp, setLocalIp] = useState('');
   const [isMiniPlayer, setIsMiniPlayer] = useState(false);
+  const [isSpotifyImportOpen, setIsSpotifyImportOpen] = useState(false);
+  const [spotifyImportUrl, setSpotifyImportUrl] = useState('');
+  const [spotifyImportProgress, setSpotifyImportProgress] = useState({ stage: 'idle', progress: 0, message: '' });
+  const [isSpotifyImporting, setIsSpotifyImporting] = useState(false);
+  const [spotifyImportLogs, setSpotifyImportLogs] = useState([]);
+  const [isVaultCleaning, setIsVaultCleaning] = useState(false);
+  const [skipReasonToast, setSkipReasonToast] = useState('');
+  const [skipEvents, setSkipEvents] = useState([]);
+  const [lockStatus, setLockStatus] = useState({ enabled: false, touchIdAvailable: false, touchIdEnabled: false });
+  const [isAppLocked, setIsAppLocked] = useState(false);
+  const [isLockModalOpen, setIsLockModalOpen] = useState(false);
+  const [lockPasswordInput, setLockPasswordInput] = useState('');
+  const [lockPasswordConfirm, setLockPasswordConfirm] = useState('');
+  const [lockDisablePassword, setLockDisablePassword] = useState('');
+  const [unlockPasswordInput, setUnlockPasswordInput] = useState('');
+  const [lockUseTouchId, setLockUseTouchId] = useState(false);
+  const [lockIdleMinutes, setLockIdleMinutes] = useState(5);
+  const [isWindowActive, setIsWindowActive] = useState(() => !document.hidden);
+  const [lockError, setLockError] = useState('');
+  const [isLockBusy, setIsLockBusy] = useState(false);
+  const [storageStats, setStorageStats] = useState(null);
+  const [storagePolicy, setStoragePolicy] = useState({ cacheCapMb: 2048, maxCacheAgeDays: 30 });
+  const [storageEstimate, setStorageEstimate] = useState({ cap: null, age: null, downloadsOnly: null });
+  const [isStorageBusy, setIsStorageBusy] = useState(false);
   
   const fileInputRef = useRef(null);
   const [isAutoplayEnabled, setIsAutoplayEnabled] = useState(true);
@@ -148,6 +286,8 @@ function App() {
   const idleStartTimeRef = useRef(null);
   const idlePhraseRef = useRef(null);
   const lastRPCTrackIdRef = useRef(null);
+  const sessionReadyRef = useRef(false);
+  const pendingResumeTimeRef = useRef(null);
 
 
   // Audio Analysis Refs (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN
@@ -155,14 +295,350 @@ function App() {
   const analyserRef = useRef(null);
   const sourceRef = useRef(null);
   const animationFrameRef = useRef(null);
+  const auraEnergyRef = useRef({ bass: 0, mids: 0, highs: 0, phase: 0 });
+  const uiPulseRef = useRef(1);
+  const mixtapeVaultRef = useRef(null);
+  const vaultTelemetryRef = useRef({ lastStateAt: 0 });
   const prevTrackRef = useRef(null); // Neural Memory Ref (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN
-  const [isAutoplaySearching, setIsAutoplaySearching] = useState(false);
+  const standaloneTrackLoadKeyRef = useRef('');
+  const bufferingRescueRef = useRef({ trackKey: '', lastAttemptAt: 0 });
+  const skipReasonTimeoutRef = useRef(null);
+  const autoBiometricAttemptRef = useRef(false);
+  const lastWindowModeChangeRef = useRef(0);
+  const prematureEndGuardRef = useRef({ trackId: null, retried: false });
   const isStandalone = !!window.aether;
   const [history, setHistory] = useState([]); // Neural Deep Memory (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN
   const [isManualStop, setIsManualStop] = useState(false);
   const [streamPort, setStreamPort] = useState(3333);
   // --- AETHER STUDIO CORE: NEURAL ENGINE STATE (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN ---
   const currentTrack = queue?.[0];
+  const appendSpotifyImportLog = useCallback((line) => {
+    const stamp = new Date().toLocaleTimeString();
+    const msg = `[${stamp}] ${line}`;
+    console.log('[Aether/SpotifyImport]', msg);
+    setSpotifyImportLogs(prev => [...prev.slice(-19), msg]);
+  }, []);
+
+  const noteSkipReason = useCallback((reason, meta = {}) => {
+    console.log('[Aether/SkipReason]', reason, meta);
+    setSkipReasonToast(reason);
+    const event = {
+      at: Date.now(),
+      reason,
+      source: meta?.source || 'unknown',
+      title: meta?.title || currentTrack?.title || 'Unknown',
+      trackId: meta?.trackId || currentTrack?.id || null,
+    };
+    setSkipEvents(prev => [...prev.slice(-29), event]);
+    if (skipReasonTimeoutRef.current) clearTimeout(skipReasonTimeoutRef.current);
+    skipReasonTimeoutRef.current = setTimeout(() => setSkipReasonToast(''), 2200);
+  }, [currentTrack?.id, currentTrack?.title]);
+
+  const copyVaultSceneEmbed = useCallback(async () => {
+    const totalDurationMs = currentTrack?.totalDurationMs || currentTrack?.duration || 0;
+    const currentMs = Math.max(0, Math.floor(currentTime || 0));
+    const lyricLine = (() => {
+      if (!Array.isArray(lyrics) || lyrics.length === 0) return 'No lyric locked yet';
+      const line = [...lyrics].reverse().find((l) => l.time <= currentMs);
+      return line?.text || 'No lyric locked yet';
+    })();
+    const sceneYouTubeId = currentTrack?.youtubeId || extractSceneYouTubeId(currentTrack?.actualUrl || currentTrack?.url || currentTrack?.thumbnail || '');
+    const payload = {
+      v: 1,
+      t: String(currentTrack?.title || 'Aether Secret Session').slice(0, 120),
+      a: String(currentTrack?.author || 'Unknown Artist').slice(0, 72),
+      l: String(lyricLine || 'No lyric locked yet').slice(0, 140),
+      y: sceneYouTubeId || '',
+      th: sceneYouTubeId ? '' : String(currentTrack?.thumbnail || '').slice(0, 220),
+      at: currentMs,
+      to: totalDurationMs,
+      s: isPlaying ? 1 : 0,
+      m: visualizerMode === 'pulse' ? 1 : 0,
+      p: [
+        Math.round(clamp01(vaultPulse.energy) * 100),
+        Math.round(clamp01(vaultPulse.bass) * 100),
+        Math.round(clamp01(vaultPulse.mids) * 100),
+        Math.round(clamp01(vaultPulse.highs) * 100),
+      ],
+      c: themeColor,
+    };
+    const encoded = encodeScenePayload(payload);
+    if (!encoded) {
+      setLastAdded('Scene link unavailable');
+      setTimeout(() => setLastAdded(null), 2200);
+      return;
+    }
+    const sceneUrl = `${AETHER_SHARE_ORIGIN}/?scene=${encoded}`;
+    setSharedScene(normalizeScenePayload(payload));
+    setIsSharedSceneOpen(true);
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(sceneUrl);
+      } else {
+        const fallback = document.createElement('textarea');
+        fallback.value = sceneUrl;
+        fallback.style.position = 'fixed';
+        fallback.style.left = '-9999px';
+        document.body.appendChild(fallback);
+        fallback.select();
+        document.execCommand('copy');
+        fallback.remove();
+      }
+      setLastAdded('Scene link copied');
+      setTimeout(() => setLastAdded(null), 2200);
+    } catch (err) {
+      console.warn('[Aether/Vault] Failed to copy scene embed', err);
+      setLastAdded('Scene link unavailable');
+      setTimeout(() => setLastAdded(null), 2200);
+    }
+  }, [currentTime, currentTrack?.actualUrl, currentTrack?.author, currentTrack?.duration, currentTrack?.thumbnail, currentTrack?.title, currentTrack?.youtubeId, isPlaying, lyrics, themeColor, visualizerMode, vaultPulse.bass, vaultPulse.energy, vaultPulse.highs, vaultPulse.mids]);
+
+  const refreshLockStatus = useCallback(async () => {
+    if (!isStandalone || !window.aether?.getLockStatus) return;
+    try {
+      const status = await window.aether.getLockStatus();
+      const normalized = {
+        enabled: !!status?.enabled,
+        touchIdAvailable: !!status?.touchIdAvailable,
+        touchIdEnabled: !!status?.touchIdEnabled,
+      };
+      setLockStatus(normalized);
+      setLockUseTouchId(normalized.touchIdEnabled);
+      setIsAppLocked(normalized.enabled);
+    } catch (e) {
+      console.warn('[Aether/Lock] Failed to load lock status', e);
+    }
+  }, [isStandalone]);
+
+  const handleUnlockWithPassword = useCallback(async () => {
+    if (!window.aether?.verifyAppLockPassword || !unlockPasswordInput) return;
+    setIsLockBusy(true);
+    setLockError('');
+    try {
+      const res = await window.aether.verifyAppLockPassword(unlockPasswordInput);
+      if (res?.success) {
+        setIsAppLocked(false);
+        setUnlockPasswordInput('');
+      } else {
+        setLockError(res?.error || 'Unlock failed.');
+      }
+    } finally {
+      setIsLockBusy(false);
+    }
+  }, [unlockPasswordInput]);
+
+  const handleUnlockWithBiometric = useCallback(async () => {
+    if (!window.aether?.verifyAppLockBiometric) return;
+    setIsLockBusy(true);
+    setLockError('');
+    try {
+      const res = await window.aether.verifyAppLockBiometric();
+      if (res?.success) {
+        setIsAppLocked(false);
+      } else {
+        setLockError(res?.error || 'Biometric unlock failed.');
+      }
+    } finally {
+      setIsLockBusy(false);
+    }
+  }, []);
+
+  const handleEnableLock = useCallback(async () => {
+    if (!window.aether?.setAppLock) return;
+    if (!lockPasswordInput || lockPasswordInput.length < 4) {
+      setLockError('Password must be at least 4 characters.');
+      return;
+    }
+    if (lockPasswordInput !== lockPasswordConfirm) {
+      setLockError('Passwords do not match.');
+      return;
+    }
+    setIsLockBusy(true);
+    setLockError('');
+    try {
+      const res = await window.aether.setAppLock(lockPasswordInput, !!lockUseTouchId);
+      if (!res?.success) {
+        setLockError(res?.error || 'Failed to enable lock.');
+        return;
+      }
+      setLockPasswordInput('');
+      setLockPasswordConfirm('');
+      await refreshLockStatus();
+      setIsLockModalOpen(false);
+      setLastAdded('App lock enabled');
+      setTimeout(() => setLastAdded(null), 2000);
+    } finally {
+      setIsLockBusy(false);
+    }
+  }, [lockPasswordConfirm, lockPasswordInput, lockUseTouchId, refreshLockStatus]);
+
+  const handleDisableLock = useCallback(async () => {
+    if (!window.aether?.disableAppLock || !lockDisablePassword) {
+      setLockError('Enter password to disable lock.');
+      return;
+    }
+    setIsLockBusy(true);
+    setLockError('');
+    try {
+      const res = await window.aether.disableAppLock(lockDisablePassword);
+      if (!res?.success) {
+        setLockError(res?.error || 'Failed to disable lock.');
+        return;
+      }
+      setLockDisablePassword('');
+      await refreshLockStatus();
+      setIsAppLocked(false);
+      setIsLockModalOpen(false);
+      setLastAdded('App lock disabled');
+      setTimeout(() => setLastAdded(null), 2000);
+    } finally {
+      setIsLockBusy(false);
+    }
+  }, [lockDisablePassword, refreshLockStatus]);
+
+  const handleToggleTouchIdLock = useCallback(async (enabled) => {
+    setLockUseTouchId(enabled);
+    if (!lockStatus.enabled || !window.aether?.setAppLockTouchId) return;
+    const res = await window.aether.setAppLockTouchId(enabled);
+    if (res?.success) {
+      await refreshLockStatus();
+    }
+  }, [lockStatus.enabled, refreshLockStatus]);
+
+  useEffect(() => {
+    return () => {
+      if (skipReasonTimeoutRef.current) clearTimeout(skipReasonTimeoutRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    refreshLockStatus();
+  }, [refreshLockStatus]);
+
+  useEffect(() => {
+    const updateActive = () => {
+      setIsWindowActive(!document.hidden && document.visibilityState === 'visible');
+    };
+    document.addEventListener('visibilitychange', updateActive);
+    window.addEventListener('focus', updateActive);
+    window.addEventListener('blur', updateActive);
+    updateActive();
+    return () => {
+      document.removeEventListener('visibilitychange', updateActive);
+      window.removeEventListener('focus', updateActive);
+      window.removeEventListener('blur', updateActive);
+    };
+  }, []);
+
+  useEffect(() => {
+    const loadDebugAndLockPrefs = async () => {
+      try {
+        let savedSkipEvents = null;
+        let savedLockPrefs = null;
+        if (isStandalone && window.aether?.store?.get) {
+          savedSkipEvents = await window.aether.store.get(SKIP_EVENTS_STORAGE_KEY);
+          savedLockPrefs = await window.aether.store.get(LOCK_PREFS_STORAGE_KEY);
+        } else {
+          const rawSkips = localStorage.getItem(SKIP_EVENTS_STORAGE_KEY);
+          const rawLockPrefs = localStorage.getItem(LOCK_PREFS_STORAGE_KEY);
+          savedSkipEvents = rawSkips ? JSON.parse(rawSkips) : null;
+          savedLockPrefs = rawLockPrefs ? JSON.parse(rawLockPrefs) : null;
+        }
+
+        if (Array.isArray(savedSkipEvents)) {
+          setSkipEvents(savedSkipEvents.slice(-30));
+        }
+        if (savedLockPrefs && typeof savedLockPrefs === 'object') {
+          if (typeof savedLockPrefs.idleMinutes === 'number' && isFinite(savedLockPrefs.idleMinutes)) {
+            setLockIdleMinutes(Math.max(1, Math.min(120, savedLockPrefs.idleMinutes)));
+          }
+        }
+      } catch (e) {
+        console.warn('[Aether/Prefs] Failed to load skip/lock prefs', e);
+      }
+    };
+
+    loadDebugAndLockPrefs();
+  }, [isStandalone]);
+
+  useEffect(() => {
+    try {
+      if (isStandalone && window.aether?.store?.set) {
+        window.aether.store.set(SKIP_EVENTS_STORAGE_KEY, skipEvents.slice(-30));
+      } else {
+        localStorage.setItem(SKIP_EVENTS_STORAGE_KEY, JSON.stringify(skipEvents.slice(-30)));
+      }
+    } catch (e) {
+      console.warn('[Aether/Prefs] Failed to persist skip events', e);
+    }
+  }, [isStandalone, skipEvents]);
+
+  useEffect(() => {
+    const payload = { idleMinutes: lockIdleMinutes, savedAt: Date.now() };
+    try {
+      if (isStandalone && window.aether?.store?.set) {
+        window.aether.store.set(LOCK_PREFS_STORAGE_KEY, payload);
+      } else {
+        localStorage.setItem(LOCK_PREFS_STORAGE_KEY, JSON.stringify(payload));
+      }
+    } catch (e) {
+      console.warn('[Aether/Prefs] Failed to persist lock prefs', e);
+    }
+  }, [isStandalone, lockIdleMinutes]);
+
+  useEffect(() => {
+    if (!lockStatus.enabled) return;
+
+    const lockNow = () => {
+      if (!isAppLocked) setIsAppLocked(true);
+    };
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        const elapsed = Date.now() - (lastWindowModeChangeRef.current || 0);
+        if (elapsed >= 0 && elapsed < 3000) {
+          console.log('[Aether/Lock] Skipping hidden lock during window mode transition', { elapsed });
+          return;
+        }
+        lockNow();
+      }
+    };
+
+    let idleTimer = null;
+    const idleMs = Math.max(1, lockIdleMinutes || 1) * 60 * 1000;
+    const resetIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (isAppLocked) return;
+      idleTimer = setTimeout(() => {
+        console.log('[Aether/Lock] Idle timeout lock triggered');
+        lockNow();
+      }, idleMs);
+    };
+
+    const activityEvents = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
+    document.addEventListener('visibilitychange', onVisibility);
+    activityEvents.forEach((eventName) => window.addEventListener(eventName, resetIdle, { passive: true }));
+    resetIdle();
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      activityEvents.forEach((eventName) => window.removeEventListener(eventName, resetIdle));
+      if (idleTimer) clearTimeout(idleTimer);
+    };
+  }, [isAppLocked, lockIdleMinutes, lockStatus.enabled]);
+
+  useEffect(() => {
+    if (!isStandalone) return;
+    if (!isAppLocked || !lockStatus.touchIdAvailable || !lockStatus.touchIdEnabled || !isWindowActive) {
+      autoBiometricAttemptRef.current = false;
+      return;
+    }
+    if (autoBiometricAttemptRef.current) return;
+    autoBiometricAttemptRef.current = true;
+    handleUnlockWithBiometric();
+  }, [handleUnlockWithBiometric, isAppLocked, isStandalone, lockStatus.touchIdAvailable, lockStatus.touchIdEnabled, isWindowActive]);
+
   const getProxyUrl = (url) => {
     if (!url) return '';
     let processed = url.startsWith('//') ? 'https:' + url : url;
@@ -190,6 +666,130 @@ function App() {
     return guildId && guildId !== '0' ? guildId : DEFAULT_GUILD_ID;
   }, [auth]);
 
+  const getTrackPresetKey = useCallback((track) => {
+    if (!track) return '';
+    if (track.youtubeId) return `yt:${track.youtubeId}`;
+    if (track.id) return `id:${track.id}`;
+    return `meta:${String(track.title || '').toLowerCase()}|${String(track.author || '').toLowerCase()}`;
+  }, []);
+
+  const currentTrackPresetKey = useMemo(() => getTrackPresetKey(currentTrack), [
+    getTrackPresetKey,
+    currentTrack?.id,
+    currentTrack?.youtubeId,
+    currentTrack?.title,
+    currentTrack?.author,
+  ]);
+
+  const persistLyricPresets = useCallback(async (nextPresets) => {
+    try {
+      if (isStandalone && window.aether?.store?.set) {
+        await window.aether.store.set('lyricOffsetPresets', nextPresets);
+      } else {
+        localStorage.setItem(LYRIC_PRESETS_STORAGE_KEY, JSON.stringify(nextPresets));
+      }
+    } catch (e) {
+      console.warn('[Aether/Lyrics] Failed to persist lyric presets', e);
+    }
+  }, [isStandalone]);
+
+  const handleSaveLyricPreset = useCallback(async () => {
+    if (!currentTrackPresetKey) return;
+    const next = {
+      ...lyricOffsetPresets,
+      [currentTrackPresetKey]: parseLyricOffsetValue(lyricOffsetMs),
+    };
+    setLyricOffsetPresets(next);
+    setIsLyricPresetSaved(true);
+    await persistLyricPresets(next);
+  }, [currentTrackPresetKey, lyricOffsetPresets, lyricOffsetMs, persistLyricPresets]);
+
+  const handleResetLyricPreset = useCallback(async () => {
+    if (!currentTrackPresetKey) {
+      setLyricOffsetMs(0);
+      setIsLyricPresetSaved(false);
+      return;
+    }
+    const next = { ...lyricOffsetPresets };
+    delete next[currentTrackPresetKey];
+    setLyricOffsetPresets(next);
+    setLyricOffsetMs(0);
+    setIsLyricPresetSaved(false);
+    await persistLyricPresets(next);
+  }, [currentTrackPresetKey, lyricOffsetPresets, persistLyricPresets]);
+
+  const normalizeTrackIdentity = useCallback((track) => {
+    if (!track) return '';
+    if (track.youtubeId) return `yt:${track.youtubeId}`;
+    if (track.id) return `id:${track.id}`;
+    const title = String(track.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const author = String(track.author || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    return `meta:${title}|${author}`;
+  }, []);
+
+  const hasTrackInList = useCallback((list, target) => {
+    const key = normalizeTrackIdentity(target);
+    return (list || []).some(item => normalizeTrackIdentity(item) === key);
+  }, [normalizeTrackIdentity]);
+
+  const isPlaceholderMetadataTitle = (value) => {
+    const title = String(value || '').trim().toLowerCase();
+    if (!title) return true;
+    return (
+      title === 'videoplayback' ||
+      title === 'unknown' ||
+      title === 'unknown title' ||
+      title === 'audio' ||
+      title.startsWith('googlevideo') ||
+      /^https?:\/\//.test(title)
+    );
+  };
+
+  const isPlaceholderMetadataAuthor = (value) => {
+    const author = String(value || '').trim().toLowerCase();
+    if (!author) return true;
+    return author === 'unknown' || author === 'unknown artist' || author === 'youtube';
+  };
+
+  const mergeTrackMetadata = (baseTrack, meta) => {
+    if (!baseTrack || !meta || typeof meta !== 'object') return baseTrack;
+    const merged = { ...baseTrack, ...meta };
+
+    const incomingTitle = String(meta.title || '').trim();
+    const incomingAuthor = String(meta.author || '').trim();
+    const keepBaseTitle = isPlaceholderMetadataTitle(incomingTitle);
+    const keepBaseAuthor = isPlaceholderMetadataAuthor(incomingAuthor);
+
+    merged.title = keepBaseTitle
+      ? String(baseTrack.title || '').trim()
+      : incomingTitle;
+    merged.author = keepBaseAuthor
+      ? String(baseTrack.author || '').trim()
+      : incomingAuthor;
+    merged.thumbnail = meta.thumbnail || baseTrack.thumbnail || '';
+    merged.id = baseTrack.id;
+    merged.youtubeId = baseTrack.youtubeId || meta.youtubeId;
+    merged.actualUrl = meta.actualUrl || meta.url || baseTrack.actualUrl || baseTrack.url;
+    merged.url = meta.url || meta.actualUrl || baseTrack.url || baseTrack.actualUrl;
+
+    const incomingDuration = Number(meta.totalDurationMs || meta.duration || 0);
+    if (Number.isFinite(incomingDuration) && incomingDuration > 0) {
+      merged.totalDurationMs = Math.trunc(incomingDuration);
+      merged.duration = Math.trunc(incomingDuration);
+    }
+
+    return merged;
+  };
+
+  const formatDiagTime = useCallback((ts) => {
+    if (!ts) return '—';
+    try {
+      return new Date(ts).toLocaleTimeString();
+    } catch {
+      return '—';
+    }
+  }, []);
+
   useEffect(() => {
      if (isStandalone && window.aether?.getLocalIp) {
          window.aether.getLocalIp().then(setLocalIp);
@@ -197,7 +797,55 @@ function App() {
   }, [isStandalone]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const url = new URL(window.location.href);
+      const fromQuery = url.searchParams.get('scene');
+      const fromHash = (url.hash || '').startsWith('#scene=') ? url.hash.slice(7) : null;
+      const encoded = fromQuery || fromHash;
+      if (!encoded) return;
+      const decoded = decodeScenePayload(encoded);
+      if (!decoded) return;
+      const normalized = normalizeScenePayload(decoded);
+      if (!normalized) return;
+      setSharedScene(normalized);
+      setIsSharedSceneOpen(true);
+    } catch (e) {
+      console.warn('[Aether/Share] Scene parse failed', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    const loadLyricPresets = async () => {
+      try {
+        let loaded = {};
+        if (isStandalone && window.aether?.store?.get) {
+          loaded = await window.aether.store.get('lyricOffsetPresets');
+        } else {
+          const raw = localStorage.getItem(LYRIC_PRESETS_STORAGE_KEY);
+          loaded = raw ? JSON.parse(raw) : {};
+        }
+        if (loaded && typeof loaded === 'object' && !Array.isArray(loaded)) {
+          setLyricOffsetPresets(loaded);
+        }
+      } catch (e) {
+        console.warn('[Aether/Lyrics] Failed to load lyric presets', e);
+      }
+    };
+    loadLyricPresets();
+  }, [isStandalone]);
+
+  useEffect(() => {
+    if (!currentTrackPresetKey) return;
+    const hasPreset = Object.prototype.hasOwnProperty.call(lyricOffsetPresets, currentTrackPresetKey);
+    const presetValue = hasPreset ? parseLyricOffsetValue(lyricOffsetPresets[currentTrackPresetKey]) : 0;
+    setLyricOffsetMs(presetValue);
+    setIsLyricPresetSaved(hasPreset);
+  }, [currentTrackPresetKey, lyricOffsetPresets]);
+
+  useEffect(() => {
     if (isStandalone || !currentTrack?.title) return;
+    const streamStart = performance.now();
 
     const trackUrl = currentTrack.actualUrl || currentTrack.url;
     if (!trackUrl) {
@@ -242,6 +890,12 @@ function App() {
     audio.onplaying = () => {
       console.log("[Aether/Audio] Web playing", { currentTime: audio.currentTime });
       setIsAudioBuffering(false);
+      setDiagnostics(prev => ({
+        ...prev,
+        lastSongFetchMs: Math.round(performance.now() - streamStart),
+        lastSongFetchAt: Date.now(),
+        lastSongSource: 'web-stream',
+      }));
     };
     audio.ontimeupdate = () => {
       setCurrentTime(Math.floor(audio.currentTime * 1000));
@@ -297,6 +951,44 @@ function App() {
   }, [isStandalone, currentTrack?.title, currentTrack?.actualUrl, currentTrack?.url, currentTrack?.id, isPlaying, volume, API_BASE]);
 
   useEffect(() => {
+    if (!sessionReadyRef.current) return;
+    const uiPrefs = {
+      visualizerMode,
+      isVerticalStack,
+      isFocusedMode,
+      isAutoplayEnabled,
+      savedAt: Date.now(),
+    };
+
+    try {
+      if (isStandalone && window.aether?.store?.set) {
+        window.aether.store.set(SESSION_UI_STORAGE_KEY, uiPrefs);
+      } else {
+        localStorage.setItem(SESSION_UI_STORAGE_KEY, JSON.stringify(uiPrefs));
+      }
+    } catch (e) {
+      console.warn('[Aether/Session] Failed to persist UI prefs', e);
+    }
+  }, [isStandalone, visualizerMode, isVerticalStack, isFocusedMode, isAutoplayEnabled]);
+
+  useEffect(() => {
+    if (!isStandalone || !sessionReadyRef.current) return;
+
+    const playback = {
+      queue: Array.isArray(queue) ? queue.slice(0, 120) : [],
+      isPlaying: !!isPlaying,
+      currentTime: Math.max(0, Math.floor(currentTime || 0)),
+      savedAt: Date.now(),
+    };
+
+    try {
+      window.aether?.store?.set?.(SESSION_PLAYBACK_STORAGE_KEY, playback);
+    } catch (e) {
+      console.warn('[Aether/Session] Failed to persist playback', e);
+    }
+  }, [isStandalone, queue, isPlaying, Math.floor((currentTime || 0) / 1000)]);
+
+  useEffect(() => {
     let pollInterval;
     
     if (isStandalone) {
@@ -306,6 +998,14 @@ function App() {
 
       // Load persisted state asynchronously
       const loadPersisted = async () => {
+        const savedUiPrefs = await window.aether?.store?.get(SESSION_UI_STORAGE_KEY);
+        if (savedUiPrefs && typeof savedUiPrefs === 'object') {
+          if (typeof savedUiPrefs.visualizerMode === 'string') setVisualizerMode(savedUiPrefs.visualizerMode);
+          if (typeof savedUiPrefs.isVerticalStack === 'boolean') setIsVerticalStack(savedUiPrefs.isVerticalStack);
+          if (typeof savedUiPrefs.isFocusedMode === 'boolean') setIsFocusedMode(savedUiPrefs.isFocusedMode);
+          if (typeof savedUiPrefs.isAutoplayEnabled === 'boolean') setIsAutoplayEnabled(savedUiPrefs.isAutoplayEnabled);
+        }
+
         const savedPlaylists = await window.aether?.store?.get('playlists');
         if (savedPlaylists && typeof savedPlaylists === 'object' && !Array.isArray(savedPlaylists)) {
            setPlaylists(savedPlaylists);
@@ -323,9 +1023,47 @@ function App() {
             console.log(`[Aether] Loaded ${savedDownloaded.length} downloaded tracks:`, savedDownloaded);
             setDownloadedTracks(savedDownloaded);
         }
+
+        const savedPlayback = await window.aether?.store?.get(SESSION_PLAYBACK_STORAGE_KEY);
+        if (savedPlayback && typeof savedPlayback === 'object') {
+          let restoredQueueCount = 0;
+          if (Array.isArray(savedPlayback.queue) && savedPlayback.queue.length > 0) {
+            setQueue(savedPlayback.queue);
+            restoredQueueCount = savedPlayback.queue.length;
+          }
+          if (typeof savedPlayback.isPlaying === 'boolean') {
+            setIsPlaying(savedPlayback.isPlaying);
+          }
+          if (typeof savedPlayback.currentTime === 'number' && savedPlayback.currentTime > 0) {
+            const restoredMs = Math.max(0, Math.floor(savedPlayback.currentTime));
+            setCurrentTime(restoredMs);
+            pendingResumeTimeRef.current = restoredMs;
+          }
+
+          if (restoredQueueCount > 0) {
+            setSessionRestoreNotice(`Restored session • ${restoredQueueCount} track${restoredQueueCount > 1 ? 's' : ''}`);
+            setTimeout(() => setSessionRestoreNotice(''), 3500);
+          }
+        }
+
+        sessionReadyRef.current = true;
       };
       loadPersisted();
     } else {
+      try {
+        const rawUiPrefs = localStorage.getItem(SESSION_UI_STORAGE_KEY);
+        const savedUiPrefs = rawUiPrefs ? JSON.parse(rawUiPrefs) : null;
+        if (savedUiPrefs && typeof savedUiPrefs === 'object') {
+          if (typeof savedUiPrefs.visualizerMode === 'string') setVisualizerMode(savedUiPrefs.visualizerMode);
+          if (typeof savedUiPrefs.isVerticalStack === 'boolean') setIsVerticalStack(savedUiPrefs.isVerticalStack);
+          if (typeof savedUiPrefs.isFocusedMode === 'boolean') setIsFocusedMode(savedUiPrefs.isFocusedMode);
+          if (typeof savedUiPrefs.isAutoplayEnabled === 'boolean') setIsAutoplayEnabled(savedUiPrefs.isAutoplayEnabled);
+        }
+      } catch (e) {
+        console.warn('[Aether/Session] Failed to load web UI prefs', e);
+      }
+      sessionReadyRef.current = true;
+
       const initDiscord = async () => {
         try {
           const { sdk, auth: authData } = await setupDiscordSdk();
@@ -354,6 +1092,7 @@ function App() {
     // Maximized State Listener (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN - Fixed bridge + Height fail-safe
     if (window.aether?.onMaximized) {
       window.aether.onMaximized((state) => {
+        lastWindowModeChangeRef.current = Date.now();
         setIsMaximized(!!state);
       });
     }
@@ -395,6 +1134,7 @@ function App() {
     const track = queue[0];
     const loadStartTime = Date.now();
     const trackUrl = track.actualUrl || track.url;
+    const trackLoadKey = track.id || track.youtubeId || `${track.title || ''}|${track.author || ''}|${trackUrl || ''}`;
 
     console.log("[Aether/Audio] Queue head details", {
       id: track.id,
@@ -417,7 +1157,8 @@ function App() {
     });
 
     
-    if (track && track.title !== currentTrackTitle) {
+    if (track && standaloneTrackLoadKeyRef.current !== trackLoadKey) {
+      standaloneTrackLoadKeyRef.current = trackLoadKey;
         setCurrentTrackTitle(track.title);
         setIsAudioBuffering(true);
         
@@ -426,16 +1167,48 @@ function App() {
             localAudioRef.current.volume = volume;
         }
 
+        const isLocalDownloaded = downloadedTracks.includes(track.id);
+        // Reconstruct YouTube URL if we have the ID (avoids expired direct URLs)
+        const youtubeUrl = track.youtubeId
+          ? `https://www.youtube.com/watch?v=${track.youtubeId}`
+          : track.actualUrl || track.url;
+        const streamBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
+        let didOfflineFallback = false;
+        const fallbackToOnlineStream = () => {
+          if (!isLocalDownloaded || didOfflineFallback) return;
+          didOfflineFallback = true;
+          const onlineUrl = `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}`;
+          console.warn('[Aether/Audio] Offline source stalled, switching to live stream', {
+            trackId: track.id,
+            title: track.title,
+            onlineUrl,
+          });
+          localAudioRef.current.src = onlineUrl;
+          localAudioRef.current.play().catch(() => {});
+        };
+
         // Neural Flow Bridge (V12.11.1-SOVEREIGN-SOVEREIGN) - High-Fidelity Signal Acquisition
         localAudioRef.current.onloadstart = () => {
             console.log(`[Aether/Audio] loadstart at ${Date.now() - loadStartTime}ms`);
         };
         localAudioRef.current.oncanplay = () => {
             console.log(`[Aether/Audio] canplay after ${Date.now() - loadStartTime}ms`);
+          if (pendingResumeTimeRef.current && pendingResumeTimeRef.current > 0) {
+            const resumeSec = Math.floor(pendingResumeTimeRef.current / 1000);
+            localAudioRef.current.currentTime = resumeSec;
+            setCurrentTime(resumeSec * 1000);
+            pendingResumeTimeRef.current = null;
+          }
         };
         localAudioRef.current.onplaying = () => {
             console.log(`[Aether/Audio] playing after ${Date.now() - loadStartTime}ms`);
             setIsAudioBuffering(false);
+            setDiagnostics(prev => ({
+              ...prev,
+              lastSongFetchMs: Math.max(0, Date.now() - loadStartTime),
+              lastSongFetchAt: Date.now(),
+              lastSongSource: downloadedTracks.includes(track.id) ? 'offline-cache' : 'local-stream',
+            }));
         };
         localAudioRef.current.onwaiting = () => {
             console.log(`[Aether/Audio] waiting at ${Date.now() - loadStartTime}ms`);
@@ -452,10 +1225,46 @@ function App() {
         localAudioRef.current.onstalled = () => {
             console.log("[Aether/Audio] Connection Stalled. Maintaining status.");
             setIsAudioBuffering(true);
+          fallbackToOnlineStream();
         };
         localAudioRef.current.onended = () => {
+            const advanceQueue = (reason) => {
+              noteSkipReason(reason, { trackId: track.id, title: track.title });
+              setQueue(prev => {
+                const next = prev.slice(1);
+                if (next.length === 0) setIsPlaying(false);
+                return next;
+              });
+              setCurrentTime(0);
+            };
+            const playedMs = Math.floor((localAudioRef.current?.currentTime || 0) * 1000);
+            const durationMs = Number(track.totalDurationMs || track.duration || 0);
+            const completion = durationMs > 0 ? playedMs / durationMs : 1;
+            if (completion > 0 && completion < 0.9 && !prematureEndGuardRef.current.retried) {
+                prematureEndGuardRef.current = { trackId: track.id, retried: true };
+                const youtubeUrl = track.youtubeId
+                  ? `https://www.youtube.com/watch?v=${track.youtubeId}`
+                  : track.actualUrl || track.url;
+                const streamBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
+                const resumeSec = Math.max(0, Math.floor((playedMs - 1500) / 1000));
+                const recoveryUrl = `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}${resumeSec > 0 ? `&time=${resumeSec}` : ''}`;
+                console.warn('[Aether/Audio] Premature end detected, attempting one recovery play', {
+                  title: track.title,
+                  playedMs,
+                  durationMs,
+                  completion,
+                  recoveryUrl,
+                });
+                setIsAudioBuffering(true);
+                localAudioRef.current.src = recoveryUrl;
+                localAudioRef.current.play().catch((e) => {
+                  console.error('[Aether/Audio] Recovery play failed', e);
+                  advanceQueue('premature_recover_failed');
+                });
+                return;
+            }
             console.log("[Aether/Audio] Signal Terminated Naturally. Advancing Queue.");
-            handleControl('skip');
+            advanceQueue('natural_end');
         };
         localAudioRef.current.onerror = (e) => {
             // HIGH-FIDELITY FAULT TOLERANCE: Do not skip on initial connection fault
@@ -469,17 +1278,13 @@ function App() {
             console.log("[Aether/Audio] Attempting signal recovery. Skip suppressed.");
             // Maintain buffering state instead of skipping to Standby
             setIsAudioBuffering(true);
+            fallbackToOnlineStream();
         };
         
-        const isLocalDownloaded = downloadedTracks.includes(track.id);
-        // Reconstruct YouTube URL if we have the ID (avoids expired direct URLs)
-        const youtubeUrl = track.youtubeId 
-            ? `https://www.youtube.com/watch?v=${track.youtubeId}`
-            : track.actualUrl || track.url;
-        const streamBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
         const streamUrl = isLocalDownloaded
           ? `${streamBase}/offline/${track.id}.m4a`
           : `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}`;
+        prematureEndGuardRef.current = { trackId: track.id, retried: false };
         console.log("[Aether/Audio] Initializing Stream:", streamUrl, {
             isLocalDownloaded,
             streamBase,
@@ -489,6 +1294,21 @@ function App() {
         
         localAudioRef.current.crossOrigin = "anonymous";
         localAudioRef.current.src = streamUrl;
+        const startupWatchdog = setTimeout(() => {
+          const audio = localAudioRef.current;
+          if (!audio) return;
+          const stuckAtStart = (audio.currentTime || 0) < 1 && audio.readyState < 2;
+          if (stuckAtStart) {
+            console.warn('[Aether/Audio] Startup watchdog triggered', {
+              trackId: track.id,
+              title: track.title,
+              src: audio.src,
+              readyState: audio.readyState,
+              currentTime: audio.currentTime,
+            });
+            fallbackToOnlineStream();
+          }
+        }, 12000);
         
         // Trigger background download if not already cached / warming
         if (window.aether?.download && !downloadedTracks.includes(track.id) && !warmingTrackIds.has(track.id)) {
@@ -509,11 +1329,60 @@ function App() {
               networkState: localAudioRef.current?.networkState,
               paused: localAudioRef.current?.paused,
             });
-                handleControl('skip');
+                setIsAudioBuffering(true);
             });
         }
+        const clearWatchdog = () => clearTimeout(startupWatchdog);
+        localAudioRef.current.onplaying = ((orig) => (...args) => {
+          clearWatchdog();
+          return orig?.(...args);
+        })(localAudioRef.current.onplaying);
+        localAudioRef.current.onended = ((orig) => (...args) => {
+          clearWatchdog();
+          return orig?.(...args);
+        })(localAudioRef.current.onended);
     }
-  }, [queue?.[0]?.title, isPlaying, isStandalone]);
+  }, [queue?.[0]?.title, queue?.[0]?.id, isPlaying, isStandalone, downloadedTracks, warmingTrackIds, streamPort, API_BASE, noteSkipReason]);
+
+  useEffect(() => {
+    if (!isStandalone || !isPlaying || !isAudioBuffering || !currentTrack || !localAudioRef.current) return;
+    // Rescue only during startup buffering. Mid-song stalls should recover naturally without forced source switch.
+    if ((currentTime || 0) > 5000) return;
+
+    const trackKey = currentTrack.id || currentTrack.youtubeId || `${currentTrack.title || ''}|${currentTrack.author || ''}`;
+    const timer = setTimeout(() => {
+      const audio = localAudioRef.current;
+      if (!audio || !isAudioBuffering) return;
+
+      const now = Date.now();
+      if (bufferingRescueRef.current.trackKey === trackKey && now - bufferingRescueRef.current.lastAttemptAt < 7000) {
+        return;
+      }
+      bufferingRescueRef.current = { trackKey, lastAttemptAt: now };
+
+      const sourceUrl = currentTrack.youtubeId
+        ? `https://www.youtube.com/watch?v=${currentTrack.youtubeId}`
+        : currentTrack.actualUrl || currentTrack.url;
+      if (!sourceUrl) return;
+
+      const rescueUrl = `http://localhost:${streamPort}/stream?url=${encodeURIComponent(sourceUrl)}`;
+      console.warn('[Aether/Audio] Buffering rescue triggered', {
+        trackId: currentTrack.id,
+        title: currentTrack.title,
+        from: audio.src,
+        to: rescueUrl,
+        readyState: audio.readyState,
+        currentTime: audio.currentTime,
+      });
+
+      audio.src = rescueUrl;
+      audio.play().catch((e) => {
+        console.error('[Aether/Audio] Buffering rescue failed; keeping current track in buffering state', e);
+      });
+    }, 8500);
+
+    return () => clearTimeout(timer);
+  }, [isStandalone, isPlaying, isAudioBuffering, currentTime, currentTrack?.id, currentTrack?.youtubeId, currentTrack?.title, currentTrack?.author, currentTrack?.actualUrl, currentTrack?.url, streamPort]);
 
   // --- AETHER: UNIFIED DISCORD RPC ENGINE (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN ---
   useEffect(() => {
@@ -649,6 +1518,55 @@ function App() {
 
         analyserRef.current.getByteFrequencyData(dataArray);
 
+        const bassRaw = (dataArray[1] + dataArray[2] + dataArray[3]) / (3 * 255);
+        const midsRaw = dataArray.slice(8, 28).reduce((a, b) => a + b, 0) / (20 * 255);
+        const highsRaw = dataArray.slice(30, 70).reduce((a, b) => a + b, 0) / (40 * 255);
+
+        auraEnergyRef.current.bass = lerp(auraEnergyRef.current.bass, bassRaw, 0.22);
+        auraEnergyRef.current.mids = lerp(auraEnergyRef.current.mids, midsRaw, 0.18);
+        auraEnergyRef.current.highs = lerp(auraEnergyRef.current.highs, highsRaw, 0.14);
+        auraEnergyRef.current.phase += 0.01 + auraEnergyRef.current.highs * 0.05;
+
+        const bass = auraEnergyRef.current.bass;
+        const mids = auraEnergyRef.current.mids;
+        const highs = auraEnergyRef.current.highs;
+        const drift = Math.sin(auraEnergyRef.current.phase) * 0.03;
+        const auraScale = 0.92 + bass * 0.45 + drift;
+        const spinDeg = (auraEnergyRef.current.phase * 180) / Math.PI;
+        const energy = clamp01((bass * 0.46) + (mids * 0.34) + (highs * 0.20));
+
+        uiPulseRef.current = visualizerMode === 'pulse' ? auraScale : 1;
+
+        if (mixtapeVaultRef.current) {
+          mixtapeVaultRef.current.style.setProperty('--vault-bass', String(bass));
+          mixtapeVaultRef.current.style.setProperty('--vault-mids', String(mids));
+          mixtapeVaultRef.current.style.setProperty('--vault-highs', String(highs));
+          mixtapeVaultRef.current.style.setProperty('--vault-energy', String(energy));
+          mixtapeVaultRef.current.style.setProperty('--vault-scale', String(auraScale));
+          mixtapeVaultRef.current.style.setProperty('--vault-spin', `${spinDeg}deg`);
+          mixtapeVaultRef.current.style.setProperty('--vault-glow', String(clamp01(0.18 + bass * 0.42 + highs * 0.22)));
+        }
+
+        const now = performance.now();
+        if (isMixtapeVaultOpen && now - vaultTelemetryRef.current.lastStateAt > 120) {
+          vaultTelemetryRef.current.lastStateAt = now;
+          setVaultPulse({
+            bass,
+            mids,
+            highs,
+            energy,
+            spin: spinDeg,
+            stamp: [
+              'AETHER-PULSE',
+              currentTrack?.title || 'Aether Secret Session',
+              `t=${Math.floor((currentTime || 0) / 1000)}s`,
+              `b=${Math.round(bass * 100)}`,
+              `m=${Math.round(mids * 100)}`,
+              `h=${Math.round(highs * 100)}`,
+            ].join(' · '),
+          });
+        }
+
         if (visualizerMode === 'bars' && ctx) {
             const barWidth = (width / bufferLength) * 2.5;
             let x = 0;
@@ -659,68 +1577,67 @@ function App() {
                 x += barWidth + 2;
             }
         } else if (visualizerMode === 'pulse' && pCtx) {
-            const contrastColor = getComputedStyle(document.documentElement).getPropertyValue('--brand-contrast').trim() || '#ff00ff';
-            // --- AETHER: NEON CORE RESONANCE (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN ---
-            const centerX = pWidth / 2;
-            const centerY = pHeight / 2;
-            const baseRadius = Math.min(pWidth, pHeight) * 0.28;
-            
-            // 1. Core Breathing Aura (Neon Contrast)
-            const bassVal = dataArray[2] || 0;
-            const auraScale = 0.8 + (bassVal / 255) * 0.4;
-            
-            const auraGradient = pCtx.createRadialGradient(centerX, centerY, 0, centerX, centerY, baseRadius * 1.8 * auraScale);
-            auraGradient.addColorStop(0, `${contrastColor}55`);
-            auraGradient.addColorStop(0.5, `${contrastColor}11`);
-            auraGradient.addColorStop(1, 'transparent');
-            
-            pCtx.fillStyle = auraGradient;
+          const accent = getComputedStyle(document.documentElement).getPropertyValue('--brand-accent').trim() || themeColor || '#00ffbf';
+          const contrast = getComputedStyle(document.documentElement).getPropertyValue('--brand-contrast').trim() || '#ff00ff';
+
+          const centerX = pWidth / 2;
+          const centerY = pHeight / 2;
+          const baseRadius = Math.min(pWidth, pHeight) * 0.26;
+
+          // Layer 1: soft ambient bloom
+          const outer = pCtx.createRadialGradient(centerX, centerY, 0, centerX, centerY, baseRadius * 2.8 * auraScale);
+          outer.addColorStop(0, `${accent}${alphaHex(0.22 + bass * 0.20)}`);
+          outer.addColorStop(0.45, `${contrast}${alphaHex(0.10 + mids * 0.14)}`);
+          outer.addColorStop(1, 'transparent');
+          pCtx.fillStyle = outer;
+          pCtx.beginPath();
+          pCtx.arc(centerX, centerY, baseRadius * 2.7 * auraScale, 0, Math.PI * 2);
+          pCtx.fill();
+
+          // Layer 2: liquid rings
+          pCtx.lineCap = 'round';
+          for (let ring = 0; ring < 3; ring++) {
+            const ringAlpha = 0.55 - ring * 0.15;
+            const ringBoost = 1 - ring * 0.2;
             pCtx.beginPath();
-            pCtx.arc(centerX, centerY, baseRadius * 2 * auraScale, 0, Math.PI * 2);
-            pCtx.fill();
+            pCtx.strokeStyle = `${ring % 2 === 0 ? accent : contrast}${alphaHex(ringAlpha)}`;
+            pCtx.lineWidth = 3 - ring * 0.7;
+            pCtx.shadowBlur = 24 + bass * 32;
+            pCtx.shadowColor = ring % 2 === 0 ? accent : contrast;
 
-            // 2. Liquid Resonance Rings (High Contrast Logic)
-            
-            pCtx.lineCap = 'round';
-            for (let rOffset = 0; rOffset < 3; rOffset++) {
-                pCtx.beginPath();
-                const opacity = (1 - rOffset / 3) * 0.5;
-                pCtx.strokeStyle = `${contrastColor}${Math.floor(opacity * 255).toString(16).padStart(2, '0')}`;
-                pCtx.lineWidth = 3 - rOffset;
-                pCtx.shadowBlur = 25;
-                pCtx.shadowColor = contrastColor;
-
-                for (let i = 0; i < 120; i++) {
-                    const angle = (i / 120) * Math.PI * 2;
-                    const binIndex = (i + (rOffset * 20)) % 120;
-                    const val = dataArray[binIndex] || 0;
-                    const radius = baseRadius + (Math.pow(val / 255, 1.2) * (60 - rOffset * 15));
-                    const x = centerX + Math.cos(angle) * radius;
-                    const y = centerY + Math.sin(angle) * radius;
-                    
-                    if (i === 0) pCtx.moveTo(x, y);
-                    else pCtx.bezierCurveTo(centerX + Math.cos(angle-0.05)*radius*1.02, centerY + Math.sin(angle-0.05)*radius*1.02, x, y, x, y);
-                }
-                pCtx.closePath();
-                pCtx.stroke();
+            for (let i = 0; i <= 140; i++) {
+              const t = i / 140;
+              const angle = t * Math.PI * 2;
+              const bin = Math.floor((t * (bufferLength - 1) + ring * 13) % (bufferLength - 1));
+              const val = (dataArray[bin] || 0) / 255;
+              const ripple = Math.sin(angle * 3 + auraEnergyRef.current.phase * 2) * highs * 9;
+              const radius = baseRadius + val * (54 * ringBoost) + ripple;
+              const x = centerX + Math.cos(angle) * radius;
+              const y = centerY + Math.sin(angle) * radius;
+              if (i === 0) pCtx.moveTo(x, y); else pCtx.lineTo(x, y);
             }
+            pCtx.closePath();
+            pCtx.stroke();
+          }
 
-            // 3. Neural Pips (Neon Contrast)
-            pCtx.strokeStyle = '#ff00ffaa';
-            pCtx.lineWidth = 2;
-            for (let i = 0; i < 60; i += 2) {
-                const angle = (i / 60) * Math.PI * 2;
-                const val = dataArray[i*2] || 0;
-                const len = 5 + (val/255) * 15;
-                const x1 = centerX + Math.cos(angle) * (baseRadius - 10);
-                const y1 = centerY + Math.sin(angle) * (baseRadius - 10);
-                const x2 = centerX + Math.cos(angle) * (baseRadius - 10 - len);
-                const y2 = centerY + Math.sin(angle) * (baseRadius - 10 - len);
-                pCtx.beginPath();
-                pCtx.moveTo(x1, y1);
-                pCtx.lineTo(x2, y2);
-                pCtx.stroke();
-            }
+          // Layer 3: perimeter ticks
+          pCtx.shadowBlur = 0;
+          pCtx.lineWidth = 1.6;
+          for (let i = 0; i < 56; i += 2) {
+            const angle = (i / 56) * Math.PI * 2;
+            const val = (dataArray[(i * 2) % bufferLength] || 0) / 255;
+            const len = 5 + val * (14 + highs * 10);
+            const radius = baseRadius - 12;
+            const x1 = centerX + Math.cos(angle) * radius;
+            const y1 = centerY + Math.sin(angle) * radius;
+            const x2 = centerX + Math.cos(angle) * (radius - len);
+            const y2 = centerY + Math.sin(angle) * (radius - len);
+            pCtx.strokeStyle = `${accent}${alphaHex(0.35 + val * 0.45)}`;
+            pCtx.beginPath();
+            pCtx.moveTo(x1, y1);
+            pCtx.lineTo(x2, y2);
+            pCtx.stroke();
+          }
         }
       };
       
@@ -733,7 +1650,7 @@ function App() {
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [isStandalone, isPlaying, currentTrack, visualizerMode, themeColor]);
+  }, [isStandalone, isPlaying, currentTrack, currentTime, visualizerMode, themeColor, isMixtapeVaultOpen]);
 
   const handleVolumeChange = (val) => {
     const v = parseFloat(val);
@@ -752,7 +1669,7 @@ function App() {
     if (Array.isArray(data)) {
         let addedCount = 0;
         data.forEach(t => {
-            if (!newPlaylists[name].some(ext => ext.id === t.id)) {
+        if (!hasTrackInList(newPlaylists[name], t)) {
                 newPlaylists[name].push(t);
                 addedCount++;
             }
@@ -762,7 +1679,7 @@ function App() {
         setLastAdded(`Vaulted ${addedCount} Node(s)`);
         setTimeout(() => setLastAdded(null), 3000);
     } else {
-        if (!newPlaylists[name].some(t => t.id === data.id)) {
+        if (!hasTrackInList(newPlaylists[name], data)) {
           newPlaylists[name].push(data);
           setPlaylists(newPlaylists);
           window.aether?.store?.set('playlists', newPlaylists);
@@ -772,6 +1689,178 @@ function App() {
     }
     setActiveMenuTrack(null);
   };
+
+  const libraryInsights = useMemo(() => {
+    const allTracks = Object.values(playlists).flat();
+    const seen = new Map();
+    const artistCount = new Map();
+    let duplicates = 0;
+
+    allTracks.forEach((track) => {
+      const key = normalizeTrackIdentity(track);
+      if (seen.has(key)) duplicates += 1;
+      else seen.set(key, true);
+
+      const artist = (track?.author || 'Unknown').trim();
+      artistCount.set(artist, (artistCount.get(artist) || 0) + 1);
+    });
+
+    const topArtists = [...artistCount.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3);
+
+    return {
+      total: allTracks.length,
+      unique: seen.size,
+      duplicates,
+      topArtists,
+    };
+  }, [playlists, normalizeTrackIdentity]);
+
+  const smartMixTracks = useMemo(() => {
+    const allTracks = Object.values(playlists).flat();
+    if (allTracks.length === 0) return [];
+    const unique = [];
+    const used = new Set();
+    for (const t of allTracks) {
+      const key = normalizeTrackIdentity(t);
+      if (used.has(key)) continue;
+      used.add(key);
+      unique.push(t);
+      if (unique.length >= 18) break;
+    }
+    return unique;
+  }, [playlists, normalizeTrackIdentity]);
+
+  const handleGenerateSmartMix = useCallback(() => {
+    if (!smartMixTracks.length) return;
+    const smartName = 'SMART_MIX';
+    const next = { ...playlists, [smartName]: smartMixTracks };
+    setPlaylists(next);
+    window.aether?.store?.set('playlists', next);
+    setViewingPlaylist(smartName);
+    setLastAdded(`Smart Mix refreshed • ${smartMixTracks.length} tracks`);
+    setTimeout(() => setLastAdded(null), 2800);
+  }, [playlists, smartMixTracks]);
+
+  const handleCleanVault = useCallback(async () => {
+    if (isVaultCleaning) return;
+    setIsVaultCleaning(true);
+    setLastAdded('Cleaning vault…');
+
+    try {
+      const next = {};
+      let removedDuplicates = 0;
+      let removedUnavailable = 0;
+      let normalized = 0;
+      const totalTracks = Object.values(playlists).reduce((sum, tracks) => sum + (Array.isArray(tracks) ? tracks.length : 0), 0);
+      let processedTracks = 0;
+
+      const withTimeout = (promise, timeoutMs = 2500) => new Promise((resolve) => {
+        let done = false;
+        const timer = setTimeout(() => {
+          if (!done) {
+            done = true;
+            resolve(null);
+          }
+        }, timeoutMs);
+
+        Promise.resolve(promise)
+          .then((value) => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            resolve(value ?? null);
+          })
+          .catch(() => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            resolve(null);
+          });
+      });
+
+      for (const [name, tracks] of Object.entries(playlists)) {
+        const seen = new Set();
+        const clean = [];
+
+        for (const original of (tracks || [])) {
+          processedTracks += 1;
+          if (processedTracks % 18 === 0) {
+            setLastAdded(`Cleaning vault… ${processedTracks}/${Math.max(totalTracks, 1)}`);
+          }
+
+          const baseUrl = original?.actualUrl || original?.url || (original?.youtubeId ? `https://www.youtube.com/watch?v=${original.youtubeId}` : '');
+          let track = baseUrl
+            ? {
+                ...original,
+                id: original?.id || original?.youtubeId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                youtubeId: original?.youtubeId || extractYouTubeId(baseUrl),
+                actualUrl: original?.actualUrl || baseUrl,
+                url: original?.url || baseUrl,
+              }
+            : null;
+          if (!track) {
+            removedUnavailable += 1;
+            continue;
+          }
+
+          if (isStandalone && window.aether?.getMetadata) {
+            const needsHydration = !original?.title || !original?.author || !original?.thumbnail || !track.youtubeId;
+            if (needsHydration) {
+              const meta = await withTimeout(window.aether.getMetadata(track.actualUrl || track.url), 2500);
+              if (meta && (meta.title || meta.author || meta.thumbnail || meta.url || meta.actualUrl)) {
+                track = mergeTrackMetadata(track, meta);
+              }
+            }
+          }
+
+          if (!(track.actualUrl || track.url || track.youtubeId)) {
+            removedUnavailable += 1;
+            continue;
+          }
+
+          const key = normalizeTrackIdentity(track);
+          if (seen.has(key)) {
+            removedDuplicates += 1;
+            continue;
+          }
+
+          seen.add(key);
+
+          const beforeTitle = String(original?.title || '').trim();
+          const beforeAuthor = String(original?.author || '').trim();
+          const beforeThumb = String(original?.thumbnail || '').trim();
+
+          const normalizedTrack = {
+            ...track,
+            title: String(track.title || beforeTitle || 'Unknown Track').trim(),
+            author: String(track.author || beforeAuthor || 'Unknown Artist').trim(),
+            thumbnail: track.thumbnail || beforeThumb || '',
+          };
+
+          if (
+            normalizedTrack.title !== beforeTitle ||
+            normalizedTrack.author !== beforeAuthor ||
+            (normalizedTrack.thumbnail || '') !== beforeThumb
+          ) {
+            normalized += 1;
+          }
+
+          clean.push(normalizedTrack);
+        }
+
+        next[name] = clean;
+      }
+
+      setPlaylists(next);
+      await window.aether?.store?.set?.('playlists', next);
+      setLastAdded(`Vault cleaned • deduped ${removedDuplicates}, removed ${removedUnavailable}, normalized ${normalized}`);
+      setTimeout(() => setLastAdded(null), 4200);
+    } finally {
+      setIsVaultCleaning(false);
+    }
+  }, [isStandalone, isVaultCleaning, normalizeTrackIdentity, playlists]);
 
   const handleRemoveFromPlaylist = (name, index) => {
     const newPlaylists = { ...playlists };
@@ -786,18 +1875,34 @@ function App() {
   const handlePlaylistAddAll = (name) => {
     const tracks = playlists[name];
     if (tracks && tracks.length > 0) {
-      setQueue(prev => [...prev, ...tracks]);
-      setLastAdded(`Queued Entire Vault: ${name}`);
+      const normalized = (tracks || []).map(normalizeQueueTrack).filter(Boolean);
+      if (normalized.length === 0) {
+        setLastAdded(`No playable tracks in ${name}`);
+        setTimeout(() => setLastAdded(null), 2600);
+        return;
+      }
+      setQueue(prev => {
+        const next = [...prev, ...normalized];
+        if (prev.length === 0) setIsPlaying(true);
+        return next;
+      });
+      setIsManualStop(false);
+      setLastAdded(`Queued Entire Vault: ${name} (${normalized.length})`);
       setTimeout(() => setLastAdded(null), 3000);
     }
   };
 
   const activeLyric = useMemo(() => {
     if (!lyrics || lyrics.length === 0) return null;
-    const currentMs = currentTime * 1000;
+    const currentMs = currentTime;
     const line = [...lyrics].reverse().find(l => l.time <= currentMs);
     return line ? line.text : null;
   }, [lyrics, currentTime]);
+
+  const compactLyric = useMemo(() => {
+    if (!lyrics || lyrics.length === 0) return null;
+    return lyrics[activeLyricIndex]?.text || activeLyric || null;
+  }, [lyrics, activeLyricIndex, activeLyric]);
 
   const handleRenamePlaylist = (oldName, newName) => {
     if (!newName || oldName === newName) { setIsRenamingPlaylist(null); return; }
@@ -818,10 +1923,26 @@ function App() {
     if (viewingPlaylist === name) setViewingPlaylist(null);
   };
 
-  const triggerAutoplay = async () => {
+  const triggerAutoplay = async (seedTrack = null) => {
     if (!isAutoplayEnabled || !isStandalone) return;
-    const seed = currentTrack || history[0];
+    const seed = seedTrack || currentTrack || history[0];
     if (!seed) return;
+
+    const normalizeTitle = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const seedTitleNorm = normalizeTitle(seed.title);
+    const seedId = String(seed.id || seed.youtubeId || '').trim();
+    const seedUrl = String(seed.actualUrl || seed.url || '').trim();
+    const isSameAsSeed = (candidate) => {
+      if (!candidate) return false;
+      const candidateId = String(candidate.id || candidate.youtubeId || '').trim();
+      const candidateTitleNorm = normalizeTitle(candidate.title);
+      const candidateUrl = String(candidate.actualUrl || candidate.url || '').trim();
+      return (
+        (seedId && candidateId && seedId === candidateId) ||
+        (seedUrl && candidateUrl && seedUrl === candidateUrl) ||
+        (seedTitleNorm && candidateTitleNorm && seedTitleNorm === candidateTitleNorm)
+      );
+    };
 
     try {
       setIsAutoplaySeeking(true);
@@ -840,7 +1961,7 @@ function App() {
       ]);
 
       if (recs && recs.length > 0) {
-        const filtered = recs.filter(r => !queue.some(q => q.title === r.title));
+        const filtered = recs.filter(r => !queue.some(q => q.title === r.title) && !isSameAsSeed(r));
         if (filtered.length > 0) {
           handleAdd(filtered[0]);
           return;
@@ -851,7 +1972,7 @@ function App() {
       console.log("[Aether] Primary Discovery failed, broadening signal...");
       const fallbackResults = await window.aether.search(seed.author || seed.title.split('-')[0]);
       if (fallbackResults && fallbackResults.length > 0) {
-        const candidates = fallbackResults.filter(r => r.title !== seed.title);
+        const candidates = fallbackResults.filter(r => r.title !== seed.title && !isSameAsSeed(r));
         if (candidates.length > 0) {
           handleAdd(candidates[Math.floor(Math.random() * Math.min(3, candidates.length))]);
         }
@@ -879,10 +2000,34 @@ function App() {
 
   // Autoplay Trigger Logic
   useEffect(() => {
-    if (isStandalone && isAutoplayEnabled && (queue.length === 0) && !isManualStop && !isAutoplaySearching) {
-        triggerAutoplay();
+    if (isStandalone && isAutoplayEnabled && queue.length === 0 && !isManualStop && !isAutoplaySeeking) {
+        const seed = currentTrack || history[0] || prevTrackRef.current;
+        if (seed) {
+          console.log('[Aether/Autoplay] Queue empty, triggering autoplay', {
+            seedTitle: seed.title,
+            seedId: seed.id,
+            from: currentTrack ? 'current' : history[0] ? 'history' : 'previous-ref',
+          });
+          triggerAutoplay(seed);
+        }
     }
-  }, [queue.length, isAutoplayEnabled, isStandalone, isManualStop, isAutoplaySearching]);
+  }, [queue.length, isAutoplayEnabled, isStandalone, isManualStop, isAutoplaySeeking, currentTrack, history]);
+
+  useEffect(() => {
+    if (!isStandalone || !window.aether?.onSpotifyImportProgress) return;
+    const onSpotifyImportProgress = (payload) => {
+      appendSpotifyImportLog(`${payload?.stage || 'working'} ${Number.isFinite(payload?.progress) ? `${payload.progress}%` : ''} ${payload?.message || ''}`.trim());
+      setSpotifyImportProgress({
+        stage: payload?.stage || 'working',
+        progress: Number.isFinite(payload?.progress) ? payload.progress : 0,
+        message: payload?.message || '',
+      });
+    };
+    const unsubscribe = window.aether.onSpotifyImportProgress(onSpotifyImportProgress);
+    return () => {
+      if (typeof unsubscribe === 'function') unsubscribe();
+    };
+  }, [appendSpotifyImportLog, isStandalone]);
 
   // --- AETHER: DYNAMIC THEME SYNC (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN ---
   useEffect(() => {
@@ -1018,6 +2163,7 @@ function App() {
   }, [isStandalone]);
 
   const fetchQueue = async () => {
+    const startedAt = performance.now();
     try {
       const guildId = getEffectiveGuildId();
       console.log("[Aether/Queue] Fetching queue", { guildId, isStandalone, currentTime, currentTrackTitle });
@@ -1089,26 +2235,37 @@ function App() {
             localAudioRef.current.play().catch(e => console.error("[Aether] Playback blocked:", e));
         }
       }
+
+      setDiagnostics(prev => ({
+        ...prev,
+        lastQueueFetchMs: Math.round(performance.now() - startedAt),
+        lastQueueFetchAt: Date.now(),
+        lastQueueError: null,
+      }));
     } catch (err) {
       console.error("[Aether/Queue] Fetch failed", err, {
         apiBase: API_BASE,
         guildId: getEffectiveGuildId(),
       });
+      setDiagnostics(prev => ({
+        ...prev,
+        lastQueueFetchAt: Date.now(),
+        lastQueueError: err?.message || 'queue fetch failed',
+      }));
     }
   };
 
   useEffect(() => {
-    const SEQUENCE = 'pacman';
+    const SEQUENCE = 'mixtape';
     const handleKeyDown = (e) => {
       if (e.key === 'Escape' && isLyricsExpanded) { setIsLyricsExpanded(false); return; }
-      // Ignore trigger if user is typing in an input or textarea
       const tag = document.activeElement?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
       setTypedBuffer(prev => {
         const next = (prev + e.key.toLowerCase()).slice(-SEQUENCE.length);
         if (next === SEQUENCE) {
-          setIsPacmanOpen(true);
+          setIsMixtapeVaultOpen(true);
           return "";
         }
         return next;
@@ -1117,7 +2274,7 @@ function App() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [isLyricsExpanded]);
 
   const updateDiscordRichPresence = async (track, playbackMs = 0) => {
     if (!discordSdkRef.current) return;
@@ -1126,7 +2283,7 @@ function App() {
          await discordSdkRef.current.commands.setActivity({
             activity: {
               name: "AH Music",
-              type: 0, 
+              type: 0,
               details: "In Music Lobby",
               state: "Searching for Nodes...",
               assets: { large_image: "https://i.imgur.com/8Q8W8Xn.png", large_text: "Aether // Studio" }
@@ -1137,7 +2294,7 @@ function App() {
       await discordSdkRef.current.commands.setActivity({
         activity: {
           name: "AH Music",
-          type: 2, // Listening
+          type: 2,
           details: track.title.slice(0, 127),
           state: `by ${track.author}`.slice(0, 127),
           assets: {
@@ -1149,13 +2306,13 @@ function App() {
           }
         }
       });
-      // Presence Synced
     } catch (err) {
       console.warn("[Discord SDK] setActivity failed:", err.message);
     }
   };
 
   const fetchSystemStats = async () => {
+    const startedAt = performance.now();
     try {
       if (isStandalone) {
           const stats = await window.aether.getStats();
@@ -1164,8 +2321,95 @@ function App() {
           const resp = await axios.get(`${API_BASE}/api/system`);
           setSystemStats(resp.data);
       }
-    } catch (err) {}
+      setDiagnostics(prev => ({
+        ...prev,
+        lastSystemFetchMs: Math.round(performance.now() - startedAt),
+        lastSystemFetchAt: Date.now(),
+        lastSystemError: null,
+      }));
+    } catch (err) {
+      setDiagnostics(prev => ({
+        ...prev,
+        lastSystemFetchAt: Date.now(),
+        lastSystemError: err?.message || 'system fetch failed',
+      }));
+    }
   };
+
+  const refreshStorageStats = useCallback(async () => {
+    if (!isStandalone || !window.aether?.getStorageStats) return;
+    try {
+      const res = await window.aether.getStorageStats();
+      if (res?.success) {
+        setStorageStats(res);
+        if (res?.policy) {
+          setStoragePolicy({
+            cacheCapMb: res.policy.cacheCapMb || 2048,
+            maxCacheAgeDays: res.policy.maxCacheAgeDays || 30,
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('[Aether/Storage] stats fetch failed', e);
+    }
+  }, [isStandalone]);
+
+  const applyStoragePolicy = useCallback(async (nextPolicy) => {
+    if (!isStandalone || !window.aether?.updateStoragePolicy) return;
+    try {
+      const res = await window.aether.updateStoragePolicy(nextPolicy);
+      if (res?.success && res?.policy) {
+        setStoragePolicy({
+          cacheCapMb: res.policy.cacheCapMb,
+          maxCacheAgeDays: res.policy.maxCacheAgeDays,
+        });
+      }
+    } catch (e) {
+      console.warn('[Aether/Storage] policy update failed', e);
+    }
+  }, [isStandalone]);
+
+  const refreshStorageEstimate = useCallback(async () => {
+    if (!isStandalone || !window.aether?.getStorageEstimate) return;
+    try {
+      const [capRes, ageRes, downloadsRes] = await Promise.all([
+        window.aether.getStorageEstimate({ mode: 'cap', cacheCapMb: storagePolicy.cacheCapMb }),
+        window.aether.getStorageEstimate({ mode: 'age', maxCacheAgeDays: storagePolicy.maxCacheAgeDays }),
+        window.aether.getStorageEstimate({ mode: 'downloads-only' }),
+      ]);
+
+      setStorageEstimate({
+        cap: capRes?.success ? capRes : null,
+        age: ageRes?.success ? ageRes : null,
+        downloadsOnly: downloadsRes?.success ? downloadsRes : null,
+      });
+    } catch (e) {
+      console.warn('[Aether/Storage] estimate fetch failed', e);
+    }
+  }, [isStandalone, storagePolicy.cacheCapMb, storagePolicy.maxCacheAgeDays]);
+
+  const runStorageOptimize = useCallback(async (mode) => {
+    if (!isStandalone || !window.aether?.optimizeStorage) return;
+    setIsStorageBusy(true);
+    try {
+      const payload = mode === 'cap'
+        ? { mode, cacheCapMb: storagePolicy.cacheCapMb }
+        : mode === 'age'
+          ? { mode, maxCacheAgeDays: storagePolicy.maxCacheAgeDays }
+          : { mode };
+      const res = await window.aether.optimizeStorage(payload);
+      if (res?.success) {
+        setLastAdded(`Storage optimized • ${mode}`);
+        setTimeout(() => setLastAdded(null), 2200);
+      }
+      await refreshStorageStats();
+      await refreshStorageEstimate();
+    } catch (e) {
+      console.warn('[Aether/Storage] optimize failed', e);
+    } finally {
+      setIsStorageBusy(false);
+    }
+  }, [isStandalone, refreshStorageEstimate, refreshStorageStats, storagePolicy.cacheCapMb, storagePolicy.maxCacheAgeDays]);
 
 
 
@@ -1186,28 +2430,70 @@ function App() {
     }
   }, [currentTime, lyrics, lyricOffsetMs]);
 
+  const centerCompactLyrics = useCallback((behavior = 'smooth') => {
+    if (!activeLyricRef.current || !lyricsContainerRef.current) return;
+    const activeLine = activeLyricRef.current;
+    const container = lyricsContainerRef.current;
+    const rawTop = activeLine.offsetTop - (container.offsetHeight / 2) + (activeLine.offsetHeight / 2);
+    const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const targetTop = Math.max(0, Math.min(maxTop, rawTop));
+    container.scrollTo({ top: targetTop, behavior });
+  }, []);
+
+  const centerImmersiveLyrics = useCallback((behavior = 'smooth') => {
+    if (!expandedActiveRef.current || !expandedContainerRef.current) return;
+    const activeLine = expandedActiveRef.current;
+    const container = expandedContainerRef.current;
+    const rawTop = activeLine.offsetTop - (container.offsetHeight / 2) + (activeLine.offsetHeight / 2);
+    const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const targetTop = Math.max(0, Math.min(maxTop, rawTop));
+    container.scrollTo({ top: targetTop, behavior });
+  }, []);
+
+  const handleResyncLyrics = useCallback(() => {
+    setIsAutoScrollPaused(false);
+
+    // Immediate lock + settle pass.
+    requestAnimationFrame(() => {
+      centerCompactLyrics('auto');
+      centerImmersiveLyrics('auto');
+      setTimeout(() => {
+        centerImmersiveLyrics('smooth');
+      }, 90);
+    });
+  }, [centerCompactLyrics, centerImmersiveLyrics]);
+
+  useEffect(() => {
+    // Immersive mode should stay locked and centered unless user explicitly pauses elsewhere.
+    if (isLyricsExpanded) {
+      setIsAutoScrollPaused(false);
+    }
+  }, [isLyricsExpanded]);
+
   useLayoutEffect(() => {
+    let raf1;
+    let raf2;
+
     // Normal Sync (Bounded Scroll)
-    if (activeLyricRef.current && !isAutoScrollPaused && lyricsContainerRef.current) {
-        const activeLine = activeLyricRef.current;
-        const container = lyricsContainerRef.current;
-        const targetScroll = activeLine.offsetTop - (container.offsetHeight / 2) + (activeLine.offsetHeight / 2);
-        container.scrollTo({ top: targetScroll, behavior: 'smooth' });
+    if (!isAutoScrollPaused && activeLyricRef.current && lyricsContainerRef.current) {
+        centerCompactLyrics('smooth');
     }
     // Expanded Sync (Bounded Scroll with Header Offset)
-    if (expandedActiveRef.current && !isAutoScrollPaused && expandedContainerRef.current) {
-        const activeLine = expandedActiveRef.current;
-        const container = expandedContainerRef.current;
-        
-        const containerHeight = container.getBoundingClientRect().height;
-        const activeRect = activeLine.getBoundingClientRect();
-        const containerRect = container.getBoundingClientRect();
-        const relativeTop = activeRect.top - containerRect.top + container.scrollTop;
-        const targetScroll = relativeTop - (containerHeight / 2) + (activeRect.height / 2);
-        
-        container.scrollTo({ top: targetScroll, behavior: (isAutoScrollPaused || activeLyricIndex <= 1) ? "auto" : "smooth" });
+    if ((!isAutoScrollPaused || isLyricsExpanded) && expandedActiveRef.current && expandedContainerRef.current) {
+        // First pass immediately, second pass after animation settles one more frame.
+        centerImmersiveLyrics(activeLyricIndex <= 1 ? 'auto' : 'smooth');
+        raf1 = requestAnimationFrame(() => {
+          raf2 = requestAnimationFrame(() => {
+            centerImmersiveLyrics('auto');
+          });
+        });
     }
-  }, [activeLyricIndex, isAutoScrollPaused, isLyricsExpanded]);
+
+    return () => {
+      if (raf1) cancelAnimationFrame(raf1);
+      if (raf2) cancelAnimationFrame(raf2);
+    };
+  }, [activeLyricIndex, isAutoScrollPaused, isLyricsExpanded, centerCompactLyrics, centerImmersiveLyrics]);
 
   const parseLRC = (lrcString) => {
     if (!lrcString) return [];
@@ -1231,6 +2517,7 @@ function App() {
 
   const fetchLyrics = async (trackTitle, trackAuthor, trackDuration, trackUrl) => {
     if (!trackTitle) return;
+    const startedAt = performance.now();
     setIsLyricsLoading(true);
     try {
       const normalizedTitle = String(trackTitle)
@@ -1257,6 +2544,13 @@ function App() {
             source: results?.source,
           });
           setLyrics(lyricsArray);
+          setDiagnostics(prev => ({
+            ...prev,
+            lastLyricsSource: results?.source || 'local',
+            lastLyricsFetchMs: Math.round(performance.now() - startedAt),
+            lastLyricsFetchAt: Date.now(),
+            lastLyricsError: null,
+          }));
           setIsLyricsLoading(false);
           return;
       }
@@ -1270,6 +2564,13 @@ function App() {
         sample: Array.isArray(data) ? data[0] : data,
       });
       setLyrics(Array.isArray(data) ? data : []);
+      setDiagnostics(prev => ({
+        ...prev,
+        lastLyricsSource: data?.source || 'api',
+        lastLyricsFetchMs: Math.round(performance.now() - startedAt),
+        lastLyricsFetchAt: Date.now(),
+        lastLyricsError: null,
+      }));
       if (trackTitle !== currentTrackTitle) {
         setCurrentTime(0);
         setCurrentTrackTitle(trackTitle);
@@ -1282,8 +2583,33 @@ function App() {
         trackUrl,
       });
       setLyrics([]);
+      setDiagnostics(prev => ({
+        ...prev,
+        lastLyricsFetchAt: Date.now(),
+        lastLyricsError: err?.message || 'lyrics fetch failed',
+      }));
     } finally { setIsLyricsLoading(false); }
   };
+
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape' && isDiagnosticsOpen) setIsDiagnosticsOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isDiagnosticsOpen]);
+
+  useEffect(() => {
+    if (!isStandalone) return;
+    refreshStorageStats();
+    refreshStorageEstimate();
+  }, [isStandalone, refreshStorageEstimate, refreshStorageStats]);
+
+  useEffect(() => {
+    if (!isStandalone || !isDiagnosticsOpen) return;
+    refreshStorageStats();
+    refreshStorageEstimate();
+  }, [isStandalone, isDiagnosticsOpen, refreshStorageEstimate, refreshStorageStats]);
 
   useEffect(() => {
     if (currentTrack?.title !== currentTrackTitle) {
@@ -1291,7 +2617,6 @@ function App() {
          setHistory(prev => [prevTrackRef.current, ...prev].slice(0, 20)); // Keep last 20
       }
       setCurrentTime(0);
-      setLyricOffsetMs(0);
       setCurrentTrackTitle(currentTrack?.title || "");
       prevTrackRef.current = currentTrack;
     }
@@ -1306,6 +2631,21 @@ function App() {
     const match = str.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/);
     return match ? match[1] : null;
   };
+
+  const normalizeQueueTrack = useCallback((track) => {
+    if (!track) return null;
+    const baseUrl = track.actualUrl || track.url || (track.youtubeId ? `https://www.youtube.com/watch?v=${track.youtubeId}` : '');
+    if (!baseUrl) return null;
+    const youtubeId = track.youtubeId || extractYouTubeId(baseUrl);
+    const stableId = youtubeId || track.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    return {
+      ...track,
+      id: stableId,
+      youtubeId,
+      actualUrl: track.actualUrl || baseUrl,
+      url: track.url || baseUrl,
+    };
+  }, []);
 
   const handleSearch = async (e) => {
     if (e) e.preventDefault();
@@ -1362,10 +2702,13 @@ function App() {
   const handleAdd = async (track) => {
     if (isStandalone) {
         const addStartTime = Date.now();
-        const url = track.actualUrl || track.url || track.id;
-        const youtubeId = extractYouTubeId(url);
-        const stableId = youtubeId || track.id || Date.now().toString();
-        const newTrack = { ...track, id: stableId, actualUrl: url, youtubeId };
+        const newTrack = normalizeQueueTrack(track);
+        if (!newTrack) {
+          console.warn('[Aether/Queue] Ignored add: track has no playable URL', track);
+          return;
+        }
+        const url = newTrack.actualUrl || newTrack.url;
+        const stableId = newTrack.id;
         console.log(`[Aether] Adding standalone track to queue: ${newTrack.title} (${url}) -> id=${stableId}`);
         setQueue(prev => {
             const next = [...prev, newTrack];
@@ -1383,7 +2726,7 @@ function App() {
         window.aether.getMetadata(track.actualUrl || track.url).then(fullTrack => {
             if (fullTrack) {
                 setQueue(current => current.map(item => 
-                    item.id === stableId ? { ...item, ...fullTrack, id: stableId } : item
+              item.id === stableId ? mergeTrackMetadata(item, fullTrack) : item
                 ));
             }
         });
@@ -1471,6 +2814,54 @@ function App() {
       }
   };
 
+  const handleImportSpotifyPlaylist = async () => {
+      if (!isStandalone || !window.aether?.importSpotifyPlaylist) return;
+      const url = spotifyImportUrl.trim();
+      if (!url) return;
+
+      setIsSpotifyImporting(true);
+      setSpotifyImportLogs([]);
+      appendSpotifyImportLog(`start url=${url}`);
+      setSpotifyImportProgress({ stage: 'starting', progress: 1, message: 'Preparing import…' });
+      try {
+        const res = await window.aether.importSpotifyPlaylist(url.trim());
+        appendSpotifyImportLog(`result success=${!!res?.success} matched=${res?.matchedTracks ?? 0} total=${res?.totalTracks ?? 0}`);
+        if (!res?.success) {
+          const debug = res?.debug
+            ? ` [id=${res.debug.playlistId || '-'} htmlIds=${res.debug.htmlTrackIdCount ?? '-'} htmlLabels=${res.debug.htmlLabelCount ?? '-'}]`
+            : '';
+          setSpotifyImportProgress({ stage: 'error', progress: 0, message: `${res?.error || 'Spotify import failed.'}${debug}` });
+          appendSpotifyImportLog(`error ${res?.error || 'Spotify import failed.'}${debug}`);
+          return;
+        }
+
+        if (!Array.isArray(res.tracks) || res.tracks.length === 0) {
+          const debugHint = res?.debug
+            ? ` (${res.debug.matchedTracks}/${res.debug.searchedTracks} matched${res.debug.missedSamples?.length ? ` • sample misses: ${res.debug.missedSamples.slice(0, 2).join(' | ')}` : ''})`
+            : '';
+          setSpotifyImportProgress({ stage: 'complete', progress: 100, message: `Imported the shell for “${res.playlistName}”, but no playable matches were found${debugHint}.` });
+          return;
+        }
+
+        const playlistName = res.playlistName || 'Spotify Playlist';
+        const uniquePlaylistName = playlists[playlistName] ? `${playlistName} (Spotify)` : playlistName;
+        const nextPlaylists = { ...playlists, [uniquePlaylistName]: res.tracks };
+        setPlaylists(nextPlaylists);
+        window.aether?.store?.set('playlists', nextPlaylists);
+        setLastAdded(`Imported ${res.matchedTracks}/${res.totalTracks} Spotify tracks`);
+        setTimeout(() => setLastAdded(null), 3500);
+        setIsSpotifyImportOpen(false);
+        setSpotifyImportUrl('');
+        setSpotifyImportProgress({ stage: 'complete', progress: 100, message: `Imported ${res.matchedTracks}/${res.totalTracks} tracks` });
+      } catch (err) {
+        const message = err?.message || 'Spotify import failed.';
+        appendSpotifyImportLog(`exception ${message}`);
+        setSpotifyImportProgress({ stage: 'error', progress: 0, message });
+      } finally {
+        setIsSpotifyImporting(false);
+      }
+  };
+
 
   const handleControl = useCallback(async (action) => {
     console.log("[Aether/Control] Signal Bridge Active:", action);
@@ -1509,11 +2900,12 @@ function App() {
             }
         }
         if (action === 'skip') {
+          noteSkipReason('manual_skip', { source: 'transport', title: queue?.[0]?.title });
             setQueue(prev => {
                 const next = prev.slice(1);
                 if (next.length === 0) {
                     setIsPlaying(false);
-                    if (isAutoplayEnabled) triggerAutoplay(prev[0]); // Force immediate autoplay kick
+              if (isAutoplayEnabled) setTimeout(() => triggerAutoplay(prev[0]), 0); // Force immediate autoplay kick
                 }
                 return next;
             });
@@ -1565,7 +2957,7 @@ function App() {
         guildId: getEffectiveGuildId(),
       });
     }
-  }, [isStandalone, API_BASE, history, isAutoplayEnabled, getEffectiveGuildId]);
+  }, [isStandalone, API_BASE, history, isAutoplayEnabled, getEffectiveGuildId, noteSkipReason, queue]);
 
   const [uiPulse, setUiPulse] = useState(1);
   const [accentColor, setAccentColor] = useState('#00ffbf');
@@ -1573,6 +2965,7 @@ function App() {
   useEffect(() => {
     if (!isPlaying) {
       setUiPulse(1);
+      uiPulseRef.current = 1;
       return;
     }
     let animationFrame;
@@ -1581,10 +2974,9 @@ function App() {
         const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
         analyserRef.current.getByteFrequencyData(dataArray);
         const lowFreq = dataArray.slice(0, 10).reduce((a, b) => a + b, 0) / 10;
-        // Neural Vibration (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN Subtle scale pulse based on bass (20-100Hz range)
-        const intensity = 0.04;
-        const scale = (visualizerMode === 'pulse') ? (1 + (lowFreq / 255) * intensity) : 1;
-        setUiPulse(scale);
+        const target = (visualizerMode === 'pulse') ? (1 + (lowFreq / 255) * 0.035) : 1;
+        uiPulseRef.current = lerp(uiPulseRef.current, target, 0.22);
+        setUiPulse(visualizerMode === 'pulse' ? uiPulseRef.current : 1);
       }
       animationFrame = requestAnimationFrame(updatePulse);
     };
@@ -1605,7 +2997,6 @@ function App() {
     if (!isStandalone) {
         if (localAudioRef.current) localAudioRef.current.currentTime = time / 1000;
         setCurrentTime(time);
-        setLyricOffsetMs(0); 
     } else {
         if (localAudioRef.current && currentTrack) {
             const timeSec = Math.floor(time / 1000);
@@ -1614,7 +3005,6 @@ function App() {
             localAudioRef.current.play().catch(()=>{});
         }
         setCurrentTime(time);
-        setLyricOffsetMs(0);
     }
   }, [API_BASE, isStandalone, currentTrack, streamPort, getEffectiveGuildId]);
 
@@ -1641,6 +3031,142 @@ function App() {
         fetchQueue();
   }
 
+  const toggleMiniPlayer = useCallback(async () => {
+      if (!isStandalone || !window.aether?.resizeWindow) return;
+      if (isMiniPlayer) {
+          await window.aether.resizeWindow(1100, 750, false);
+          setIsMiniPlayer(false);
+      } else {
+        await window.aether.resizeWindow(420, 190, true);
+          setIsMiniPlayer(true);
+      }
+  }, [isMiniPlayer, isStandalone]);
+
+  const toggleDiagnostics = useCallback(() => {
+    setIsDiagnosticsOpen(prev => !prev);
+  }, []);
+
+  const toggleWindowMaximize = useCallback(async () => {
+    if (!isStandalone || !window.aether?.toggleWindowMaximize) return;
+    try {
+      await window.aether.toggleWindowMaximize();
+    } catch (e) {
+      console.warn('[Aether/Window] toggle maximize failed', e);
+    }
+  }, [isStandalone]);
+
+  const handleResetPlaybackEngine = useCallback(() => {
+    const audio = localAudioRef.current;
+    if (!audio) return;
+
+    const resumeAt = Number.isFinite(audio.currentTime) ? Math.max(0, audio.currentTime) : 0;
+    const sourceUrl = currentTrack?.actualUrl || currentTrack?.url;
+    if (!sourceUrl) return;
+
+    console.log('[Aether/Diagnostics] Reset playback engine', {
+      title: currentTrack?.title,
+      resumeAt,
+      isStandalone,
+    });
+
+    bufferingRescueRef.current = { trackKey: '', lastAttemptAt: 0 };
+    standaloneTrackLoadKeyRef.current = '';
+
+    audio.pause();
+    audio.removeAttribute('src');
+    audio.load();
+
+    const nextSrc = isStandalone
+      ? `http://localhost:${streamPort}/stream?url=${encodeURIComponent(sourceUrl)}&time=${Math.floor(resumeAt)}`
+      : `${API_BASE}/stream?url=${encodeURIComponent(sourceUrl)}&time=${Math.floor(resumeAt)}`;
+
+    audio.src = nextSrc;
+    audio.currentTime = 0;
+    setCurrentTime(Math.floor(resumeAt * 1000));
+    setIsAudioBuffering(true);
+
+    if (isPlaying) {
+      audio.play().catch((err) => {
+        console.warn('[Aether/Diagnostics] playback reset play failed', err);
+      });
+    }
+  }, [API_BASE, currentTrack?.actualUrl, currentTrack?.title, currentTrack?.url, isPlaying, isStandalone, streamPort]);
+
+  useEffect(() => {
+    const isTypingTarget = (el) => {
+      if (!el) return false;
+      const tag = el.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
+    };
+
+    const onShortcut = (e) => {
+      const lowerKey = e.key?.toLowerCase?.() || '';
+      const plainMD = !e.metaKey && !e.ctrlKey && !e.altKey && (lowerKey === 'm' || lowerKey === 'd');
+      if (isTypingTarget(document.activeElement) && !plainMD) return;
+
+      const isAccelAlt = (e.metaKey || e.ctrlKey) && e.altKey;
+      if (isAccelAlt) {
+        if (e.code === 'Space') {
+          e.preventDefault();
+          handleControl(isPlaying ? 'pause' : 'resume');
+          return;
+        }
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          handleControl('previous');
+          return;
+        }
+        if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          handleControl('skip');
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setVolume(prev => {
+            const next = Math.min(1, prev + 0.08);
+            if (localAudioRef.current) localAudioRef.current.volume = next;
+            window.aether?.store?.set('volume', next);
+            return next;
+          });
+          setVolumeToast(true);
+          setTimeout(() => setVolumeToast(false), 1200);
+          return;
+        }
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setVolume(prev => {
+            const next = Math.max(0, prev - 0.08);
+            if (localAudioRef.current) localAudioRef.current.volume = next;
+            window.aether?.store?.set('volume', next);
+            return next;
+          });
+          setVolumeToast(true);
+          setTimeout(() => setVolumeToast(false), 1200);
+          return;
+        }
+        if (lowerKey === 'm') {
+          e.preventDefault();
+          handleControl('mute');
+        }
+      }
+
+      if (isStandalone && lowerKey === 'm' && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        toggleMiniPlayer();
+        return;
+      }
+
+      if (lowerKey === 'd' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        toggleDiagnostics();
+      }
+    };
+
+    window.addEventListener('keydown', onShortcut);
+    return () => window.removeEventListener('keydown', onShortcut);
+  }, [isStandalone, isPlaying, toggleMiniPlayer, toggleDiagnostics, handleControl]);
+
   if (loading) return (
     <div className="h-screen w-full bg-[#0a0a0a] flex flex-col items-center justify-center gap-6 p-6 text-center">
       <div className="relative">
@@ -1651,47 +3177,140 @@ function App() {
     </div>
   );
 
-  const toggleMiniPlayer = async () => {
-      if (!isStandalone || !window.aether?.resizeWindow) return;
-      if (isMiniPlayer) {
-          await window.aether.resizeWindow(1100, 750, false);
-          setIsMiniPlayer(false);
-      } else {
-          await window.aether.resizeWindow(360, 160, true);
-          setIsMiniPlayer(true);
-      }
-  };
+  if (isStandalone && lockStatus.enabled && isAppLocked) return (
+    <div className="h-screen w-full bg-[#050505] flex items-center justify-center p-6">
+      <div className="w-full max-w-md rounded-3xl border border-white/10 bg-black/70 backdrop-blur-2xl p-6 md:p-8">
+        <div className="flex items-center gap-3 mb-5">
+          <div className="w-10 h-10 rounded-2xl bg-brand-accent/15 border border-brand-accent/30 flex items-center justify-center text-brand-accent">
+            <Lock size={18} />
+          </div>
+          <div>
+            <div className="text-sm font-black text-brand-accent uppercase tracking-[0.22em]">Aether Locked</div>
+            <div className="text-[11px] text-white/45 mt-1">Unlock to access your studio.</div>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <input
+            type="password"
+            value={unlockPasswordInput}
+            onChange={(e) => setUnlockPasswordInput(e.target.value)}
+            placeholder="Enter password"
+            className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5 text-sm text-white outline-none focus:border-brand-accent/50"
+            onKeyDown={(e) => { if (e.key === 'Enter') handleUnlockWithPassword(); }}
+          />
+
+          {lockError && <div className="text-[11px] text-red-400">{lockError}</div>}
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleUnlockWithPassword}
+              disabled={isLockBusy || !unlockPasswordInput}
+              className="flex-1 rounded-xl bg-brand-accent text-black font-black py-2.5 text-sm disabled:opacity-50"
+            >
+              Unlock
+            </button>
+            {lockStatus.touchIdAvailable && lockStatus.touchIdEnabled && (
+              <button
+                onClick={handleUnlockWithBiometric}
+                disabled={isLockBusy}
+                className="rounded-xl border border-white/15 bg-white/5 text-white px-3 py-2.5 hover:text-brand-accent transition-colors"
+                title="Unlock with Touch ID"
+              >
+                <Fingerprint size={16} />
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 
   if (isMiniPlayer) {
      return (
-        <div className="w-[100vw] h-[100vh] bg-[#050505] overflow-hidden flex items-center p-3 drag-region relative">
-           <div className="absolute inset-0 bg-brand-accent/5 pointer-events-none" />
+        <div className="w-[100vw] h-[100vh] bg-[#050505] overflow-hidden drag relative p-3">
+          <div className="absolute inset-0 bg-gradient-to-br from-brand-accent/12 via-transparent to-transparent pointer-events-none" />
+          <div className="w-full h-full rounded-[22px] border border-white/10 bg-white/[0.03] backdrop-blur-2xl px-3 py-2.5 flex items-center gap-3 relative z-10 shadow-[0_12px_30px_rgba(0,0,0,0.45)] overflow-hidden">
            {currentTrack ? (
-              <div className="flex w-full h-full items-center gap-4 relative z-10">
-                 <img src={getProxyUrl(currentTrack.thumbnail)} className="h-full object-cover aspect-square rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.8)] border border-white/10" />
-                 <div className="flex flex-col flex-1 min-w-0 pr-4 h-full justify-center">
-                     <span className="text-[15px] font-black text-white truncate leading-tight uppercase tracking-tighter" style={{ textShadow: `0 0 10px ${themeColor}88` }}>{currentTrack.title}</span>
-                     <span className="text-[10px] font-bold text-brand-accent truncate uppercase tracking-widest leading-tight opacity-80">{currentTrack.author}</span>
-                     
-                     <div className="flex items-center gap-4 mt-4 no-drag shrink-0">
-                        <button onClick={() => handleControl('previous')} className="text-white/40 hover:text-white transition-all"><Rewind size={16} fill="currentColor" /></button>
-                        <button onClick={() => handleControl(isPlaying ? 'pause' : 'play')} className="w-10 h-10 rounded-full bg-brand-accent hover:bg-white text-black flex items-center justify-center transition-all shadow-[0_0_15px_rgba(0,255,191,0.3)] hover:scale-105 active:scale-95 border border-brand-accent/50">
-                           {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="ml-1" />}
-                        </button>
-                        <button onClick={() => handleControl('skip')} className="text-white/40 hover:text-white transition-all"><FastForward size={16} fill="currentColor" /></button>
-                     </div>
-                 </div>
-                 <button onClick={toggleMiniPlayer} className="absolute top-0 right-0 p-2 rounded-lg text-white/20 hover:text-brand-accent no-drag transition-colors active:scale-90"><AppWindow size={14} /></button>
+            <>
+              <img src={getProxyUrl(currentTrack.thumbnail)} className="w-[78px] h-[78px] object-cover rounded-xl shadow-[0_8px_18px_rgba(0,0,0,0.55)] border border-white/10 flex-none" />
+              <div className="flex flex-col flex-1 min-w-0 h-full justify-center pr-1">
+                <div className="flex items-start justify-between gap-2 min-w-0">
+                  <div className="min-w-0 flex-1">
+                    <div className="overflow-hidden whitespace-nowrap">
+                      <div className="animate-marquee-loop flex w-max gap-8 items-center text-[13px] font-semibold text-white/95 leading-tight" style={{ textShadow: `0 0 10px ${themeColor}44` }}>
+                        <span>{currentTrack.title}</span>
+                        <span aria-hidden="true">{currentTrack.title}</span>
+                      </div>
+                    </div>
+                    <span className="block text-[10px] font-medium text-white/60 truncate leading-tight mt-0.5">{currentTrack.author}</span>
+                  </div>
+                  <span className="shrink-0 rounded-full border border-brand-accent/20 bg-brand-accent/8 px-2 py-0.5 text-[7px] font-black uppercase tracking-[0.18em] text-brand-accent/70">
+                    Mini
+                  </span>
+                </div>
+
+                <div className="mt-1.25 min-h-[1.7em] border-l-2 border-brand-accent/30 pl-2.5 flex items-center">
+                  <div className="w-full text-[clamp(8px,1vw,9px)] font-medium italic text-white/68 leading-snug line-clamp-2">
+                    {compactLyric || 'Lyric sync loading…'}
+                  </div>
+                </div>
+
+                <div
+                  className="mt-2 h-1.5 w-full bg-white/10 rounded-full overflow-hidden relative no-drag cursor-pointer"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const pos = (e.clientX - rect.left) / rect.width;
+                    const total = currentTrack.totalDurationMs || currentTrack.duration || 0;
+                    handleSeek(pos * total);
+                  }}
+                >
+                  <div className="absolute inset-y-0 left-0 bg-brand-accent shadow-[0_0_10px_rgba(0,255,191,0.55)]" style={{ width: `${(currentTime / (currentTrack.totalDurationMs || currentTrack.duration || 1)) * 100}%` }} />
+                </div>
+
+                <div className="flex items-center justify-between mt-1 text-[clamp(7px,1vw,8px)] font-mono text-white/45 tracking-wide">
+                  <span>{formatTime(currentTime)}</span>
+                  <span>{formatTime(currentTrack.totalDurationMs || currentTrack.duration || 0)}</span>
+                </div>
+
+                <div className="flex items-center gap-4 mt-1.5 no-drag shrink-0 text-white/50">
+                  <button onClick={() => handleControl('previous')} className="hover:text-white transition-colors"><Rewind size={14} fill="currentColor" /></button>
+                  <button onClick={() => handleControl(isPlaying ? 'pause' : 'resume')} className="w-8 h-8 rounded-full bg-brand-accent hover:bg-white text-black flex items-center justify-center transition-all shadow-[0_0_14px_rgba(0,255,191,0.25)] hover:scale-105 active:scale-95 border border-brand-accent/40">
+                    {isPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" className="ml-0.5" />}
+                  </button>
+                  <button onClick={() => handleControl('skip')} className="hover:text-white transition-colors"><FastForward size={14} fill="currentColor" /></button>
+                </div>
               </div>
+              <button onClick={toggleMiniPlayer} className="absolute top-2 right-2 p-1.5 rounded-lg text-white/35 hover:text-brand-accent no-drag transition-colors active:scale-90" title="Expand"><AppWindow size={13} /></button>
+            </>
            ) : (
-              <div className="w-full text-center text-xs font-mono text-white/40 tracking-widest uppercase flex flex-col items-center justify-center h-full relative z-10">
-                 <div className="absolute top-0 right-0 p-2 text-white/20 hover:text-brand-accent no-drag cursor-pointer transition-colors" onClick={toggleMiniPlayer}><AppWindow size={14} /></div>
-                 <div>NO SIGNAL DETECTED</div>
+              <div className="w-full text-center text-xs font-medium text-white/50 tracking-wide flex flex-col items-center justify-center h-full relative z-10">
+                 <div className="absolute top-2 right-2 p-1.5 text-white/25 hover:text-brand-accent no-drag cursor-pointer transition-colors" onClick={toggleMiniPlayer}><AppWindow size={13} /></div>
+                 <div>No signal detected</div>
               </div>
            )}
+          </div>
         </div>
      );
   }
+
+  const isAuraMode = visualizerMode === 'pulse';
+  const topHeaderClass = isAuraMode
+    ? 'h-16 md:h-16 border-b border-white/[0.12] bg-[#07090c]/70 backdrop-blur-3xl shadow-[0_10px_40px_rgba(0,0,0,0.35)] z-50 px-4 pl-20 flex flex-row items-center justify-between gap-4 compact-header drag flex-none'
+    : 'h-16 md:h-16 border-b border-white/5 bg-[#0a0a0a]/90 backdrop-blur-3xl z-50 px-4 pl-20 flex flex-row items-center justify-between gap-4 compact-header drag flex-none';
+  const panelGlassClass = isAuraMode
+    ? 'bg-white/[0.015] border-white/[0.12] backdrop-blur-[26px] shadow-[0_20px_80px_rgba(0,0,0,0.28)]'
+    : 'bg-white/[0.03] border-white/5';
+  const panelHeaderClass = isAuraMode
+    ? 'bg-white/[0.03]'
+    : 'bg-white/[0.02]';
+  const panelInteractiveClass = isAuraMode
+    ? 'hover:border-brand-accent/35 hover:shadow-[0_18px_60px_rgba(0,255,191,0.08)] hover:-translate-y-[1px]'
+    : 'hover:border-brand-accent/20';
+  const immersiveBeatIntensity = clamp01((uiPulse - 1) / 0.06);
+  const diagnosticsApiBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
+  const queuePollDisplay = isStandalone ? 'local' : `${diagnostics.lastQueueFetchMs ?? '—'}ms`;
+  const queuePollTime = isStandalone ? 'direct engine' : formatDiagTime(diagnostics.lastQueueFetchAt);
 
   return (
     <div className={`fixed inset-0 bg-transparent selection:bg-brand-accent selection:text-brand-dark flex flex-col h-screen overflow-hidden relative isolate ${isVerticalStack ? 'vertical-stack-mode' : ''}`}>
@@ -1722,7 +3341,8 @@ function App() {
             />
           )}
         </AnimatePresence>
-        <div className="absolute inset-0 bg-brand-dark/20" />
+        <div className={`absolute inset-0 ${isAuraMode ? 'bg-brand-dark/10' : 'bg-brand-dark/20'}`} />
+        <div className={`absolute inset-0 ${isAuraMode ? 'bg-[radial-gradient(circle_at_center,transparent_30%,rgba(0,0,0,0.30)_100%)]' : 'bg-[radial-gradient(circle_at_center,transparent_25%,rgba(0,0,0,0.38)_100%)]'}`} />
       </div>
 
       <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
@@ -1731,7 +3351,7 @@ function App() {
       </div>
 
       {/* APP HEADER */}
-      <header className="h-16 md:h-16 border-b border-white/5 bg-[#0a0a0a]/90 backdrop-blur-3xl z-50 px-4 pl-20 flex flex-row items-center justify-between gap-4 compact-header drag flex-none">
+      <header className={topHeaderClass}>
           {/* TOP ROW: CORE + MINI USER (Horizontal on ALL devices) */}
           <div className="w-full flex items-center justify-between lg:w-auto lg:gap-6 lg:min-w-[240px]">
             {/* NEURAL CORE */}
@@ -1742,32 +3362,23 @@ function App() {
                </div>
                <div className="flex flex-col">
                   <span className="text-[10px] font-black tracking-tighter text-white/90">AETHER</span>
-                  <span className="text-[7px] font-mono text-brand-accent/60 font-black tracking-[0.2em] uppercase">{BUILD_VERSION}</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[7px] font-mono text-brand-accent/60 font-black tracking-[0.2em] uppercase">{BUILD_VERSION}</span>
+                    <span className="text-[7px] font-mono text-brand-accent/80 font-black tracking-[0.16em] uppercase px-1.5 py-[1px] rounded-full border border-brand-accent/30 bg-brand-accent/10">{UX_VERSION}</span>
+                  </div>
                 </div>
             </div>
             
 
-            <div className="hidden lg:flex items-center gap-4 pl-6 border-l border-white/5 h-8 no-drag">
-               {localIp && (
-                  <div className="flex flex-col no-drag text-right">
-                     <span className="text-[8px] font-mono text-white/30 uppercase tracking-[0.2em] font-bold">AETHER LINK</span>
-                     <span className="text-[10px] font-mono text-brand-accent font-black tracking-tighter">http://{localIp}:{streamPort}</span>
-                  </div>
-               )}
-               <div className="flex flex-col no-drag pl-4 border-l border-white/5">
-                  <span className="text-[8px] font-mono text-white/30 uppercase tracking-[0.2em] font-bold">NODE_UPTIME</span>
-                  <span className="text-[10px] font-mono text-brand-accent font-black tracking-tighter">{uptime}</span>
-               </div>
-               
-               {/* MODULAR STATS TOGGLE */}
-               <div className="flex items-center gap-3 ml-2 border-l border-white/10 pl-4">
+            <div className="hidden xl:flex items-center gap-3 pl-4 border-l border-white/5 h-8 no-drag text-[9px]">
+               <div className="flex items-center gap-3 border-l border-white/10 pl-3">
                   <button 
                     onClick={() => setIsStatsExpanded(!isStatsExpanded)}
-                    className={`flex items-center gap-2 px-3 py-1.5 rounded-full transition-all border ${isStatsExpanded ? 'bg-brand-accent/10 border-brand-accent/30' : 'bg-white/5 border-white/10 hover:border-brand-accent/50 group'}`}
+                    className={`flex items-center gap-1 px-2 py-1 rounded-full transition-all border text-[8px] ${isStatsExpanded ? 'bg-brand-accent/10 border-brand-accent/30' : 'bg-white/5 border-white/10 hover:border-brand-accent/50 group'}`}
                   >
-                    <Activity size={12} className={isStatsExpanded ? 'text-brand-accent animate-pulse' : 'text-brand-text-dim group-hover:text-brand-accent'} />
-                    <span className={`text-[9px] font-black uppercase tracking-widest ${isStatsExpanded ? 'text-brand-accent' : 'text-brand-text-dim'}`}>
-                      {isStatsExpanded ? 'Live HUD' : 'Stats'}
+                    <Activity size={10} className={isStatsExpanded ? 'text-brand-accent animate-pulse' : 'text-brand-text-dim group-hover:text-brand-accent'} />
+                    <span className={`font-black uppercase tracking-tighter ${isStatsExpanded ? 'text-brand-accent' : 'text-brand-text-dim'}`}>
+                      {isStatsExpanded ? 'HUD' : 'Stats'}
                     </span>
                   </button>
 
@@ -1777,16 +3388,16 @@ function App() {
                         initial={{ opacity: 0, x: -10, scale: 0.95 }}
                         animate={{ opacity: 1, x: 0, scale: 1 }}
                         exit={{ opacity: 0, x: -10, scale: 0.95 }}
-                        className="flex items-center gap-4 py-1.5 px-4 bg-white/[0.03] border border-white/5 rounded-xl"
+                        className="flex items-center gap-3 py-1 px-3 bg-white/[0.03] border border-white/5 rounded-lg text-[7px]"
                       >
                         <div className="flex flex-col">
-                           <div className="text-[7px] font-mono text-brand-text-dim uppercase tracking-tighter leading-none mb-1">ENGINE CPU</div>
-                           <div className="text-[10px] font-black font-mono text-brand-accent leading-none">{systemStats?.appCpu || '0.0'}%</div>
+                           <div className="font-mono text-brand-text-dim uppercase tracking-tighter leading-none mb-0.5">CPU</div>
+                           <div className="font-black font-mono text-brand-accent leading-none">{systemStats?.appCpu || '0.0'}%</div>
                         </div>
-                        <div className="w-[1px] h-3 bg-white/10" />
+                        <div className="w-[1px] h-2 bg-white/10" />
                         <div className="flex flex-col">
-                           <div className="text-[7px] font-mono text-brand-text-dim uppercase tracking-tighter leading-none mb-1">APP RAM</div>
-                            <div className="text-[10px] font-black font-mono text-brand-accent leading-none">{systemStats?.appMem || '0'}MB</div>
+                           <div className="font-mono text-brand-text-dim uppercase tracking-tighter leading-none mb-0.5">RAM</div>
+                            <div className="font-black font-mono text-brand-accent leading-none">{systemStats?.appMem || '0'}MB</div>
                          </div>
                        </motion.div>
                     )}
@@ -1802,7 +3413,7 @@ function App() {
               <input 
                 type="text" 
                 placeholder="Search music..." 
-                className="w-full bg-white/5 border border-white/10 rounded-full pl-14 pr-10 h-11 text-sm outline-none focus:border-brand-accent/50 focus:bg-brand-accent/[0.03] transition-all"
+                className={`w-full rounded-full pl-14 pr-10 h-11 text-sm outline-none transition-all ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/5 border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'}`}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
@@ -1812,6 +3423,44 @@ function App() {
 
           {/* MODES & SUITE */}
           <div className="flex items-center justify-end gap-3 min-w-fit order-3 no-drag">
+               {isStandalone && (
+                 <button
+                   onClick={toggleMiniPlayer}
+                   className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${isMiniPlayer ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
+                   title="Toggle Mini Player (Shift+M)"
+                 >
+                   <AppWindow size={16} />
+                 </button>
+               )}
+
+               <button
+                 onClick={toggleDiagnostics}
+                 className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${isDiagnosticsOpen ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
+                 title={isDiagnosticsOpen ? 'Hide Diagnostics' : 'Show Diagnostics'}
+               >
+                 <Monitor size={16} />
+               </button>
+
+               {isStandalone && (
+                 <button
+                   onClick={toggleWindowMaximize}
+                   className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${isMaximized ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
+                   title={isMaximized ? 'Restore Window' : 'Maximize Window'}
+                 >
+                   {isMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                 </button>
+               )}
+
+               {isStandalone && (
+                 <button
+                   onClick={() => { setLockError(''); setIsLockModalOpen(true); }}
+                   className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${lockStatus.enabled ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
+                   title="App Lock"
+                 >
+                   <Lock size={16} />
+                 </button>
+               )}
+
                <button 
                  onClick={() => setIsFocusedMode(!isFocusedMode)}
                  className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${isFocusedMode ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
@@ -1830,10 +3479,200 @@ function App() {
           </div>
         </header>
 
+      <AnimatePresence>
+        {isDiagnosticsOpen && (
+          <motion.div
+            initial={{ opacity: 0, y: -8, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -6, scale: 0.98 }}
+            className="fixed right-4 md:right-6 top-20 z-[140] w-[min(92vw,420px)] max-h-[78vh] overflow-y-auto glass-card bg-[#07090c]/90 border border-white/10 backdrop-blur-2xl rounded-3xl p-4 md:p-5 shadow-[0_20px_60px_rgba(0,0,0,0.45)]"
+          >
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-[10px] tracking-[0.24em] uppercase font-black text-brand-accent">Diagnostics</div>
+              <button onClick={() => setIsDiagnosticsOpen(false)} className="text-white/40 hover:text-brand-accent transition-colors">
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2 mb-3">
+              <button
+                onClick={handleResetPlaybackEngine}
+                className="px-3 py-1.5 rounded-xl border border-brand-accent/30 bg-brand-accent/10 text-brand-accent text-[10px] font-black uppercase tracking-[0.16em] hover:bg-brand-accent/20 transition-all"
+              >
+                Reset Engine
+              </button>
+              <button
+                onClick={() => setSkipEvents([])}
+                className="px-3 py-1.5 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 text-[10px] font-black uppercase tracking-[0.16em] hover:border-white/30 transition-all"
+              >
+                Clear Skip Log
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-[10px] font-mono">
+              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                <div className="text-white/40 uppercase mb-1">Transport</div>
+                <div className={`font-black ${isAudioBuffering ? 'text-yellow-400' : isPlaying ? 'text-brand-accent' : 'text-white/70'}`}>
+                  {isAudioBuffering ? 'BUFFERING' : isPlaying ? 'PLAYING' : 'PAUSED'}
+                </div>
+              </div>
+              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                <div className="text-white/40 uppercase mb-1">Queue</div>
+                <div className="font-black text-brand-accent">{Math.max(0, queue.length - 1)} pending</div>
+              </div>
+              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                <div className="text-white/40 uppercase mb-1">Current Node</div>
+                <div className="font-black text-white/85 truncate">{currentTrack?.title || '—'}</div>
+              </div>
+              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                <div className="text-white/40 uppercase mb-1">Queue Poll</div>
+                <div className="font-black text-brand-accent">{queuePollDisplay}</div>
+                <div className="text-white/40 mt-1">{queuePollTime}</div>
+              </div>
+              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                <div className="text-white/40 uppercase mb-1">System Poll</div>
+                <div className="font-black text-brand-accent">{diagnostics.lastSystemFetchMs ?? '—'}ms</div>
+                <div className="text-white/40 mt-1">{formatDiagTime(diagnostics.lastSystemFetchAt)}</div>
+              </div>
+              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                <div className="text-white/40 uppercase mb-1">Lyrics Source</div>
+                <div className="font-black text-brand-accent truncate">{diagnostics.lastLyricsSource || '—'}</div>
+              </div>
+              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                <div className="text-white/40 uppercase mb-1">Song Fetch</div>
+                <div className="font-black text-brand-accent">{diagnostics.lastSongFetchMs ?? '—'}ms</div>
+                <div className="text-white/40 mt-1 truncate">{diagnostics.lastSongSource || '-'}</div>
+              </div>
+              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                <div className="text-white/40 uppercase mb-1">Lyrics Fetch</div>
+                <div className="font-black text-brand-accent">{diagnostics.lastLyricsFetchMs ?? '—'}ms</div>
+              </div>
+              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                <div className="text-white/40 uppercase mb-1">Sync State</div>
+                <div className="font-black text-white/80">offset {lyricOffsetMs}ms • line {activeLyricIndex >= 0 ? activeLyricIndex + 1 : 0} • {isAutoScrollPaused ? 'manual' : 'auto'}</div>
+              </div>
+              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                <div className="text-white/40 uppercase mb-1">API Base</div>
+                <div className="font-black text-white/70 truncate">{diagnosticsApiBase}</div>
+              </div>
+
+              {isStandalone && (
+                <>
+                  <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                    <div className="text-white/40 uppercase mb-1">Storage</div>
+                    <div className="font-black text-brand-accent">{formatBytes(storageStats?.totalBytes || 0)}</div>
+                    <div className="text-white/45 mt-1">
+                      downloads {formatBytes(storageStats?.downloadsBytes || 0)} • cache {formatBytes(storageStats?.cacheBytes || 0)}
+                    </div>
+                  </div>
+
+                  <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2 space-y-2">
+                    <div className="text-white/40 uppercase">Storage Policy</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="text-white/55">
+                        Cache cap (MB)
+                        <input
+                          type="number"
+                          min={256}
+                          max={16384}
+                          value={storagePolicy.cacheCapMb}
+                          onChange={(e) => {
+                            const parsed = parseInt(e.target.value || '2048', 10);
+                            setStoragePolicy(prev => ({ ...prev, cacheCapMb: Number.isFinite(parsed) ? Math.max(256, parsed) : 2048 }));
+                          }}
+                          className="mt-1 w-full rounded-lg border border-white/15 bg-black/30 px-2 py-1 text-white"
+                        />
+                      </label>
+                      <label className="text-white/55">
+                        Age cleanup (days)
+                        <input
+                          type="number"
+                          min={1}
+                          max={365}
+                          value={storagePolicy.maxCacheAgeDays}
+                          onChange={(e) => {
+                            const parsed = parseInt(e.target.value || '30', 10);
+                            setStoragePolicy(prev => ({ ...prev, maxCacheAgeDays: Number.isFinite(parsed) ? Math.max(1, parsed) : 30 }));
+                          }}
+                          className="mt-1 w-full rounded-lg border border-white/15 bg-black/30 px-2 py-1 text-white"
+                        />
+                      </label>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        disabled={isStorageBusy}
+                        onClick={async () => { await applyStoragePolicy(storagePolicy); await refreshStorageStats(); }}
+                        className="px-2 py-1 rounded-lg border border-brand-accent/30 text-brand-accent bg-brand-accent/10 disabled:opacity-50"
+                      >
+                        Save Policy
+                      </button>
+                      <button
+                        disabled={isStorageBusy}
+                        onClick={() => runStorageOptimize('cap')}
+                        className="px-2 py-1 rounded-lg border border-white/15 text-white/75 bg-white/[0.03] disabled:opacity-50"
+                      >
+                        Trim to Cap {storageEstimate.cap ? `(${formatBytes(storageEstimate.cap.estimatedBytes)})` : ''}
+                      </button>
+                      <button
+                        disabled={isStorageBusy}
+                        onClick={() => runStorageOptimize('age')}
+                        className="px-2 py-1 rounded-lg border border-white/15 text-white/75 bg-white/[0.03] disabled:opacity-50"
+                      >
+                        Clean Old Cache {storageEstimate.age ? `(${formatBytes(storageEstimate.age.estimatedBytes)})` : ''}
+                      </button>
+                      <button
+                        disabled={isStorageBusy}
+                        onClick={() => runStorageOptimize('downloads-only')}
+                        className="px-2 py-1 rounded-lg border border-yellow-500/30 text-yellow-300 bg-yellow-500/10 disabled:opacity-50"
+                      >
+                        Keep Downloaded Only {storageEstimate.downloadsOnly ? `(${formatBytes(storageEstimate.downloadsOnly.estimatedBytes)})` : ''}
+                      </button>
+                      <button
+                        disabled={isStorageBusy}
+                        onClick={async () => { await refreshStorageStats(); await refreshStorageEstimate(); }}
+                        className="px-2 py-1 rounded-lg border border-white/15 text-white/60 bg-white/[0.02] disabled:opacity-50"
+                      >
+                        Refresh
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {(diagnostics.lastQueueError || diagnostics.lastSystemError || diagnostics.lastLyricsError) && (
+                <div className="p-2 rounded-xl bg-red-500/10 border border-red-500/30 col-span-2">
+                  <div className="text-red-300 uppercase mb-1">Last Error</div>
+                  <div className="font-black text-red-200/90 truncate">{diagnostics.lastQueueError || diagnostics.lastSystemError || diagnostics.lastLyricsError}</div>
+                </div>
+              )}
+
+              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                <div className="text-white/40 uppercase mb-1">Recent Skip Events</div>
+                <div className="space-y-1 max-h-24 overflow-auto pr-1">
+                  {skipEvents.length === 0 ? (
+                    <div className="text-white/35">No skip events captured.</div>
+                  ) : (
+                    skipEvents.slice(-6).reverse().map((event, idx) => (
+                      <div key={`${event.at || 0}-${idx}`} className="text-white/70 truncate">
+                        <span className="text-brand-accent">{new Date(event.at || Date.now()).toLocaleTimeString()}</span>
+                        {' • '}
+                        <span>{event.reason}</span>
+                        {' • '}
+                        <span className="text-white/45">{event.title || 'Unknown'}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
 
       <motion.main 
         className={`flex-1 relative z-10 w-full mb-0 min-h-0 px-4 md:px-6 py-4 ${isVerticalStack ? '!flex !flex-col !gap-8 overflow-y-auto scroll-smooth pb-20 custom-scrollbar' : 'flex flex-row gap-4 overflow-hidden'}`}
-        style={{ scale: uiPulse }}
+        style={{ scale: isAuraMode ? uiPulse : 1 }}
         transition={{ type: "spring", stiffness: 300, damping: 20 }}
       >
         
@@ -1841,7 +3680,7 @@ function App() {
         <div className={`flex flex-col gap-4 min-w-0 overflow-hidden ${isVerticalStack ? '!w-full !max-w-full !flex-none' : (isFocusedMode ? 'w-full px-0' : 'w-[66.666%] h-full')}`}>
           
           {/* PLAYER CARD */}
-          <div className="glass-card flex relative overflow-hidden group shrink-0 transition-all duration-700 p-6 md:p-8 flex-col sm:flex-row gap-8 md:gap-10 min-h-[300px] flex-none rounded-[3.5rem] border-white/5 shadow-2xl transition-all">
+          <div className={`glass-card flex relative overflow-hidden group shrink-0 transition-all duration-700 p-6 md:p-8 flex-col sm:flex-row gap-8 md:gap-10 min-h-[300px] flex-none rounded-[3.5rem] shadow-2xl transition-all ${isAuraMode ? 'bg-white/[0.015] border-white/[0.14] backdrop-blur-[30px] shadow-[0_24px_90px_rgba(0,0,0,0.32)]' : 'border-white/5'}`}>
         {/* TOP BAR / NAVIGATION */}
             {currentTrack && (
               <div className="absolute inset-0 blur-[120px] opacity-10 pointer-events-none group-hover:opacity-20 transition-opacity">
@@ -1882,7 +3721,7 @@ function App() {
                     </div>
 
                     {/* COMPACT VOLUME UNIT */}
-                    <div className="w-full flex flex-col gap-2 px-2 bg-white/5 p-3 rounded-2xl border border-white/5">
+                    <div className={`w-full flex flex-col gap-2 px-2 p-3 rounded-2xl border ${isAuraMode ? 'bg-white/[0.03] border-white/[0.14] backdrop-blur-xl' : 'bg-white/5 border-white/5'}`}>
                        <div className="flex items-center justify-between">
                           <button onClick={() => handleControl('mute')} className="hover:text-brand-accent transition-colors active:scale-90">
                             <Volume2 size={12} className={volume === 0 ? 'text-red-500' : 'text-brand-accent/50'} />
@@ -1897,9 +3736,9 @@ function App() {
                  <div className="flex flex-col flex-1 min-w-0 py-0">
                     <div className="mb-6">
                         <div className="flex items-center justify-between gap-4 mb-2">
-                           <div className="label-caps mb-0 text-brand-accent/50 text-[9px] flex items-center gap-2 tracking-[0.4em] uppercase font-black">
+                             <div className="label-caps mb-0 text-brand-accent/60 text-[9px] flex items-center gap-2 tracking-[0.28em] uppercase font-black">
                               <span className="w-1 h-1 rounded-full bg-brand-accent animate-pulse" />
-                               {isAudioBuffering ? "Neural Calibration // Buffering // V12.11.1-SOVEREIGN" : "Signal Output // Active // V12.11.1-SOVEREIGN"}
+                               {isAudioBuffering ? "Buffering" : "Now Playing"}
                            </div>
                            <div className="flex items-center gap-1 no-drag ml-auto">
                              <button onClick={() => handleControl('clear')} className="p-2 text-white/20 hover:text-red-500 transition-colors" title="Clear Queue"><Trash2 size={14} /></button>
@@ -1940,7 +3779,7 @@ function App() {
                         {/* COMPACT TRANSPORT CLUSTER - CENTERED */}
                         <div className="flex items-center justify-center w-full mt-2 relative">
                            
-                           <div className="flex items-center bg-white/5 backdrop-blur-3xl border border-white/5 p-2 rounded-3xl gap-4 relative z-10">
+                           <div className={`flex items-center backdrop-blur-3xl border p-2 rounded-3xl gap-4 relative z-10 ${isAuraMode ? 'bg-white/[0.04] border-white/[0.16] shadow-[0_12px_40px_rgba(0,0,0,0.22)]' : 'bg-white/5 border-white/5'}`}>
                               <button onClick={() => handleControl('previous')} className="p-3 hover:text-brand-accent transition-colors active:scale-90"><Rewind size={22} fill="currentColor" /></button>
                               <button onClick={() => handleControl(isPlaying ? 'pause' : 'resume')} className="w-16 h-16 bg-brand-accent text-black rounded-2xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-xl shadow-brand-accent/20">
                                 {isPlaying ? <Pause size={28} fill="currentColor" /> : <Play size={28} fill="currentColor" className="ml-1" />}
@@ -1962,8 +3801,8 @@ function App() {
 
 
           {/* LYRICS PANEL - FLEX-1 TO FILL GAP */}
-          <div className={`glass-card overflow-hidden flex flex-col transition-all duration-700 bg-white/[0.03] border-white/5 min-h-0 ${isVerticalStack ? 'h-[400px] flex-none' : 'flex-1'}`}>
-            <div className={`border-b border-white/5 flex items-center justify-between bg-white/[0.02] ${isVerticalStack ? 'px-3 py-2' : 'px-5 py-4'}`}>
+          <div className={`glass-card overflow-hidden flex flex-col transition-all duration-300 min-h-0 ${panelGlassClass} ${panelInteractiveClass} ${isVerticalStack ? 'h-[400px] flex-none' : 'flex-1'}`}>
+            <div className={`border-b border-white/5 flex items-center justify-between ${panelHeaderClass} ${isVerticalStack ? 'px-3 py-2' : 'px-5 py-4'}`}>
               <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
                 <BookOpen size={16} className="text-brand-accent flex-none" />
                 <span className="label-caps mb-0 text-[9px] tracking-[0.1em] uppercase truncate shrink">Subtitles // {isPlaying ? (lyrics.length > 0 ? 'SYNCED' : 'DECODING') : 'IDLE'}</span>
@@ -1974,6 +3813,20 @@ function App() {
                     <span className="text-[10px] font-mono text-brand-accent font-black w-14 text-center">{lyricOffsetMs}ms</span>
                     <button onClick={() => handleSync(500)} className="p-2 hover:text-brand-accent"><ChevronRight size={18} /></button>
                  </div>
+                 <button
+                   onClick={handleSaveLyricPreset}
+                   className={`hidden md:flex items-center gap-1 px-3 py-2 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all ${isLyricPresetSaved ? 'bg-brand-accent/15 border-brand-accent/40 text-brand-accent' : 'bg-white/5 border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/40'}`}
+                   title="Save current sync offset for this track"
+                 >
+                   <Save size={10} /> {isLyricPresetSaved ? 'Saved' : 'Save'}
+                 </button>
+                 <button
+                   onClick={handleResetLyricPreset}
+                   className="hidden md:flex items-center gap-1 px-3 py-2 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all bg-white/5 border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/40"
+                   title="Reset sync for this track"
+                 >
+                   <RotateCcw size={10} /> Reset
+                 </button>
                   {!isStandalone && <button onClick={() => {
                     const guildId = getEffectiveGuildId();
                     axios.post(`${API_BASE}/api/source/${guildId}`).catch(e => console.error('Rotate error:', e));
@@ -1991,7 +3844,7 @@ function App() {
             <div className="flex-1 overflow-y-auto p-10 lg:p-20 scroll-smooth relative" ref={lyricsContainerRef} onWheel={() => setIsAutoScrollPaused(true)} onTouchStart={() => setIsAutoScrollPaused(true)}>
               {isAutoScrollPaused && lyrics.length > 0 && (
                 <button 
-                  onClick={() => setIsAutoScrollPaused(false)}
+                  onClick={handleResyncLyrics}
                   className="sticky top-0 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-4 py-2 bg-brand-accent text-black font-black text-[10px] uppercase tracking-widest rounded-full shadow-neon translate-y-4 animate-bounce hover:scale-105 transition-transform"
                 >
                   <RotateCcw size={12} /> Resume Sync
@@ -2038,8 +3891,8 @@ function App() {
         {!isFocusedMode && (
           <div className={`flex flex-col gap-4 min-w-0 ${isVerticalStack ? '!w-full !max-w-full !flex-none pb-20' : 'w-[33.333%] h-full overflow-hidden flex-none'}`}>
             {/* QUEUE */}
-            <div className={`${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col overflow-hidden bg-white/[0.03] border-white/5`}>
-            <div className="p-3 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
+            <div className={`${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col overflow-hidden transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}>
+            <div className={`p-3 border-b border-white/5 flex items-center justify-between ${panelHeaderClass}`}>
                <div className="flex items-center gap-3">
                  <ListMusic size={18} className="text-brand-accent" />
                  <span className="label-caps mb-0 text-[10px]">Queue Buffer</span>
@@ -2114,8 +3967,8 @@ function App() {
           </div>
 
           {/* DISCOVERY */}
-          <div className={`${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col overflow-hidden bg-white/[0.03] border-white/5`}>
-            <div className="p-3 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
+          <div className={`${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col overflow-hidden transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}>
+            <div className={`p-3 border-b border-white/5 flex items-center justify-between ${panelHeaderClass}`}>
               <div className="flex items-center gap-3">
                 <Globe size={18} className="text-brand-accent" />
                 <span className="label-caps mb-0 text-[10px]">Neural Discovery</span>
@@ -2156,8 +4009,8 @@ function App() {
           </div>
 
           {/* STUDIO LIBRARY */}
-            <div className={`glass-card flex flex-col overflow-hidden studio-vault-container border-white/5 relative bg-white/[0.02] shadow-inner library-panel ${isVerticalStack ? 'min-h-[500px] flex-none' : 'h-full min-h-0'}`}>
-            <div className="p-3 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
+            <div className={`glass-card flex flex-col overflow-hidden studio-vault-container relative shadow-inner library-panel transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass} ${isVerticalStack ? 'min-h-[500px] flex-none' : 'h-full min-h-0'}`}>
+            <div className={`p-3 border-b border-white/5 flex items-center justify-between ${panelHeaderClass}`}>
                <div className="flex items-center gap-3"><HardDrive size={18} className="text-brand-accent" /><span className="label-caps mb-0 text-[10px] tracking-widest">Studio Library</span></div>
                 <div className="flex items-center gap-4">
                     {/* VISUALIZER TOGGLE (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN */}
@@ -2174,11 +4027,23 @@ function App() {
                       </div>
                    ) : ( 
                        <div className="flex items-center gap-2">
+                          <button onClick={handleGenerateSmartMix} className="p-1 text-white/40 hover:text-brand-accent transition-colors" title="Generate Smart Mix"><Zap size={14} /></button>
+                          <button onClick={handleCleanVault} disabled={isVaultCleaning} className="p-1 text-white/40 hover:text-brand-accent transition-colors disabled:opacity-40" title="Clean Vault (dedupe + remove unavailable + normalize metadata)"><RefreshCw size={14} className={isVaultCleaning ? 'animate-spin' : ''} /></button>
                           <button onClick={() => setIsCreatingPlaylist(true)} className="p-1 hover:text-brand-accent transition-colors" title="Create New Vault"><Plus size={16} /></button>
+                            <button onClick={() => { setSpotifyImportUrl(''); setSpotifyImportProgress({ stage: 'idle', progress: 0, message: '' }); setSpotifyImportLogs([]); setIsSpotifyImportOpen(true); }} className="p-1 text-white/40 hover:text-brand-accent transition-colors" title="Import Spotify Playlist"><Music size={14} /></button>
                           <button onClick={handleImportVault} className="p-1 text-white/40 hover:text-brand-accent transition-colors" title="Import Vault (.aether)"><Upload size={14} /></button>
                        </div> 
                     )}
                 </div>
+            </div>
+            <div className="px-4 py-2 border-b border-white/5 bg-white/[0.02] flex flex-wrap items-center gap-2">
+              <span className="text-[8px] font-black uppercase tracking-[0.2em] text-white/40">Nodes</span>
+              <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-brand-accent/10 border border-brand-accent/20 text-brand-accent">{libraryInsights.unique} unique</span>
+              <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/70">{libraryInsights.total} total</span>
+              <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/70">{libraryInsights.duplicates} dupes</span>
+              {libraryInsights.topArtists.length > 0 && (
+                <span className="text-[8px] font-mono text-white/40 ml-1 truncate">Top: {libraryInsights.topArtists.map(([artist]) => artist).join(' • ')}</span>
+              )}
             </div>
             {/* SAFE SCROLL WRAPPER */}
             <div className={`flex-1 min-h-0 relative ${isVerticalStack ? 'h-[500px]' : ''}`}>
@@ -2254,6 +4119,29 @@ function App() {
 
       {/* Global Toast Overlay */}
       <AnimatePresence>
+        {sessionRestoreNotice && (
+          <motion.div
+            initial={{ opacity: 0, y: -20, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -16, scale: 0.96 }}
+            className="fixed top-20 left-1/2 -translate-x-1/2 px-6 py-3 bg-white/10 text-white font-black rounded-2xl border border-brand-accent/30 backdrop-blur-xl z-[210] flex items-center gap-3"
+          >
+            <Clock size={14} className="text-brand-accent" />
+            <span className="text-[10px] uppercase tracking-[0.2em]">{sessionRestoreNotice}</span>
+          </motion.div>
+        )}
+
+        {skipReasonToast && (
+          <motion.div
+            initial={{ opacity: 0, y: 20, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 12, scale: 0.96 }}
+            className="fixed right-5 bottom-24 px-4 py-2 bg-black/70 text-brand-accent font-mono rounded-xl border border-brand-accent/30 backdrop-blur-xl z-[210]"
+          >
+            <span className="text-[10px] uppercase tracking-[0.16em]">skip: {skipReasonToast}</span>
+          </motion.div>
+        )}
+
         {lastAdded && (
           <motion.div initial={{ opacity: 0, y: 100 }} animate={{ opacity: 1, y: -40 }} exit={{ opacity: 0, y: 100 }} className="fixed bottom-0 left-1/2 -translate-x-1/2 px-10 py-5 bg-brand-accent text-brand-dark font-black rounded-[2rem] shadow-neon-strong z-[200] flex items-center gap-6 whitespace-nowrap border-t-2 border-white/20">
             <Zap size={24} fill="currentColor" />
@@ -2270,7 +4158,7 @@ function App() {
             initial={{ opacity: 0, scale: 1.1 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 1.1 }}
-            className="fixed inset-0 z-[200] bg-brand-dark/95 backdrop-blur-[20px] bg-black/80 flex flex-col p-4 pt-10 md:p-8 overflow-hidden"
+            className="fixed inset-0 z-[200] bg-brand-dark/95 backdrop-blur-[20px] bg-black/80 flex flex-col p-4 pt-10 md:p-8 overflow-hidden overflow-x-hidden"
           >
             {/* Immersive Top Navigation Bar - Perfect Absolute Grid */}
             <div className="w-full grid grid-cols-[1fr_auto_1fr] items-center z-[300] pr-2 md:pr-4 flex-none gap-2">
@@ -2313,19 +4201,37 @@ function App() {
                  </div>
                </div>
 
-               <div className="flex-1 overflow-y-scroll flex flex-col px-4 md:px-10 custom-scrollbar-heavy w-full" ref={expandedContainerRef} onWheel={() => setIsAutoScrollPaused(true)} style={{ minHeight: "0px" }}>
+               <div className="flex-1 overflow-y-scroll overflow-x-hidden flex flex-col px-4 md:px-10 custom-scrollbar-heavy w-full relative" ref={expandedContainerRef} style={{ minHeight: "0px" }}>
+                  <motion.div
+                    aria-hidden
+                    className="pointer-events-none absolute left-1/2 top-1/2 z-0 -translate-x-1/2 -translate-y-1/2 rounded-full"
+                    animate={{
+                      opacity: 0.15 + immersiveBeatIntensity * 0.4,
+                      scale: 1 + immersiveBeatIntensity * 0.3,
+                    }}
+                    transition={{ duration: 0.22, ease: 'easeOut' }}
+                    style={{
+                      width: 'min(84vw, 980px)',
+                      height: 'min(84vw, 980px)',
+                      background: `radial-gradient(circle, ${themeColor}${alphaHex(0.2)} 0%, ${themeColor}${alphaHex(0.09)} 35%, transparent 70%)`,
+                      filter: `blur(${40 + immersiveBeatIntensity * 30}px)`,
+                    }}
+                  />
+
                   <div className="flex flex-col gap-24 lg:gap-32 py-[45vh] items-center text-center w-full mx-auto cursor-default">
                     {lyrics.map((line, idx) => {
                       const isActive = idx === activeLyricIndex;
+                      const lyricLineLayoutClass = 'text-3xl sm:text-5xl lg:text-6xl max-w-[min(74vw,920px)]';
                       return (
-                        <div 
+                        <div
                           key={idx} 
                           ref={isActive ? expandedActiveRef : null} 
-                          className={`text-2xl sm:text-4xl lg:text-6xl px-4 font-black transition-all duration-700 transform leading-tight w-full max-w-none ${
+                          className={`${lyricLineLayoutClass} px-4 md:px-6 font-black transition-all duration-700 transform-gpu origin-center leading-tight w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] z-20 ${
                             isActive 
-                              ? 'text-[#00ffbf] scale-125 opacity-100 drop-shadow-[0_0_40px_rgba(0,255,191,0.8)]' 
-                              : 'text-white/20 opacity-40 blur-[2px] transition-all'
+                              ? 'scale-125 opacity-100 text-[#00ffbf] drop-shadow-[0_0_40px_rgba(0,255,191,0.8)]'
+                              : 'scale-100 opacity-30 text-white/20'
                           }`}
+                          style={{ textWrap: 'balance' }}
                         >
                           {line.text}
                         </div>
@@ -2335,67 +4241,398 @@ function App() {
                </div>
 
                {isAutoScrollPaused && (
-                <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-[250]">
-                  <button 
-                    onClick={() => setIsAutoScrollPaused(false)}
-                    className="flex items-center gap-3 px-8 py-4 bg-brand-accent text-black font-black uppercase tracking-[0.3em] rounded-full shadow-neon scale-110 active:scale-95 transition-all"
-                  >
-                    <RotateCcw size={18} /> Re-Sync
-                  </button>
-                </div>
+                 <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-[250]">
+                   <button 
+                     onClick={handleResyncLyrics}
+                     className="flex items-center gap-3 px-8 py-4 bg-brand-accent text-black font-black uppercase tracking-[0.3em] rounded-full shadow-neon scale-110 active:scale-95 transition-all"
+                   >
+                     <RotateCcw size={18} /> Re-Sync
+                   </button>
+                 </div>
                )}
+
             </div>
           </motion.div>
         )}
       </AnimatePresence>
-      {/* PAC-MAN EASTER EGG (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN - COLLABRIX SYNC) */}
+
       <AnimatePresence>
-        {isPacmanOpen && (
-          <motion.div 
+        {isLockModalOpen && (
+          <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-[fadeIn_0.3s_ease-out]"
-            onClick={() => setIsPacmanOpen(false)}
+            className="fixed inset-0 z-[245] flex items-center justify-center p-4"
           >
-            <motion.div 
-              initial={{ scale: 0.8, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.8, y: 20 }}
-              className="relative w-[90vw] h-[80vh] max-w-5xl bg-[#111] rounded-2xl border-2 border-yellow-400/50 shadow-[0_0_50px_rgba(250,204,21,0.3)] overflow-hidden animate-[slideInUp_0.4s_ease-out]"
-              onClick={(e) => e.stopPropagation()}
+            <div className="absolute inset-0 bg-black/70 backdrop-blur-md" onClick={() => !isLockBusy && setIsLockModalOpen(false)} />
+            <motion.div
+              initial={{ y: 12, scale: 0.98, opacity: 0 }}
+              animate={{ y: 0, scale: 1, opacity: 1 }}
+              exit={{ y: 10, scale: 0.98, opacity: 0 }}
+              className="relative z-10 w-full max-w-lg rounded-[2rem] border border-white/10 bg-[#0a0a0a]/95 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-2xl overflow-hidden"
             >
-              {/* Close Button */}
-              <button 
-                onClick={() => setIsPacmanOpen(false)}
-                className="absolute top-4 right-4 p-2 rounded-full bg-black/40 hover:bg-black/60 text-yellow-500 transition-colors z-50"
-              >
-                <X size={24} />
-              </button>
-
-              {/* Game Viewport */}
-              <div className="absolute inset-0 flex items-center justify-center bg-[#000]">
-                <iframe 
-                  src="https://www.google.com/logos/2010/pacman10-i.html" 
-                  className="w-full h-full border-none"
-                  title="Neural Ghost V2"
-                  allow="autoplay; fullscreen"
-                />
+              <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
+                <div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.28em] text-brand-accent">App Lock</div>
+                  <div className="text-[11px] text-white/45 mt-1">Secure Aether with password and optional Touch ID.</div>
+                </div>
+                <button
+                  onClick={() => !isLockBusy && setIsLockModalOpen(false)}
+                  className="w-9 h-9 rounded-xl border border-white/10 bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/40 transition-all"
+                >
+                  <X size={16} />
+                </button>
               </div>
 
-              {/* Legacy Header Info (Styled to match screenshot) */}
-              <div className="absolute top-6 left-8 z-10 pointer-events-none">
-                 <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 flex items-center justify-center bg-yellow-400/20 rounded-lg border border-yellow-400/40">
-                       <Play size={16} className="text-yellow-400 fill-yellow-400" />
+              <div className="p-5 space-y-4">
+                {lockStatus.enabled ? (
+                  <>
+                    <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                      <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Status</div>
+                      <div className="text-[12px] text-brand-accent font-black">Enabled</div>
                     </div>
-                    <div className="flex flex-col">
-                       <h2 className="text-yellow-400 font-black text-xl tracking-[0.2em] uppercase leading-none">PAC-MAN</h2>
-                       <span className="text-white/40 text-[8px] font-mono tracking-widest uppercase mt-1">GHOST_PROTOCOL // LEGACY_SYNC</span>
-                        <span className="text-white/40 text-[8px] font-mono tracking-widest uppercase mt-1">GHOST_PROTOCOL // LEGACY_SYNC</span>
-                     </div>
+
+                    {lockStatus.touchIdAvailable && (
+                      <label className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 cursor-pointer">
+                        <span className="text-[11px] text-white/70">Use Touch ID</span>
+                        <input
+                          type="checkbox"
+                          checked={lockUseTouchId}
+                          onChange={(e) => handleToggleTouchIdLock(e.target.checked)}
+                          className="accent-brand-accent"
+                        />
+                      </label>
+                    )}
+
+                    <label className="block rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[11px] text-white/70">Idle auto-lock</span>
+                        <span className="text-[11px] font-black text-brand-accent">{lockIdleMinutes}m</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={1}
+                        max={60}
+                        step={1}
+                        value={lockIdleMinutes}
+                        onChange={(e) => {
+                          const parsed = parseInt(e.target.value || '5', 10);
+                          setLockIdleMinutes(Number.isFinite(parsed) ? Math.max(1, parsed) : 5);
+                        }}
+                        className="w-full accent-brand-accent"
+                      />
+                    </label>
+
+                    <input
+                      type="password"
+                      value={lockDisablePassword}
+                      onChange={(e) => setLockDisablePassword(e.target.value)}
+                      placeholder="Enter password to disable lock"
+                      className="w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50"
+                    />
+                    <button
+                      onClick={handleDisableLock}
+                      disabled={isLockBusy || !lockDisablePassword}
+                      className="w-full px-5 py-2.5 rounded-xl bg-red-500/20 text-red-300 border border-red-500/30 font-black text-sm disabled:opacity-50"
+                    >
+                      Disable Lock
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <input
+                      type="password"
+                      value={lockPasswordInput}
+                      onChange={(e) => setLockPasswordInput(e.target.value)}
+                      placeholder="Set password"
+                      className="w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50"
+                    />
+                    <input
+                      type="password"
+                      value={lockPasswordConfirm}
+                      onChange={(e) => setLockPasswordConfirm(e.target.value)}
+                      placeholder="Confirm password"
+                      className="w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50"
+                    />
+                    {lockStatus.touchIdAvailable && (
+                      <label className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 cursor-pointer">
+                        <span className="text-[11px] text-white/70">Enable Touch ID unlock</span>
+                        <input
+                          type="checkbox"
+                          checked={lockUseTouchId}
+                          onChange={(e) => setLockUseTouchId(e.target.checked)}
+                          className="accent-brand-accent"
+                        />
+                      </label>
+                    )}
+                    <button
+                      onClick={handleEnableLock}
+                      disabled={isLockBusy || !lockPasswordInput || !lockPasswordConfirm}
+                      className="w-full px-5 py-2.5 rounded-xl bg-brand-accent text-black font-black text-sm disabled:opacity-50"
+                    >
+                      Enable Lock
+                    </button>
+                  </>
+                )}
+
+                {lockStatus.enabled && (
+                  <button
+                    onClick={() => { setIsAppLocked(true); setIsLockModalOpen(false); }}
+                    className="w-full px-5 py-2.5 rounded-xl border border-brand-accent/30 bg-brand-accent/10 text-brand-accent font-black text-sm"
+                  >
+                    Lock Now
+                  </button>
+                )}
+
+                {lockError && <div className="text-[11px] text-red-400">{lockError}</div>}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isSpotifyImportOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[240] flex items-center justify-center p-4"
+          >
+            <div className="absolute inset-0 bg-black/70 backdrop-blur-md" onClick={() => !isSpotifyImporting && setIsSpotifyImportOpen(false)} />
+            <motion.div
+              initial={{ y: 16, scale: 0.97, opacity: 0 }}
+              animate={{ y: 0, scale: 1, opacity: 1 }}
+              exit={{ y: 10, scale: 0.98, opacity: 0 }}
+              className="relative z-10 w-full max-w-xl rounded-[2rem] border border-white/10 bg-[#0a0a0a]/95 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-2xl overflow-hidden"
+            >
+              <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
+                <div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.28em] text-brand-accent">Spotify Import</div>
+                  <div className="text-[11px] text-white/45 mt-1">Paste a public playlist URL and match it into Aether.</div>
+                </div>
+                <button
+                  onClick={() => !isSpotifyImporting && setIsSpotifyImportOpen(false)}
+                  className="w-9 h-9 rounded-xl border border-white/10 bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/40 transition-all"
+                  title="Close"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="p-5 space-y-4">
+                <div>
+                  <label className="block text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Playlist URL</label>
+                  <input
+                    value={spotifyImportUrl}
+                    onChange={(e) => setSpotifyImportUrl(e.target.value)}
+                    disabled={isSpotifyImporting}
+                    placeholder="https://open.spotify.com/playlist/..."
+                    className="w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50 focus:bg-brand-accent/[0.04] transition-all disabled:opacity-60"
+                  />
+                </div>
+
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4">
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <span className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">Progress</span>
+                    <span className="text-[10px] font-mono text-brand-accent/80">{Math.max(0, Math.min(100, spotifyImportProgress.progress || 0))}%</span>
                   </div>
-               </div>
+                  <div className="h-2 rounded-full bg-white/10 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-300 ${spotifyImportProgress.stage === 'error' ? 'bg-red-500' : 'bg-brand-accent'}`}
+                      style={{ width: `${Math.max(4, Math.min(100, spotifyImportProgress.progress || 0))}%` }}
+                    />
+                  </div>
+                  <div className="mt-3 text-[11px] text-white/60 min-h-[1.5em]">
+                    {spotifyImportProgress.message || (isSpotifyImporting ? 'Preparing import…' : 'Ready to import.')}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3">
+                  <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Debug Log</div>
+                  <div className="max-h-28 overflow-auto space-y-1 pr-1">
+                    {spotifyImportLogs.length === 0 ? (
+                      <div className="text-[10px] text-white/35">No logs yet.</div>
+                    ) : spotifyImportLogs.map((line, idx) => (
+                      <div key={`${line}-${idx}`} className="text-[10px] leading-4 font-mono text-white/55 break-words">{line}</div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end gap-3 pt-1">
+                  <button
+                    onClick={() => { if (!isSpotifyImporting) setIsSpotifyImportOpen(false); }}
+                    className="px-4 py-2 rounded-xl border border-white/10 bg-white/5 text-white/60 hover:text-white hover:border-white/20 transition-all text-sm"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleImportSpotifyPlaylist}
+                    disabled={isSpotifyImporting || !spotifyImportUrl.trim()}
+                    className="px-5 py-2 rounded-xl bg-brand-accent text-brand-dark font-black text-sm hover:scale-[1.01] active:scale-95 transition-all disabled:opacity-50 disabled:hover:scale-100"
+                  >
+                    {isSpotifyImporting ? 'Importing…' : 'Import Playlist'}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {isMixtapeVaultOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md p-4"
+            onClick={() => setIsMixtapeVaultOpen(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.94, y: 10 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, y: 8 }}
+              ref={mixtapeVaultRef}
+              style={{
+                '--vault-bass': vaultPulse.bass,
+                '--vault-mids': vaultPulse.mids,
+                '--vault-highs': vaultPulse.highs,
+                '--vault-energy': vaultPulse.energy,
+                '--vault-scale': 1 + (vaultPulse.energy * 0.1),
+                '--vault-spin': `${vaultPulse.spin}deg`,
+                '--vault-glow': vaultPulse.energy,
+              }}
+              className="relative w-[min(92vw,680px)] rounded-3xl border border-brand-accent/30 bg-[#07090c]/95 shadow-[0_0_70px_rgba(0,255,191,0.15)] overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                onClick={() => setIsMixtapeVaultOpen(false)}
+                className="absolute top-4 right-4 p-2 rounded-full bg-black/40 hover:bg-black/60 text-brand-accent transition-colors z-50"
+              >
+                <X size={20} />
+              </button>
+
+              <div className="p-6 md:p-8">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="w-10 h-10 flex items-center justify-center rounded-xl border border-brand-accent/40 bg-brand-accent/10">
+                    <Music size={18} className="text-brand-accent" />
+                  </div>
+                  <div>
+                    <h2 className="text-brand-accent font-black text-xl tracking-[0.18em] uppercase leading-none">Mixtape Vault</h2>
+                    <span className="text-white/45 text-[9px] font-mono tracking-[0.2em] uppercase">SECRET_MODE // ANALOG_NIGHT</span>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-white/10 bg-black/30 p-5 md:p-6">
+                  <div className="flex items-center justify-center mb-6">
+                    <motion.div
+                      animate={{ opacity: 1 }}
+                      transition={{ duration: 0.2 }}
+                      className="w-40 h-40 rounded-full border border-brand-accent/35 bg-[radial-gradient(circle_at_center,rgba(0,255,191,0.22)_0%,rgba(0,255,191,0.08)_25%,rgba(10,10,10,0.92)_26%,rgba(20,20,20,0.95)_55%,rgba(0,255,191,0.08)_100%)] relative will-change-transform"
+                      style={{
+                        transform: `rotate(${vaultPulse.spin}deg) scale(${1 + (vaultPulse.energy * 0.14)})`,
+                        transition: 'transform 90ms linear, box-shadow 120ms ease',
+                        boxShadow: `0 0 ${24 + (vaultPulse.energy * 40)}px rgba(0,255,191,${0.16 + vaultPulse.bass * 0.28})`,
+                      }}
+                    >
+                      <div
+                        className="absolute inset-0 m-auto w-8 h-8 rounded-full bg-brand-accent/80"
+                        style={{
+                          transform: `scale(${1 + (vaultPulse.bass * 0.4) + (vaultPulse.energy * 0.12)})`,
+                          boxShadow: `0 0 ${18 + (vaultPulse.highs * 26)}px rgba(0,255,191,${0.45 + vaultPulse.highs * 0.35})`,
+                        }}
+                      />
+                    </motion.div>
+                  </div>
+
+                  <div className="grid grid-cols-8 gap-1 items-end h-16 mb-4">
+                    {[
+                      10 + (vaultPulse.bass * 42),
+                      12 + (vaultPulse.mids * 30),
+                      14 + (vaultPulse.highs * 36),
+                      18 + (vaultPulse.energy * 48),
+                      12 + (vaultPulse.bass * 28),
+                      24 + (vaultPulse.energy * 54),
+                      16 + (vaultPulse.mids * 34),
+                      18 + (vaultPulse.highs * 40),
+                    ].map((h, idx) => (
+                      <motion.div
+                        key={idx}
+                        animate={{ height: [h * 0.55, h, h * 0.7, h * 0.95] }}
+                        transition={{ duration: 0.9 + idx * 0.08, repeat: Infinity, repeatType: 'mirror', ease: 'easeInOut' }}
+                        className="rounded-md bg-brand-accent/70"
+                        style={{ opacity: 0.55 + vaultPulse.energy * 0.4 }}
+                      />
+                    ))}
+                  </div>
+
+                  <div className="text-center">
+                    <div className="text-[10px] uppercase tracking-[0.22em] text-white/45">Now Spinning</div>
+                    <div className="font-black text-brand-accent mt-1">{currentTrack?.title || 'Aether Secret Session'}</div>
+                    <div className="text-[11px] text-white/55 mt-1">Type <span className="text-brand-accent font-black">mixtape</span> to summon this vault.</div>
+                    <div className="mt-4 flex flex-col items-center gap-2">
+                      <div className="flex flex-wrap items-center justify-center gap-2">
+                        <button
+                          onClick={copyVaultSceneEmbed}
+                          className="px-4 py-2 rounded-full border border-brand-accent/30 bg-brand-accent/10 text-[10px] uppercase tracking-[0.24em] text-brand-accent hover:bg-brand-accent hover:text-black transition-all"
+                        >
+                          Copy Scene Link
+                        </button>
+                      </div>
+                      <div className="text-[10px] text-white/40 font-mono uppercase tracking-[0.18em]">
+                        {currentTrack?.title ? `${currentTrack.title} • ${vaultPulse.stamp}` : vaultPulse.stamp}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {isSharedSceneOpen && sharedScene && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[180] flex items-center justify-center bg-black/80 backdrop-blur-md p-4"
+            onClick={() => setIsSharedSceneOpen(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 12 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, y: 8 }}
+              className="relative w-[min(92vw,760px)] rounded-3xl border border-brand-accent/30 bg-[#07090c]/95 shadow-[0_0_70px_rgba(0,255,191,0.15)] overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                onClick={() => setIsSharedSceneOpen(false)}
+                className="absolute top-4 right-4 p-2 rounded-full bg-black/40 hover:bg-black/60 text-brand-accent transition-colors z-50"
+              >
+                <X size={20} />
+              </button>
+              <div className="p-6 md:p-8">
+                <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent mb-4">Aether Shared Scene</div>
+                <div className="rounded-2xl border border-white/10 bg-black/30 p-4 md:p-5 flex flex-col md:flex-row gap-4 md:gap-5">
+                  <img
+                    src={getProxyUrl(sharedScene.thumbnail || (sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : ''))}
+                    alt="scene"
+                    className="w-full md:w-40 h-40 rounded-2xl object-cover border border-white/10"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="font-black text-brand-accent text-lg truncate">{sharedScene.title || 'Aether Scene'}</div>
+                    <div className="text-[11px] uppercase tracking-[0.2em] text-white/55 mt-1 truncate">{sharedScene.author || 'Unknown Artist'}</div>
+                    <div className="mt-4 text-white/80 text-sm leading-relaxed italic break-words">“{sharedScene.lyric || 'No lyric locked yet'}”</div>
+                    <div className="mt-4 text-[10px] uppercase tracking-[0.18em] text-white/45">
+                      {formatTime(Number(sharedScene.at || 0))} / {formatTime(Number(sharedScene.total || 0))} • {sharedScene.state || 'paused'} • {sharedScene.mode || 'bars'}
+                    </div>
+                    <div className="mt-2 text-[10px] uppercase tracking-[0.18em] text-white/45">
+                      Pulse {Number(sharedScene?.pulse?.e || 0)}% • Bass {Number(sharedScene?.pulse?.b || 0)}% • Mids {Number(sharedScene?.pulse?.m || 0)}% • Highs {Number(sharedScene?.pulse?.h || 0)}%
+                    </div>
+                  </div>
+                </div>
+              </div>
             </motion.div>
           </motion.div>
         )}
@@ -2499,7 +4736,7 @@ function App() {
                ref={pulseCanvasRef} 
                width={400} 
                height={400} 
-               className={`w-[800px] h-[800px] transition-opacity duration-1000 ${visualizerMode === 'pulse' ? 'opacity-40' : 'opacity-0'}`} 
+            className={`w-[800px] h-[800px] transition-opacity duration-1000 ${visualizerMode === 'pulse' ? 'opacity-55' : 'opacity-0'}`} 
             />
          </div>
          <div className="absolute inset-0 bg-black/60" />

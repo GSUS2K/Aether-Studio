@@ -8,20 +8,38 @@ contextBridge.exposeInMainWorld('aether', {
   getLyrics: (track, artist, duration, query, url) => ipcRenderer.invoke('aether:get-lyrics', { track, artist, duration, query, url }),
   updateRPC: (details) => ipcRenderer.invoke('aether:update-rpc', details),
   getStats: () => ipcRenderer.invoke('aether:stats'),
+  getLockStatus: () => ipcRenderer.invoke('aether:lock-status'),
+  setAppLock: (password, useTouchId) => ipcRenderer.invoke('aether:lock-set-password', { password, useTouchId }),
+  verifyAppLockPassword: (password) => ipcRenderer.invoke('aether:lock-verify-password', { password }),
+  disableAppLock: (password) => ipcRenderer.invoke('aether:lock-disable', { password }),
+  verifyAppLockBiometric: () => ipcRenderer.invoke('aether:lock-verify-biometric'),
+  setAppLockTouchId: (enabled) => ipcRenderer.invoke('aether:lock-set-touchid', { enabled }),
   store: {
     get: (key) => ipcRenderer.invoke('aether:store-get', key),
     set: (key, val) => ipcRenderer.invoke('aether:store-set', key, val)
   },
   onControl: (callback) => ipcRenderer.on('aether:control', (event, action) => callback(action)),
   resizeWindow: (width, height, alwaysOnTop) => ipcRenderer.invoke('aether:window-resize', { width, height, alwaysOnTop }),
+  toggleWindowMaximize: () => ipcRenderer.invoke('aether:window-toggle-maximize'),
   onMaximized: (callback) => ipcRenderer.on('aether:maximized-state', (event, state) => callback(state)),
   openExternal: (url) => ipcRenderer.invoke('aether:open-external', url),
   download: (url, trackId) => ipcRenderer.invoke('aether:download', { url, trackId }),
   getOfflineTracks: () => ipcRenderer.invoke('aether:get-offline-tracks'),
   getLocalIp: () => ipcRenderer.invoke('aether:get-local-ip'),
   saveToDisk: (url, title, author) => ipcRenderer.invoke('aether:save-to-disk', { url, title, author }),
+  getStorageStats: () => ipcRenderer.invoke('aether:get-storage-stats'),
+  updateStoragePolicy: (payload) => ipcRenderer.invoke('aether:update-storage-policy', payload),
+  getStorageEstimate: (payload) => ipcRenderer.invoke('aether:get-storage-estimate', payload),
+  optimizeStorage: (payload) => ipcRenderer.invoke('aether:optimize-storage', payload),
   exportVault: (name, data) => ipcRenderer.invoke('aether:export-vault', { name, data }),
   importVault: () => ipcRenderer.invoke('aether:import-vault'),
+  importSpotifyPlaylist: (url) => ipcRenderer.invoke('aether:import-spotify-playlist', { url }),
+  onSpotifyImportProgress: (callback) => {
+    const handler = (event, payload) => callback(payload);
+    ipcRenderer.on('aether:spotify-import-progress', handler);
+    return () => ipcRenderer.removeListener('aether:spotify-import-progress', handler);
+  },
+  offSpotifyImportProgress: (callback) => ipcRenderer.removeListener('aether:spotify-import-progress', callback),
   streamPort: 3333,
   platform: process.platform,
   getStreamPort: () => ipcRenderer.invoke('aether:get-port'),

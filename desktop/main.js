@@ -1,8 +1,9 @@
-const { app, BrowserWindow, ipcMain, globalShortcut, Menu, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, globalShortcut, Menu, dialog, systemPreferences } = require('electron');
 const ffmpeg = require('ffmpeg-static');
 const Store = require('electron-store');
 const store = new Store();
 const DiscordRPC = require('discord-rpc');
+const crypto = require('crypto');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -14,6 +15,247 @@ const express = require('express');
 const cors = require('cors');
 const { spawn } = require('child_process');
 const { OfflineEngine, search, getMetadata, getRecommendations, getLyrics } = require('./offline-engine');
+const decodeHtmlEntities = (value) => String(value || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#x27;/g, "'")
+    .replace(/&#x2F;/g, '/');
+
+const APP_LOCK_STORE_KEY = 'appLock';
+const getLockRecord = () => store.get(APP_LOCK_STORE_KEY) || null;
+const canPromptTouchId = () => {
+    try {
+        return process.platform === 'darwin' && typeof systemPreferences?.canPromptTouchID === 'function' && systemPreferences.canPromptTouchID();
+    } catch {
+        return false;
+    }
+};
+const hashLockPassword = (password, salt) => crypto.scryptSync(String(password || ''), String(salt || ''), 64).toString('hex');
+const verifyLockPassword = (password, record) => {
+    if (!record?.hash || !record?.salt) return false;
+    const computed = hashLockPassword(password, record.salt);
+    const a = Buffer.from(record.hash, 'hex');
+    const b = Buffer.from(computed, 'hex');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+};
+
+const extractSpotifyPlaylistId = (input) => {
+    if (!input) return null;
+    const value = String(input).trim();
+    const patterns = [
+        /open\.spotify\.com\/playlist\/([A-Za-z0-9]{22})/i,
+        /spotify:playlist:([A-Za-z0-9]{22})/i,
+        /playlist\/([A-Za-z0-9]{22})/i,
+    ];
+    for (const pattern of patterns) {
+        const match = value.match(pattern);
+        if (match) return match[1];
+    }
+    return null;
+};
+
+const getSpotifyWebAccessToken = async () => {
+    const tokenResp = await fetch('https://open.spotify.com/get_access_token?reason=transport&productType=web_player', {
+        headers: {
+            'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'accept-language': 'en-US,en;q=0.9',
+        },
+    });
+    if (!tokenResp.ok) throw new Error(`Spotify token fetch failed (${tokenResp.status})`);
+    const tokenJson = await tokenResp.json();
+    if (!tokenJson?.accessToken) throw new Error('Spotify token missing');
+    return tokenJson.accessToken;
+};
+
+const getSpotifyPlaylistViaApi = async (playlistId, accessToken) => {
+    const baseHeaders = {
+        Authorization: `Bearer ${accessToken}`,
+        'accept': 'application/json',
+    };
+
+    const metaResp = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}?fields=name`, { headers: baseHeaders });
+    if (!metaResp.ok) throw new Error(`Spotify playlist metadata failed (${metaResp.status})`);
+    const meta = await metaResp.json();
+
+    let nextUrl = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100&fields=next,items(track(id,name,artists(name)))`;
+    const tracks = [];
+
+    while (nextUrl && tracks.length < 200) {
+        const resp = await fetch(nextUrl, { headers: baseHeaders });
+        if (!resp.ok) throw new Error(`Spotify playlist tracks failed (${resp.status})`);
+        const data = await resp.json();
+        const items = Array.isArray(data?.items) ? data.items : [];
+        for (const item of items) {
+            const t = item?.track;
+            if (!t?.name || !t?.id) continue;
+            const artist = (Array.isArray(t.artists) ? t.artists.map(a => a?.name).filter(Boolean).join(', ') : '').trim();
+            tracks.push({
+                spotifyId: t.id,
+                title: t.name,
+                artist,
+            });
+            if (tracks.length >= 200) break;
+        }
+        nextUrl = data?.next || null;
+    }
+
+    return {
+        playlistName: decodeHtmlEntities(meta?.name || 'Spotify Playlist'),
+        tracks,
+    };
+};
+
+const getSpotifyPlaylistViaHtml = (html) => {
+    const titleMatch = html.match(/<meta property="og:title" content="([^"]+)"/i);
+    const title = decodeHtmlEntities(titleMatch?.[1] || 'Spotify Playlist');
+    const uniqueTrackIds = extractSpotifyTrackIdsFromHtml(html).slice(0, 100);
+    const labelMatches = [...html.matchAll(/aria-label="([^"]+)"/g)]
+        .map(match => decodeHtmlEntities(match[1]).trim())
+        .filter(label => label && !['Save to Your Library', 'Share', 'More', 'Play', 'Explicit', 'Liked by you'].includes(label));
+    const titles = labelMatches.slice(0, uniqueTrackIds.length);
+    const tracks = uniqueTrackIds.map((id, idx) => ({
+        spotifyId: id,
+        title: titles[idx] || '',
+        artist: '',
+    })).filter(t => t.spotifyId);
+    return { playlistName: title, tracks };
+};
+
+const extractSpotifyTrackIdsFromHtml = (html) => {
+    const ids = new Set();
+    for (const match of html.matchAll(/track\/([A-Za-z0-9]{22})/g)) ids.add(match[1]);
+    for (const match of html.matchAll(/spotify:track:([A-Za-z0-9]{22})/g)) ids.add(match[1]);
+    return [...ids];
+};
+
+const fetchSpotifyHtml = async (url) => {
+    const headers = {
+        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'accept-language': 'en-US,en;q=0.9',
+    };
+
+    try {
+        const response = await fetch(url, { headers });
+        const text = await response.text();
+        return { ok: response.ok, status: response.status, text };
+    } catch (fetchErr) {
+        return await new Promise((resolve) => {
+            https.get(url, { headers }, (res) => {
+                let data = '';
+                res.on('data', (chunk) => { data += chunk; });
+                res.on('end', () => {
+                    resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode || 0, text: data });
+                });
+            }).on('error', (err) => {
+                resolve({ ok: false, status: 0, text: '', error: err?.message || String(err) });
+            });
+        });
+    }
+};
+
+const normalizeMatchText = (value) => String(value || '')
+    .toLowerCase()
+    .replace(/\(feat\.?[^)]*\)/gi, ' ')
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const scoreSearchCandidate = (candidate, targetTitle, targetArtist) => {
+    const candTitle = normalizeMatchText(candidate?.title);
+    const candArtist = normalizeMatchText(candidate?.author);
+    const title = normalizeMatchText(targetTitle);
+    const artist = normalizeMatchText(targetArtist);
+
+    if (!candTitle || !title) return 0;
+
+    const titleTokens = new Set(title.split(' ').filter(Boolean));
+    const candTokens = new Set(candTitle.split(' ').filter(Boolean));
+    let overlap = 0;
+    for (const tok of titleTokens) {
+        if (candTokens.has(tok)) overlap += 1;
+    }
+
+    let score = overlap;
+    if (candTitle === title) score += 8;
+    if (candTitle.includes(title) || title.includes(candTitle)) score += 4;
+
+    if (artist) {
+        if (candArtist === artist) score += 4;
+        else if (candArtist.includes(artist) || artist.includes(candArtist)) score += 2;
+        else {
+            const artistLead = artist.split(' ')[0];
+            if (artistLead && candArtist.includes(artistLead)) score += 1;
+        }
+    }
+
+    return score;
+};
+
+const parseSpotifyOEmbedTitle = (value) => {
+    const raw = decodeHtmlEntities(value || '').trim();
+    if (!raw) return { title: '', artist: '' };
+    const match = raw.match(/^(.*?)\s+by\s+(.+)$/i);
+    if (!match) return { title: raw, artist: '' };
+    return { title: match[1].trim(), artist: match[2].trim() };
+};
+
+const enrichSpotifyTrackViaOEmbed = async (spotifyId) => {
+    const resp = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(`https://open.spotify.com/track/${spotifyId}`)}`, {
+        headers: {
+            'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'accept-language': 'en-US,en;q=0.9',
+        },
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const parsed = parseSpotifyOEmbedTitle(data?.title || '');
+    const fallbackArtist = decodeHtmlEntities(data?.author_name || '').trim();
+    return {
+        title: parsed.title,
+        artist: parsed.artist || fallbackArtist || '',
+    };
+};
+
+const enrichSpotifyPlaylistNameViaOEmbed = async (playlistId) => {
+    const resp = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(`https://open.spotify.com/playlist/${playlistId}`)}`, {
+        headers: {
+            'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'accept-language': 'en-US,en;q=0.9',
+        },
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const raw = decodeHtmlEntities(data?.title || '').trim();
+    if (!raw) return null;
+    const parsed = parseSpotifyOEmbedTitle(raw);
+    return parsed.title || raw;
+};
+
+const buildSpotifyQueries = (title, artist = '') => {
+    const normalizedTitle = String(title || '')
+        .replace(/\(feat\.?[^)]*\)/gi, '')
+        .replace(/\(from[^)]*\)/gi, '')
+        .replace(/\[[^\]]*\]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const compactTitle = normalizedTitle.replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+    const artistLead = String(artist || '').split(',')[0].trim();
+
+    const queries = [
+        `${normalizedTitle} ${artist}`.trim(),
+        `${normalizedTitle} ${artistLead}`.trim(),
+        normalizedTitle,
+        compactTitle,
+        compactTitle.split(' ').slice(0, 5).join(' ').trim(),
+    ].filter(Boolean);
+
+    return [...new Set(queries)];
+};
 const getBinaryPath = (relPath) => {
     // 1. Check System Paths First (Homebrew/Mac)
     const baseName = path.basename(relPath);
@@ -102,6 +344,220 @@ console.log(`[Aether] ytdlpPath: ${ytdlpPath}, ffmpegPath: ${ffmpegPath}`);
 
 const offlineEngine = new OfflineEngine(app.getPath('userData'));
 let mainWindow;
+
+const STORAGE_POLICY_STORE_KEY = 'storagePolicy';
+const DEFAULT_STORAGE_POLICY = {
+    cacheCapMb: 2048,
+    maxCacheAgeDays: 30,
+};
+
+const getStoragePolicy = () => {
+    const saved = store.get(STORAGE_POLICY_STORE_KEY);
+    if (!saved || typeof saved !== 'object') return { ...DEFAULT_STORAGE_POLICY };
+    return {
+        cacheCapMb: Number.isFinite(saved.cacheCapMb) ? Math.max(256, Math.min(16384, saved.cacheCapMb)) : DEFAULT_STORAGE_POLICY.cacheCapMb,
+        maxCacheAgeDays: Number.isFinite(saved.maxCacheAgeDays) ? Math.max(1, Math.min(365, saved.maxCacheAgeDays)) : DEFAULT_STORAGE_POLICY.maxCacheAgeDays,
+    };
+};
+
+const getUserDataCacheDirs = () => {
+    const userDataDir = app.getPath('userData');
+    return [
+        path.join(userDataDir, 'Cache'),
+        path.join(userDataDir, 'Code Cache'),
+        path.join(userDataDir, 'GPUCache'),
+        path.join(userDataDir, 'DawnGraphiteCache'),
+        path.join(userDataDir, 'DawnWebGPUCache'),
+    ];
+};
+
+const walkFiles = (dirPath) => {
+    if (!dirPath || !fs.existsSync(dirPath)) return [];
+    const out = [];
+    const stack = [dirPath];
+    while (stack.length > 0) {
+        const current = stack.pop();
+        let entries = [];
+        try {
+            entries = fs.readdirSync(current, { withFileTypes: true });
+        } catch {
+            continue;
+        }
+        for (const entry of entries) {
+            const full = path.join(current, entry.name);
+            if (entry.isDirectory()) stack.push(full);
+            else if (entry.isFile()) out.push(full);
+        }
+    }
+    return out;
+};
+
+const sumFileSizes = (filePaths = []) => {
+    let total = 0;
+    for (const filePath of filePaths) {
+        try {
+            total += fs.statSync(filePath).size;
+        } catch {}
+    }
+    return total;
+};
+
+const getStorageStats = () => {
+    const userDataDir = app.getPath('userData');
+    const downloadsDir = offlineEngine.downloadDir;
+    const cacheDirs = getUserDataCacheDirs();
+
+    const downloadFiles = walkFiles(downloadsDir);
+    const cacheFiles = cacheDirs.flatMap(walkFiles);
+
+    const downloadsBytes = sumFileSizes(downloadFiles);
+    const cacheBytes = sumFileSizes(cacheFiles);
+    const totalBytes = downloadsBytes + cacheBytes;
+
+    return {
+        userDataDir,
+        downloadsDir,
+        downloadsBytes,
+        cacheBytes,
+        totalBytes,
+        policy: getStoragePolicy(),
+    };
+};
+
+const pruneOldCacheFiles = (maxAgeDays = 30) => {
+    const cutoff = Date.now() - Math.max(1, maxAgeDays) * 24 * 60 * 60 * 1000;
+    let removedFiles = 0;
+    let removedBytes = 0;
+
+    const targetDirs = getUserDataCacheDirs();
+    const allFiles = targetDirs.flatMap(walkFiles);
+    for (const filePath of allFiles) {
+        try {
+            const stat = fs.statSync(filePath);
+            const ageRef = Math.max(stat.mtimeMs || 0, stat.atimeMs || 0);
+            if (ageRef > cutoff) continue;
+            fs.unlinkSync(filePath);
+            removedFiles += 1;
+            removedBytes += stat.size;
+        } catch {}
+    }
+
+    return { removedFiles, removedBytes };
+};
+
+const enforceCacheCap = (cacheCapMb = 2048) => {
+    const capBytes = Math.max(256, cacheCapMb) * 1024 * 1024;
+    const cacheFiles = getUserDataCacheDirs().flatMap(walkFiles)
+        .map((filePath) => {
+            try {
+                const stat = fs.statSync(filePath);
+                return { filePath, size: stat.size, touched: Math.max(stat.atimeMs || 0, stat.mtimeMs || 0) };
+            } catch {
+                return null;
+            }
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.touched - b.touched);
+
+    let total = cacheFiles.reduce((sum, f) => sum + f.size, 0);
+    let removedFiles = 0;
+    let removedBytes = 0;
+
+    for (const file of cacheFiles) {
+        if (total <= capBytes) break;
+        try {
+            fs.unlinkSync(file.filePath);
+            total -= file.size;
+            removedFiles += 1;
+            removedBytes += file.size;
+        } catch {}
+    }
+
+    return { removedFiles, removedBytes, capBytes, remainingBytes: Math.max(0, total) };
+};
+
+const keepDownloadedOnlyCleanup = () => {
+    let removedFiles = 0;
+    let removedBytes = 0;
+    for (const dirPath of getUserDataCacheDirs()) {
+        const files = walkFiles(dirPath);
+        for (const filePath of files) {
+            try {
+                const stat = fs.statSync(filePath);
+                fs.unlinkSync(filePath);
+                removedFiles += 1;
+                removedBytes += stat.size;
+            } catch {}
+        }
+    }
+    return { removedFiles, removedBytes };
+};
+
+const estimateStorageReclaim = (mode = 'cap', payload = {}) => {
+    const policy = getStoragePolicy();
+    const cacheFiles = getUserDataCacheDirs().flatMap(walkFiles)
+        .map((filePath) => {
+            try {
+                const stat = fs.statSync(filePath);
+                return {
+                    filePath,
+                    size: stat.size,
+                    touched: Math.max(stat.atimeMs || 0, stat.mtimeMs || 0),
+                };
+            } catch {
+                return null;
+            }
+        })
+        .filter(Boolean);
+
+    const cacheBytes = cacheFiles.reduce((sum, f) => sum + f.size, 0);
+
+    if (mode === 'downloads-only') {
+        return {
+            mode,
+            estimatedBytes: cacheBytes,
+            estimatedFiles: cacheFiles.length,
+        };
+    }
+
+    if (mode === 'age') {
+        const maxCacheAgeDays = Number.isFinite(payload.maxCacheAgeDays) ? payload.maxCacheAgeDays : policy.maxCacheAgeDays;
+        const cutoff = Date.now() - Math.max(1, maxCacheAgeDays) * 24 * 60 * 60 * 1000;
+        let estimatedBytes = 0;
+        let estimatedFiles = 0;
+        for (const file of cacheFiles) {
+            if (file.touched <= cutoff) {
+                estimatedBytes += file.size;
+                estimatedFiles += 1;
+            }
+        }
+        return {
+            mode,
+            estimatedBytes,
+            estimatedFiles,
+            maxCacheAgeDays,
+        };
+    }
+
+    const cacheCapMb = Number.isFinite(payload.cacheCapMb) ? payload.cacheCapMb : policy.cacheCapMb;
+    const capBytes = Math.max(256, cacheCapMb) * 1024 * 1024;
+    const sorted = cacheFiles.slice().sort((a, b) => a.touched - b.touched);
+    let running = cacheBytes;
+    let estimatedBytes = 0;
+    let estimatedFiles = 0;
+    for (const file of sorted) {
+        if (running <= capBytes) break;
+        running -= file.size;
+        estimatedBytes += file.size;
+        estimatedFiles += 1;
+    }
+    return {
+        mode: 'cap',
+        estimatedBytes,
+        estimatedFiles,
+        cacheCapMb,
+    };
+};
 
 // --- NEURAL CONVERGENCE: STANDALONE ENGINE (V9.0.0) ---
 const studioQueues = new Map();
@@ -242,16 +698,45 @@ streamApp.get('/stream', (req, res) => {
     }
 
     if (cachedFile) {
-        // Stream from cached file
-        console.log(`[Aether] Cache hit for ${trackId}: ${cachedFile}`);
+        // Stream from cached file with proper byte-range support (critical for seek/resume stability)
         const stat = fs.statSync(cachedFile);
         const ext = path.extname(cachedFile).toLowerCase();
         const contentType = ext === '.m4a' || ext === '.mp4' ? 'audio/mp4' : 'audio/mpeg';
+        const fileSize = stat.size;
+        const range = req.headers.range;
+
         res.setHeader('Content-Type', contentType);
         res.setHeader('Accept-Ranges', 'bytes');
-        res.setHeader('Content-Length', stat.size);
-        const stream = fs.createReadStream(cachedFile);
-        stream.pipe(res);
+        res.setHeader('Cache-Control', 'no-cache');
+
+        if (range) {
+            const match = String(range).match(/bytes=(\d*)-(\d*)/i);
+            if (!match) {
+                res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
+                return;
+            }
+
+            let start = match[1] ? parseInt(match[1], 10) : 0;
+            let end = match[2] ? parseInt(match[2], 10) : fileSize - 1;
+            if (Number.isNaN(start)) start = 0;
+            if (Number.isNaN(end) || end >= fileSize) end = fileSize - 1;
+
+            if (start > end || start >= fileSize) {
+                res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
+                return;
+            }
+
+            const chunkSize = end - start + 1;
+            res.status(206);
+            res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
+            res.setHeader('Content-Length', chunkSize);
+
+            fs.createReadStream(cachedFile, { start, end }).pipe(res);
+        } else {
+            res.setHeader('Content-Length', fileSize);
+            fs.createReadStream(cachedFile).pipe(res);
+        }
+
         res.on('finish', () => {
             console.log(`[Aether] Cached stream for ${trackId} took ${Date.now() - startTime}ms`);
         });
@@ -797,34 +1282,61 @@ app.whenReady().then(async () => {
     await initRPC();
     createWindow();
 
-    // --- UNIVERSAL MEDIA BRIDGE (V7.0.0) ---
+    try {
+        const policy = getStoragePolicy();
+        const oldResult = pruneOldCacheFiles(policy.maxCacheAgeDays);
+        const capResult = enforceCacheCap(policy.cacheCapMb);
+        console.log('[Aether/Storage] Startup maintenance complete', {
+            maxCacheAgeDays: policy.maxCacheAgeDays,
+            cacheCapMb: policy.cacheCapMb,
+            oldRemovedFiles: oldResult.removedFiles,
+            oldRemovedBytes: oldResult.removedBytes,
+            capRemovedFiles: capResult.removedFiles,
+            capRemovedBytes: capResult.removedBytes,
+        });
+    } catch (e) {
+        console.warn('[Aether/Storage] Startup maintenance failed', e?.message || e);
+    }
+
+    // --- UNIVERSAL MEDIA BRIDGE (V7.1.0) ---
     const registerShortcut = (keys, command) => {
         try {
-            globalShortcut.register(keys, () => {
+            const ok = globalShortcut.register(keys, () => {
                 if (mainWindow && !mainWindow.isDestroyed()) {
                     mainWindow.webContents.send('aether:control', command);
                 }
             });
-        } catch (e) {}
+            if (!ok) {
+                console.warn(`[Aether/Shortcuts] Failed to register ${keys} -> ${command}`);
+            }
+        } catch (e) {
+            console.warn(`[Aether/Shortcuts] Error registering ${keys}: ${e.message}`);
+        }
     };
 
-    // Standard Media Keys
+    // Standard media keys
     registerShortcut('MediaPlayPause', 'toggle');
     registerShortcut('MediaNextTrack', 'skip');
     registerShortcut('MediaPreviousTrack', 'previous');
-
-    // MacOS Literal F-Keys (For different FN configurations)
-    registerShortcut('F7', 'previous');
-    registerShortcut('F8', 'toggle');
-    registerShortcut('F9', 'skip');
-    
-    // Volume & Mute Integration (V7.0.0)
-    registerShortcut('F10', 'mute');
-    registerShortcut('F11', 'volume-down');
-    registerShortcut('F12', 'volume-up');
     registerShortcut('VolumeMute', 'mute');
     registerShortcut('VolumeDown', 'volume-down');
     registerShortcut('VolumeUp', 'volume-up');
+
+    // Reliable cross-platform fallback chords (when function/media keys are owned by OS)
+    registerShortcut('CommandOrControl+Alt+Space', 'toggle');
+    registerShortcut('CommandOrControl+Alt+Left', 'previous');
+    registerShortcut('CommandOrControl+Alt+Right', 'skip');
+    registerShortcut('CommandOrControl+Alt+Down', 'volume-down');
+    registerShortcut('CommandOrControl+Alt+Up', 'volume-up');
+    registerShortcut('CommandOrControl+Alt+M', 'mute');
+
+    // Optional literal F-keys for keyboards with Fn-lock / media-layer disabled
+    registerShortcut('F7', 'previous');
+    registerShortcut('F8', 'toggle');
+    registerShortcut('F9', 'skip');
+    registerShortcut('F10', 'mute');
+    registerShortcut('F11', 'volume-down');
+    registerShortcut('F12', 'volume-up');
 
     // --- NEURAL WATCHER (V6.9.0) ---
     const musicDir = process.env.LOCAL_MUSIC_PATH || path.join(app.getPath('music'), 'Aether Studio');
@@ -852,17 +1364,98 @@ app.whenReady().then(async () => {
     ipcMain.handle('aether:store-set', (event, key, val) => store.set(key, val));
     ipcMain.handle('aether:get-port', () => actualPort);
 
+    ipcMain.handle('aether:lock-status', () => {
+        const record = getLockRecord();
+        return {
+            enabled: !!record?.enabled,
+            touchIdAvailable: canPromptTouchId(),
+            touchIdEnabled: !!record?.touchIdEnabled,
+        };
+    });
+
+    ipcMain.handle('aether:lock-set-password', (event, { password, useTouchId }) => {
+        const pass = String(password || '');
+        if (pass.length < 4) return { success: false, error: 'Password must be at least 4 characters.' };
+        const salt = crypto.randomBytes(16).toString('hex');
+        const hash = hashLockPassword(pass, salt);
+        store.set(APP_LOCK_STORE_KEY, {
+            enabled: true,
+            salt,
+            hash,
+            touchIdEnabled: !!useTouchId && canPromptTouchId(),
+            updatedAt: Date.now(),
+        });
+        return { success: true };
+    });
+
+    ipcMain.handle('aether:lock-verify-password', (event, { password }) => {
+        const record = getLockRecord();
+        if (!record?.enabled) return { success: true };
+        const ok = verifyLockPassword(password, record);
+        return ok ? { success: true } : { success: false, error: 'Incorrect password.' };
+    });
+
+    ipcMain.handle('aether:lock-disable', (event, { password }) => {
+        const record = getLockRecord();
+        if (!record?.enabled) return { success: true };
+        const ok = verifyLockPassword(password, record);
+        if (!ok) return { success: false, error: 'Incorrect password.' };
+        store.delete(APP_LOCK_STORE_KEY);
+        return { success: true };
+    });
+
+    ipcMain.handle('aether:lock-verify-biometric', async () => {
+        if (!canPromptTouchId()) return { success: false, error: 'Touch ID not available.' };
+        try {
+            await systemPreferences.promptTouchID('Unlock Aether');
+            return { success: true };
+        } catch (e) {
+            return { success: false, error: e?.message || 'Biometric authentication failed.' };
+        }
+    });
+
+    ipcMain.handle('aether:lock-set-touchid', (event, { enabled }) => {
+        const record = getLockRecord();
+        if (!record?.enabled) return { success: false, error: 'Lock is not enabled.' };
+        const next = {
+            ...record,
+            touchIdEnabled: !!enabled && canPromptTouchId(),
+            updatedAt: Date.now(),
+        };
+        store.set(APP_LOCK_STORE_KEY, next);
+        return { success: true, touchIdEnabled: next.touchIdEnabled };
+    });
+
 
     ipcMain.handle('aether:window-resize', (event, { width, height, alwaysOnTop }) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
             if (alwaysOnTop) {
-                mainWindow.setMinimumSize(300, 120);
+                mainWindow.setResizable(false);
+                mainWindow.setMinimumSize(width || 420, height || 190);
+                mainWindow.setMaximumSize(width || 420, height || 190);
             } else {
+                mainWindow.setResizable(true);
                 mainWindow.setMinimumSize(1000, 700);
+                mainWindow.setMaximumSize(0, 0);
             }
             mainWindow.setSize(width || 1280, height || 800, true);
+            mainWindow.center();
             mainWindow.setAlwaysOnTop(!!alwaysOnTop);
         }
+    });
+
+    ipcMain.handle('aether:window-toggle-maximize', () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return { success: false };
+        if (mainWindow.isFullScreen()) {
+            mainWindow.setFullScreen(false);
+            return { success: true, state: 'windowed' };
+        }
+        if (mainWindow.isMaximized()) {
+            mainWindow.unmaximize();
+            return { success: true, state: 'windowed' };
+        }
+        mainWindow.maximize();
+        return { success: true, state: 'maximized' };
     });
 
     ipcMain.handle('aether:open-external', async (event, url) => {
@@ -874,6 +1467,8 @@ app.whenReady().then(async () => {
         console.log(`[Aether] Starting download for trackId: ${trackId}, url: ${url}`);
         try {
             const filePath = await offlineEngine.download(url, trackId, ytdlpPath, ffmpegPath);
+            const policy = getStoragePolicy();
+            enforceCacheCap(policy.cacheCapMb);
             console.log(`[Aether] Download successful for ${trackId}: ${filePath}`);
             // Emit library update
             const downloaded = await offlineEngine.getDownloadedTracks();
@@ -900,6 +1495,8 @@ app.whenReady().then(async () => {
             const trackId = youtubeId || `${baseName}-${Date.now().toString(36)}`;
 
             const result = await offlineEngine.download(url, trackId, ytdlpPath, ffmpegPath);
+            const policy = getStoragePolicy();
+            enforceCacheCap(policy.cacheCapMb);
             const downloaded = await offlineEngine.getDownloadedTracks();
             if (mainWindow && !mainWindow.isDestroyed()) {
                 mainWindow.webContents.send('aether:library-update', downloaded);
@@ -918,6 +1515,63 @@ app.whenReady().then(async () => {
 
     ipcMain.handle('aether:get-offline-tracks', async () => {
         return await offlineEngine.getDownloadedTracks();
+    });
+
+    ipcMain.handle('aether:get-storage-stats', async () => {
+        try {
+            return { success: true, ...getStorageStats() };
+        } catch (e) {
+            return { success: false, error: e?.message || 'Failed to compute storage stats.' };
+        }
+    });
+
+    ipcMain.handle('aether:update-storage-policy', async (event, payload = {}) => {
+        try {
+            const current = getStoragePolicy();
+            const next = {
+                cacheCapMb: Number.isFinite(payload.cacheCapMb) ? Math.max(256, Math.min(16384, Math.floor(payload.cacheCapMb))) : current.cacheCapMb,
+                maxCacheAgeDays: Number.isFinite(payload.maxCacheAgeDays) ? Math.max(1, Math.min(365, Math.floor(payload.maxCacheAgeDays))) : current.maxCacheAgeDays,
+            };
+            store.set(STORAGE_POLICY_STORE_KEY, next);
+            return { success: true, policy: next };
+        } catch (e) {
+            return { success: false, error: e?.message || 'Failed to update policy.' };
+        }
+    });
+
+    ipcMain.handle('aether:get-storage-estimate', async (event, payload = {}) => {
+        try {
+            const mode = String(payload.mode || 'cap');
+            const estimate = estimateStorageReclaim(mode, payload);
+            return { success: true, ...estimate };
+        } catch (e) {
+            return { success: false, error: e?.message || 'Failed to estimate storage reclaim.' };
+        }
+    });
+
+    ipcMain.handle('aether:optimize-storage', async (event, payload = {}) => {
+        try {
+            const mode = String(payload.mode || 'cap');
+            if (mode === 'cap') {
+                const policy = getStoragePolicy();
+                const cacheCapMb = Number.isFinite(payload.cacheCapMb) ? payload.cacheCapMb : policy.cacheCapMb;
+                const result = enforceCacheCap(cacheCapMb);
+                return { success: true, mode, result, stats: getStorageStats() };
+            }
+            if (mode === 'age') {
+                const policy = getStoragePolicy();
+                const maxCacheAgeDays = Number.isFinite(payload.maxCacheAgeDays) ? payload.maxCacheAgeDays : policy.maxCacheAgeDays;
+                const result = pruneOldCacheFiles(maxCacheAgeDays);
+                return { success: true, mode, result, stats: getStorageStats() };
+            }
+            if (mode === 'downloads-only') {
+                const result = keepDownloadedOnlyCleanup();
+                return { success: true, mode, result, stats: getStorageStats() };
+            }
+            return { success: false, error: `Unknown optimize mode: ${mode}` };
+        } catch (e) {
+            return { success: false, error: e?.message || 'Storage optimization failed.' };
+        }
     });
 
     ipcMain.handle('aether:export-vault', async (event, { name, data }) => {
@@ -950,6 +1604,215 @@ app.whenReady().then(async () => {
             }
             return { success: false, cancel: true };
         } catch (e) { return { success: false, error: e.message }; }
+    });
+
+    ipcMain.handle('aether:import-spotify-playlist', async (event, { url }) => {
+        try {
+            const playlistId = extractSpotifyPlaylistId(url);
+            if (!playlistId) {
+                return { success: false, error: 'Invalid Spotify playlist URL' };
+            }
+
+            const importDebug = {
+                playlistId,
+                apiError: null,
+                htmlStatus: null,
+                htmlTrackIdCount: 0,
+                htmlLabelCount: 0,
+            };
+
+            const sendProgress = (payload) => {
+                console.log('[Aether/SpotifyImport]', payload);
+                try { event.sender.send('aether:spotify-import-progress', payload); } catch (error) {}
+            };
+
+            sendProgress({ stage: 'fetching', progress: 5, message: 'Loading Spotify playlist…' });
+
+            let playlistName = 'Spotify Playlist';
+            let sourceTracks = [];
+
+            try {
+                sendProgress({ stage: 'fetching', progress: 8, message: 'Connecting to Spotify catalog…' });
+                const token = await getSpotifyWebAccessToken();
+                const apiPayload = await getSpotifyPlaylistViaApi(playlistId, token);
+                playlistName = apiPayload.playlistName;
+                sourceTracks = apiPayload.tracks;
+            } catch (apiErr) {
+                importDebug.apiError = apiErr?.message || String(apiErr);
+                const htmlSources = [
+                    `https://open.spotify.com/playlist/${playlistId}`,
+                    `https://open.spotify.com/playlist/${playlistId}?nd=1`,
+                    `https://open.spotify.com/embed/playlist/${playlistId}`,
+                ];
+
+                const htmlDiagnostics = [];
+                let bestPayload = null;
+
+                for (const sourceUrl of htmlSources) {
+                    sendProgress({ stage: 'fetching', progress: 9, message: `Trying HTML source: ${sourceUrl.includes('/embed/') ? 'embed' : 'playlist'}…` });
+                    const response = await fetchSpotifyHtml(sourceUrl);
+                    const html = response?.text || '';
+                    const idCount = extractSpotifyTrackIdsFromHtml(html).length;
+                    const labelCount = [...html.matchAll(/aria-label="([^"]+)"/g)].length;
+                    htmlDiagnostics.push({
+                        source: sourceUrl,
+                        status: response?.status || 0,
+                        ok: !!response?.ok,
+                        idCount,
+                        labelCount,
+                        length: html.length,
+                        error: response?.error || null,
+                    });
+
+                    if (!response?.ok || !html) continue;
+
+                    const htmlPayload = getSpotifyPlaylistViaHtml(html);
+                    if (!bestPayload || (htmlPayload?.tracks?.length || 0) > (bestPayload?.tracks?.length || 0)) {
+                        bestPayload = htmlPayload;
+                    }
+                }
+
+                importDebug.htmlSources = htmlDiagnostics;
+                const bestSource = htmlDiagnostics.slice().sort((a, b) => (b.idCount + b.labelCount) - (a.idCount + a.labelCount))[0] || null;
+                importDebug.htmlStatus = bestSource?.status || 0;
+                importDebug.htmlTrackIdCount = bestSource?.idCount || 0;
+                importDebug.htmlLabelCount = bestSource?.labelCount || 0;
+
+                if (!bestPayload || !Array.isArray(bestPayload.tracks)) {
+                    return { success: false, error: 'Spotify page fetch failed (no parseable HTML sources)', debug: importDebug };
+                }
+
+                playlistName = bestPayload.playlistName;
+                sourceTracks = bestPayload.tracks;
+            }
+
+            if (!Array.isArray(sourceTracks) || sourceTracks.length === 0) {
+                return { success: false, error: 'No tracks found in Spotify playlist.', debug: importDebug };
+            }
+
+            sourceTracks = [...new Map(sourceTracks
+                .filter(t => t?.spotifyId)
+                .map(t => [t.spotifyId, {
+                    spotifyId: t.spotifyId,
+                    title: decodeHtmlEntities(t.title || '').trim(),
+                    artist: decodeHtmlEntities(t.artist || '').trim(),
+                }])).values()];
+
+            if (!playlistName || /^spotify playlist$/i.test(String(playlistName).trim())) {
+                try {
+                    const betterName = await enrichSpotifyPlaylistNameViaOEmbed(playlistId);
+                    if (betterName) playlistName = betterName;
+                } catch (e) {}
+            }
+
+            const hydrationLimit = Math.min(sourceTracks.length, 80);
+            let hydratedCount = 0;
+            for (let i = 0; i < hydrationLimit; i += 1) {
+                const row = sourceTracks[i];
+                if (!row?.spotifyId) continue;
+                const shouldHydrate = !row.title || !row.artist || row.title.length < 4;
+                if (!shouldHydrate) continue;
+                sendProgress({
+                    stage: 'enriching',
+                    progress: 12 + Math.round(((i + 1) / Math.max(hydrationLimit, 1)) * 16),
+                    message: `Resolving Spotify track metadata ${i + 1}/${hydrationLimit}…`,
+                });
+                try {
+                    const meta = await enrichSpotifyTrackViaOEmbed(row.spotifyId);
+                    if (meta?.title) row.title = meta.title;
+                    if (meta?.artist) row.artist = meta.artist;
+                    if (meta?.title) hydratedCount += 1;
+                } catch (e) {}
+            }
+
+            sourceTracks = sourceTracks.filter(t => t.title);
+            if (sourceTracks.length === 0) {
+                return { success: false, error: 'Could not resolve Spotify track names from this playlist.' };
+            }
+
+            const resolvedTracks = [];
+            const searchLimit = Math.min(sourceTracks.length, 80);
+            const missedSamples = [];
+            const seenResolvedKeys = new Set();
+
+            for (let index = 0; index < searchLimit; index += 1) {
+                const item = sourceTracks[index];
+                const trackTitle = item?.title;
+                const trackId = item?.spotifyId;
+                const trackArtist = item?.artist || '';
+                if (!trackTitle || !trackId) continue;
+
+                sendProgress({
+                    stage: 'matching',
+                    progress: 30 + Math.round(((index + 1) / Math.max(searchLimit, 1)) * 62),
+                    message: `Matching ${index + 1}/${searchLimit}…`,
+                });
+
+                try {
+                    const queries = buildSpotifyQueries(trackTitle, trackArtist);
+                    let best = null;
+                    let bestScore = -1;
+                    for (const query of queries) {
+                        const results = await search(query, ytdlpPath);
+                        if (!Array.isArray(results) || results.length === 0) continue;
+
+                        const candidates = results.slice(0, 6);
+                        for (const candidate of candidates) {
+                            const key = candidate?.youtubeId || candidate?.id || `${candidate?.title || ''}|${candidate?.author || ''}`;
+                            if (!key || seenResolvedKeys.has(key)) continue;
+                            const score = scoreSearchCandidate(candidate, trackTitle, trackArtist);
+                            if (score > bestScore) {
+                                bestScore = score;
+                                best = candidate;
+                            }
+                        }
+                    }
+                    if (best && bestScore >= 3) {
+                        const resolvedKey = best?.youtubeId || best?.id || `${best?.title || ''}|${best?.author || ''}`;
+                        if (resolvedKey) seenResolvedKeys.add(resolvedKey);
+                        resolvedTracks.push({
+                            ...best,
+                            id: best.id || trackId,
+                            spotifyId: trackId,
+                            spotifyTitle: trackTitle,
+                            spotifyArtist: trackArtist,
+                            spotifyPlaylistId: playlistId,
+                        });
+                    } else if (missedSamples.length < 6) {
+                        missedSamples.push(`${trackTitle}${trackArtist ? ` — ${trackArtist}` : ''}`);
+                    }
+                } catch (e) {}
+            }
+
+            sendProgress({
+                stage: 'finalizing',
+                progress: 95,
+                message: 'Saving imported playlist…',
+            });
+
+            return {
+                success: true,
+                playlistName,
+                totalTracks: sourceTracks.length,
+                matchedTracks: resolvedTracks.length,
+                tracks: resolvedTracks,
+                debug: {
+                    playlistId,
+                    apiError: importDebug.apiError,
+                    htmlStatus: importDebug.htmlStatus,
+                    htmlTrackIdCount: importDebug.htmlTrackIdCount,
+                    htmlLabelCount: importDebug.htmlLabelCount,
+                    hydratedCount,
+                    searchedTracks: searchLimit,
+                    matchedTracks: resolvedTracks.length,
+                    missedTracks: Math.max(0, searchLimit - resolvedTracks.length),
+                    missedSamples,
+                },
+            };
+        } catch (e) {
+            try { event.sender.send('aether:spotify-import-progress', { stage: 'error', progress: 0, message: e.message }); } catch (error) {}
+            return { success: false, error: e.message };
+        }
     });
 
     ipcMain.handle('aether:search', async (event, query) => {
