@@ -259,6 +259,7 @@ function App() {
   const [isSpotifyImporting, setIsSpotifyImporting] = useState(false);
   const [spotifyImportLogs, setSpotifyImportLogs] = useState([]);
   const [isVaultCleaning, setIsVaultCleaning] = useState(false);
+  const [isWarmupUnavailable, setIsWarmupUnavailable] = useState(false);
   const [skipReasonToast, setSkipReasonToast] = useState('');
   const [skipEvents, setSkipEvents] = useState([]);
   const [lockStatus, setLockStatus] = useState({ enabled: false, touchIdAvailable: false, touchIdEnabled: false });
@@ -307,6 +308,7 @@ function App() {
   const autoBiometricAttemptRef = useRef(false);
   const lastWindowModeChangeRef = useRef(0);
   const prematureEndGuardRef = useRef({ trackId: null, retried: false });
+  const warmupRetryRef = useRef(new Map());
   const isStandalone = !!window.aether;
   const [history, setHistory] = useState([]); // Neural Deep Memory (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN
   const [isManualStop, setIsManualStop] = useState(false);
@@ -1162,7 +1164,7 @@ function App() {
     queue.slice(0, 3).forEach((item) => {
       if (!downloadedTracks.includes(item.id) && !warmingTrackIds.has(item.id)) {
         console.log(`[Aether] Warmup pre-download for queued track: ${item.title} (${item.id})`);
-        warmupTrack(item.id, item.actualUrl || item.url, item.title);
+        warmupTrack(item);
       }
     });
 
@@ -1323,7 +1325,7 @@ function App() {
         // Trigger background download if not already cached / warming
         if (window.aether?.download && !downloadedTracks.includes(track.id) && !warmingTrackIds.has(track.id)) {
             console.log(`[Aether] Triggering background download for track ${track.id}`);
-            warmupTrack(track.id, track.actualUrl || track.url, track.title);
+            warmupTrack(track);
         }
         
         if (isPlaying) {
@@ -2625,8 +2627,9 @@ function App() {
 
   const extractYouTubeId = (url) => {
     if (!url) return null;
-    const str = String(url);
-    const match = str.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+    const str = String(url).trim();
+    if (/^[A-Za-z0-9_-]{11}$/.test(str)) return str;
+    const match = str.match(/(?:v=|\/vi\/|\/v\/|youtu\.be\/|\/shorts\/)([A-Za-z0-9_-]{11})/);
     return match ? match[1] : null;
   };
 
@@ -2635,6 +2638,7 @@ function App() {
     const baseUrl = track.actualUrl || track.url || (track.youtubeId ? `https://www.youtube.com/watch?v=${track.youtubeId}` : '');
     if (!baseUrl) return null;
     const youtubeId = track.youtubeId || extractYouTubeId(baseUrl);
+    const canonicalUrl = youtubeId ? `https://www.youtube.com/watch?v=${youtubeId}` : baseUrl;
     const stableId = youtubeId || track.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const thumbnail = track.thumbnail || (youtubeId ? `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg` : '');
     return {
@@ -2642,8 +2646,8 @@ function App() {
       id: stableId,
       youtubeId,
       thumbnail,
-      actualUrl: track.actualUrl || baseUrl,
-      url: track.url || baseUrl,
+      actualUrl: canonicalUrl,
+      url: canonicalUrl,
     };
   }, []);
 
@@ -2668,8 +2672,23 @@ function App() {
     } finally { setIsSearching(false); }
   };
 
-  const warmupTrack = async (id, url, title) => {
-    if (!window.aether?.download || !url) return;
+  const warmupTrack = async (track) => {
+    if (!window.aether?.download || !track || isWarmupUnavailable) return;
+    const derivedYoutubeId = track.youtubeId || extractYouTubeId(track.actualUrl || track.url || track.id);
+    const idFromTrack = /^[A-Za-z0-9_-]{11}$/.test(String(track.id || '')) ? String(track.id) : null;
+    const canonicalYoutubeId = derivedYoutubeId || idFromTrack;
+    const id = canonicalYoutubeId || track.id;
+    const sourceUrl = canonicalYoutubeId
+      ? `https://www.youtube.com/watch?v=${canonicalYoutubeId}`
+      : (track.actualUrl || track.url);
+    const title = track.title || 'Unknown';
+    if (!id || !sourceUrl) return;
+
+    const retryGate = warmupRetryRef.current.get(id);
+    if (retryGate && Date.now() < retryGate.nextTryAt) {
+      return;
+    }
+
     if (downloadedTracks.includes(id)) {
       console.log(`[Aether] Warmup skipped because already downloaded: ${title} (${id})`);
       return;
@@ -2682,17 +2701,31 @@ function App() {
     });
 
     try {
-      const sourceUrl = id && String(id).length === 11
-        ? `https://www.youtube.com/watch?v=${id}`
-        : url;
       console.log(`[Aether] Warmup download request for ${title} (${id})`);
       const result = await window.aether.download(sourceUrl, id);
       console.log(`[Aether] Warmup result for ${id}:`, result);
       if (result?.success) {
+        warmupRetryRef.current.delete(id);
         setDownloadedTracks(prev => Array.from(new Set([...prev, id])));
+      } else if (String(result?.error || '').toLowerCase().includes('yt-dlp unavailable') || String(result?.error || '').toLowerCase().includes('enoent')) {
+        const prev = warmupRetryRef.current.get(id);
+        const failures = (prev?.failures || 0) + 1;
+        warmupRetryRef.current.set(id, { failures, nextTryAt: Date.now() + Math.min(180000, 12000 * failures) });
+        setIsWarmupUnavailable(true);
+        setLastAdded('Warmup unavailable: yt-dlp missing');
+        setTimeout(() => setLastAdded(null), 2400);
+      } else {
+        const prev = warmupRetryRef.current.get(id);
+        const failures = (prev?.failures || 0) + 1;
+        const err = String(result?.error || '').toLowerCase();
+        const baseDelay = /403|416|resolve|nodename|throttled|ffmpeg|ffprobe/.test(err) ? 20000 : 6000;
+        warmupRetryRef.current.set(id, { failures, nextTryAt: Date.now() + Math.min(180000, baseDelay * failures) });
       }
     } catch (err) {
       console.error(`[Aether] Warmup download failed for ${title} (${id})`, err);
+      const prev = warmupRetryRef.current.get(id);
+      const failures = (prev?.failures || 0) + 1;
+      warmupRetryRef.current.set(id, { failures, nextTryAt: Date.now() + Math.min(180000, 10000 * failures) });
     } finally {
       setWarmingTrackIds(prev => {
         const next = new Set(prev);
@@ -2723,10 +2756,10 @@ function App() {
         setLastAdded(track.title);
         setTimeout(() => setLastAdded(null), 3000);
 
-        warmupTrack(stableId, url, track.title);
+        warmupTrack({ ...newTrack, id: stableId, actualUrl: url, url, title: track.title });
 
         // --- AETHER: NEURAL METADATA SYNC (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN ---
-        window.aether.getMetadata(track.actualUrl || track.url).then(fullTrack => {
+        window.aether.getMetadata(newTrack.actualUrl || newTrack.url).then(fullTrack => {
             if (fullTrack) {
                 setQueue(current => current.map(item => 
               item.id === stableId ? mergeTrackMetadata(item, fullTrack) : item

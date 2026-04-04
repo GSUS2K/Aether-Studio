@@ -2,6 +2,8 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
+const MIN_VALID_AUDIO_BYTES = 64 * 1024;
+
 class OfflineEngine {
     constructor(baseDir) {
         this.downloadDir = path.join(baseDir, 'downloads');
@@ -58,16 +60,11 @@ class OfflineEngine {
             console.log(`[OfflineEngine] Starting yt-dlp for ${trackId} with url ${url}`);
             const args = [
                 url,
-                '-f', 'ba',
-                '-x', '--audio-format', 'm4a',
+                '-f', 'bestaudio[ext=m4a]/bestaudio',
                 '-o', filePath
             ];
-            if (ffmpegPath) {
-                console.log(`[OfflineEngine] Passing --ffmpeg-location ${ffmpegPath}`);
-                args.push('--ffmpeg-location', ffmpegPath);
-            }
             // Ensure no partial file rename concurrency issues
-            args.push('--no-part', '--no-check-certificates', '--no-warnings', '--quiet');
+            args.push('--no-part', '--no-continue', '--no-check-certificates', '--no-warnings', '--quiet');
             const proc = spawn(ytdlpPath, args);
 
             proc.on('close', (code) => {
@@ -83,16 +80,34 @@ class OfflineEngine {
 
                 console.log(`[OfflineEngine] yt-dlp exited with code ${code} for ${trackId} in ${duration}ms`);
 
+                const getFileSize = () => {
+                    try {
+                        return fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
+                    } catch {
+                        return 0;
+                    }
+                };
+
                 if (code === 0) {
+                    const size = getFileSize();
+                    if (size < MIN_VALID_AUDIO_BYTES) {
+                        try { fs.unlinkSync(filePath); } catch {}
+                        return reject(new Error(`warmup file too small (${size} bytes)`));
+                    }
                     this._cleanupResidualArtifacts(trackId);
                     console.log(`[OfflineEngine] Download success: ${filePath}`);
-                    resolve(outputInfo);
+                    resolve({ ...outputInfo, filePath, size });
                 } else {
                     // If file exists from another race, resolve it
                     if (fs.existsSync(filePath)) {
+                        const size = getFileSize();
+                        if (size < MIN_VALID_AUDIO_BYTES) {
+                            try { fs.unlinkSync(filePath); } catch {}
+                            return reject(new Error(`warmup file too small (${size} bytes)`));
+                        }
                         this._cleanupResidualArtifacts(trackId);
                         console.warn(`[OfflineEngine] yt-dlp failed but file exists for ${trackId}: ${filePath}`);
-                        return resolve({ ...outputInfo, success: true, filePath });
+                        return resolve({ ...outputInfo, success: true, filePath, size });
                     }
                     reject(new Error(`yt-dlp exited with code ${code}`));
                 }
@@ -117,12 +132,29 @@ class OfflineEngine {
 
     getFilePath(trackId) {
         const filePath = path.join(this.downloadDir, `${trackId}.m4a`);
-        return fs.existsSync(filePath) ? filePath : null;
+        if (!fs.existsSync(filePath)) return null;
+        try {
+            const size = fs.statSync(filePath).size;
+            if (size < MIN_VALID_AUDIO_BYTES) return null;
+            return filePath;
+        } catch {
+            return null;
+        }
     }
 
     async getDownloadedTracks() {
         const files = fs.readdirSync(this.downloadDir);
-        const tracks = files.filter(f => f.endsWith('.m4a')).map(f => f.replace('.m4a', ''));
+        const tracks = files
+            .filter(f => f.endsWith('.m4a'))
+            .filter((f) => {
+                try {
+                    const p = path.join(this.downloadDir, f);
+                    return fs.statSync(p).size >= MIN_VALID_AUDIO_BYTES;
+                } catch {
+                    return false;
+                }
+            })
+            .map(f => f.replace('.m4a', ''));
         console.log(`[OfflineEngine] Found ${tracks.length} downloaded tracks:`, tracks);
         return tracks;
     }

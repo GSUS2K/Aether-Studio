@@ -45,6 +45,7 @@
   "build": {
     "appId": "com.GSUS_2K.aether-studio",
     "productName": "Aether",
+    "npmRebuild": false,
     "directories": {
       "output": "dist"
     },

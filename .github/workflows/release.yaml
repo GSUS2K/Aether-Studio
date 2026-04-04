@@ -23,6 +23,8 @@ jobs:
           build_cmd: npx electron-builder --mac dmg --x64 --arm64 --publish=never
           artifact_glob: |
             dist/*.dmg
+            dist/*.dmg.blockmap
+            dist/latest-mac.yml
         - os: windows-latest
           label: windows
           build_cmd: npx electron-builder --win nsis --x64 --publish=never
@@ -132,6 +134,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
     - name: Download macOS installers
       uses: actions/download-artifact@v4
       with:
@@ -150,6 +155,22 @@ jobs:
         name: aether-linux-installers
         path: release-assets/linux
 
+    - name: Generate checksums manifest
+      run: |
+        mkdir -p release-assets/meta
+        find release-assets -type f \
+          ! -name '*.blockmap' \
+          ! -path 'release-assets/meta/*' \
+          -print0 | sort -z | xargs -0 shasum -a 256 > release-assets/meta/SHA256SUMS.txt
+
+    - name: Generate Homebrew cask file
+      run: |
+        node scripts/generate-homebrew-cask.cjs \
+          --repo "${{ github.repository }}" \
+          --tag "${{ github.ref_name }}" \
+          --dmg-dir "release-assets/macos" \
+          --out "release-assets/homebrew/Casks/aether.rb"
+
     - name: Publish GitHub Release
       uses: softprops/action-gh-release@v2
       with:
@@ -157,6 +178,8 @@ jobs:
           release-assets/macos/*
           release-assets/windows/*
           release-assets/linux/*
+          release-assets/meta/SHA256SUMS.txt
+          release-assets/homebrew/Casks/aether.rb
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

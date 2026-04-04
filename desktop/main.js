@@ -7,14 +7,32 @@ const crypto = require('crypto');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const https = require('https');
 const chokidar = require('chokidar');
 const { fetchSyncedLyrics } = require('../lyrics-fetcher');
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 const express = require('express');
 const cors = require('cors');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const { OfflineEngine, search, getMetadata, getRecommendations, getLyrics } = require('./offline-engine');
+const getDebugLogPath = () => {
+    try {
+        if (app?.isReady?.()) {
+            return path.join(app.getPath('userData'), 'AetherDebug.log');
+        }
+    } catch {}
+    return path.join(os.homedir(), 'Desktop', 'AetherDebug.log');
+};
+const logDebug = (message, meta = null) => {
+    try {
+        const logPath = getDebugLogPath();
+        const dir = path.dirname(logPath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        const line = `[${new Date().toISOString()}] ${message}${meta ? ` ${JSON.stringify(meta)}` : ''}\n`;
+        fs.appendFileSync(logPath, line);
+    } catch {}
+};
 const decodeHtmlEntities = (value) => String(value || '')
     .replace(/&amp;/g, '&')
     .replace(/&quot;/g, '"')
@@ -335,14 +353,169 @@ const resolveYtDlpPath = () => {
     }
 
     const found = candidates.find(p => p && fs.existsSync(p));
-    return found || 'yt-dlp';
+    return found || null;
 };
 
-const ytdlpPath = resolveYtDlpPath();
+let ytdlpPath = resolveYtDlpPath();
+let ensureYtDlpInFlight = null;
+const isSpawnableCommand = (commandPath) => {
+    try {
+        const result = spawnSync(commandPath, ['--version'], {
+            stdio: 'ignore',
+            timeout: 2500,
+            shell: false,
+        });
+        return !result.error && result.status === 0;
+    } catch {
+        return false;
+    }
+};
+
+const resolveSystemYtDlp = () => {
+    const explicit = process.env.YOUTUBE_DL_PATH;
+    const candidates = [
+        explicit,
+        '/opt/homebrew/bin/yt-dlp',
+        '/usr/local/bin/yt-dlp',
+        '/usr/bin/yt-dlp',
+        'yt-dlp',
+    ].filter(Boolean);
+
+    for (const candidate of candidates) {
+        if (candidate === 'yt-dlp') {
+            if (isSpawnableCommand(candidate)) return candidate;
+            continue;
+        }
+        try {
+            if (fs.existsSync(candidate) && isSpawnableCommand(candidate)) {
+                return candidate;
+            }
+        } catch {}
+    }
+    return null;
+};
+
+const downloadFileWithRedirects = (url, destination, redirects = 0) => {
+    return new Promise((resolve, reject) => {
+        if (redirects > 5) return reject(new Error('Too many redirects downloading yt-dlp'));
+        const file = fs.createWriteStream(destination);
+        const req = https.get(url, (res) => {
+            const status = res.statusCode || 0;
+            const location = res.headers?.location;
+
+            if (status >= 300 && status < 400 && location) {
+                file.close();
+                try { fs.unlinkSync(destination); } catch {}
+                const nextUrl = location.startsWith('http') ? location : new URL(location, url).toString();
+                return resolve(downloadFileWithRedirects(nextUrl, destination, redirects + 1));
+            }
+
+            if (status < 200 || status >= 300) {
+                file.close();
+                try { fs.unlinkSync(destination); } catch {}
+                return reject(new Error(`yt-dlp download failed (${status})`));
+            }
+
+            res.pipe(file);
+            file.on('finish', () => file.close(() => resolve(destination)));
+        });
+
+        req.setTimeout(12000, () => {
+            req.destroy(new Error('yt-dlp download timeout'));
+        });
+
+        req.on('error', (err) => {
+            file.close();
+            try { fs.unlinkSync(destination); } catch {}
+            reject(err);
+        });
+    });
+};
+
+const ensureYtDlpPath = async () => {
+    if (ensureYtDlpInFlight) return ensureYtDlpInFlight;
+    ensureYtDlpInFlight = (async () => {
+        const systemYtDlp = resolveSystemYtDlp();
+        if (systemYtDlp) {
+            ytdlpPath = systemYtDlp;
+            logDebug('yt-dlp resolved from system', { ytdlpPath });
+            return true;
+        }
+
+        if (ytdlpPath && fs.existsSync(ytdlpPath) && isSpawnableCommand(ytdlpPath)) {
+            return true;
+        }
+
+        try {
+            const binDir = path.join(app.getPath('userData'), 'bin');
+            fs.mkdirSync(binDir, { recursive: true });
+
+            const binaryName = process.platform === 'win32'
+                ? 'yt-dlp.exe'
+                : process.platform === 'darwin'
+                    ? 'yt-dlp_macos'
+                    : 'yt-dlp';
+            const target = path.join(binDir, binaryName);
+
+            if (fs.existsSync(target)) {
+                if (process.platform !== 'win32') {
+                    try { fs.chmodSync(target, 0o755); } catch {}
+                }
+                if (isSpawnableCommand(target)) {
+                    ytdlpPath = target;
+                    logDebug('yt-dlp resolved from userData bin', { target });
+                    return true;
+                }
+            }
+
+            const downloadUrl = process.platform === 'win32'
+                ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
+                : process.platform === 'darwin'
+                    ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos'
+                    : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+
+            logDebug('yt-dlp bootstrap download starting', { downloadUrl });
+            await downloadFileWithRedirects(downloadUrl, target);
+            if (process.platform !== 'win32') {
+                try { fs.chmodSync(target, 0o755); } catch {}
+            }
+
+            if (isSpawnableCommand(target)) {
+                ytdlpPath = target;
+                console.log(`[Aether] yt-dlp bootstrapped at ${target}`);
+                logDebug('yt-dlp bootstrapped', { target });
+                return true;
+            }
+        } catch (e) {
+            console.warn('[Aether] yt-dlp bootstrap failed:', e?.message || e);
+            logDebug('yt-dlp bootstrap failed', { error: e?.message || String(e) });
+        }
+
+        return false;
+    })();
+
+    try {
+        return await ensureYtDlpInFlight;
+    } finally {
+        ensureYtDlpInFlight = null;
+    }
+};
+const ensureYtDlpPathWithTimeout = async (timeoutMs = 8000) => {
+    const startedAt = Date.now();
+    const ready = await Promise.race([
+        ensureYtDlpPath(),
+        new Promise((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+    ]);
+    if (!ready) {
+        logDebug('yt-dlp ensure timeout/unavailable', { timeoutMs, elapsedMs: Date.now() - startedAt });
+    }
+    return !!ready;
+};
 const ffmpegPath = process.env.FFMPEG_PATH || (process.platform === 'win32' ? getBinaryPath('ffmpeg-static/ffmpeg.exe') : getBinaryPath('ffmpeg-static/ffmpeg'));
 console.log(`[Aether] ytdlpPath: ${ytdlpPath}, ffmpegPath: ${ffmpegPath}`);
 
 const offlineEngine = new OfflineEngine(app.getPath('userData'));
+const downloadBackoffByTrack = new Map();
 let mainWindow;
 
 const STORAGE_POLICY_STORE_KEY = 'storagePolicy';
@@ -677,7 +850,7 @@ streamApp.get('/', (req, res) => {
     `);
 });
 
-streamApp.get('/stream', (req, res) => {
+streamApp.get('/stream', async (req, res) => {
     const startTime = Date.now();
     const videoUrl = req.query.url;
     const seekTime = req.query.time ? parseInt(req.query.time, 10) : 0;
@@ -740,6 +913,14 @@ streamApp.get('/stream', (req, res) => {
         res.on('finish', () => {
             console.log(`[Aether] Cached stream for ${trackId} took ${Date.now() - startTime}ms`);
         });
+        return;
+    }
+
+    const readyForStream = await ensureYtDlpPathWithTimeout(7000);
+    if (!readyForStream || !ytdlpPath) {
+        if (!res.headersSent) {
+            res.status(503).send('Streaming backend unavailable (yt-dlp missing)');
+        }
         return;
     }
 
@@ -830,7 +1011,6 @@ streamApp.get('/stream', (req, res) => {
     });
 });
 
-const https = require('https');
 streamApp.get('/api/proxy', async (req, res) => {
     const { url } = req.query;
     if (!url) return res.status(400).send('No URL');
@@ -1320,6 +1500,7 @@ function createWindow() {
 app.whenReady().then(async () => {
     await initRPC();
     createWindow();
+    ensureYtDlpPath().catch(() => {});
 
     try {
         const policy = getStoragePolicy();
@@ -1528,7 +1709,24 @@ app.whenReady().then(async () => {
     ipcMain.handle('aether:download', async (event, { url, trackId }) => {
         console.log(`[Aether] Starting download for trackId: ${trackId}, url: ${url}`);
         try {
+            const now = Date.now();
+            const gate = downloadBackoffByTrack.get(trackId);
+            if (gate && now < gate.retryAfter) {
+                const waitMs = Math.max(0, gate.retryAfter - now);
+                return { success: false, error: `warmup throttled (${Math.ceil(waitMs / 1000)}s)` };
+            }
+
+            const ready = await ensureYtDlpPathWithTimeout(8000);
+            if (!ready) {
+                const prev = downloadBackoffByTrack.get(trackId);
+                const failures = (prev?.failures || 0) + 1;
+                const retryAfter = now + Math.min(120000, 5000 * failures);
+                downloadBackoffByTrack.set(trackId, { failures, retryAfter, reason: 'yt-dlp unavailable' });
+                return { success: false, error: 'yt-dlp unavailable' };
+            }
+
             const filePath = await offlineEngine.download(url, trackId, ytdlpPath, ffmpegPath);
+            downloadBackoffByTrack.delete(trackId);
             const policy = getStoragePolicy();
             enforceCacheCap(policy.cacheCapMb);
             console.log(`[Aether] Download successful for ${trackId}: ${filePath}`);
@@ -1539,6 +1737,12 @@ app.whenReady().then(async () => {
             return { success: true, filePath };
         } catch (e) {
             console.error(`[Aether] Download failed for ${trackId}: ${e.message}`);
+            const prev = downloadBackoffByTrack.get(trackId);
+            const failures = (prev?.failures || 0) + 1;
+            const msg = String(e?.message || '').toLowerCase();
+            const baseDelay = /403|416|resolve|nodename|ffmpeg|ffprobe/.test(msg) ? 20000 : 6000;
+            const retryAfter = Date.now() + Math.min(180000, baseDelay * failures);
+            downloadBackoffByTrack.set(trackId, { failures, retryAfter, reason: e.message || 'download failed' });
             return { success: false, error: e.message };
         }
     });
@@ -1878,13 +2082,23 @@ app.whenReady().then(async () => {
     });
 
     ipcMain.handle('aether:search', async (event, query) => {
+        const started = Date.now();
         try {
-            return await search(query, ytdlpPath);
-        } catch (err) { return []; }
+            const ready = await ensureYtDlpPathWithTimeout(7000);
+            if (!ready) return [];
+            const results = await search(query, ytdlpPath);
+            logDebug('search completed', { query: String(query || '').slice(0, 60), count: Array.isArray(results) ? results.length : 0, ms: Date.now() - started });
+            return results;
+        } catch (err) {
+            logDebug('search failed', { error: err?.message || String(err), ms: Date.now() - started });
+            return [];
+        }
     });
 
     ipcMain.handle('aether:get-metadata', async (event, url) => {
         try {
+            const ready = await ensureYtDlpPathWithTimeout(7000);
+            if (!ready) return null;
             return await getMetadata(url, ytdlpPath);
         } catch (err) { return null; }
     });
@@ -1934,6 +2148,8 @@ app.whenReady().then(async () => {
 
     ipcMain.handle('aether:get-recommendations', async (event, details) => {
         try {
+            const ready = await ensureYtDlpPathWithTimeout(7000);
+            if (!ready) return [];
             return await getRecommendations(details, ytdlpPath);
         } catch (err) { return []; }
     });

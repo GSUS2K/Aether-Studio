@@ -19,6 +19,8 @@ jobs:
           build_cmd: npx electron-builder --mac dmg --x64 --arm64 --publish=never
           artifact_glob: |
             dist/*.dmg
+            dist/*.dmg.blockmap
+            dist/latest-mac.yml
         - os: windows-latest
           label: windows
           build_cmd: npx electron-builder --win nsis --x64 --publish=never
