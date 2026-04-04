@@ -62,10 +62,10 @@ jobs:
           xvfb
 
     - name: Install root dependencies
-      run: npm ci --include=dev --ignore-scripts
+      run: npm install --include=dev --ignore-scripts
 
     - name: Install frontend dependencies
-      run: npm ci --prefix frontend --ignore-scripts
+      run: npm install --prefix frontend --ignore-scripts
 
     - name: Install yt-dlp manually (macOS)
       if: matrix.os == 'macos-latest'
