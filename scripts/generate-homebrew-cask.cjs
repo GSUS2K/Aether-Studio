@@ -41,6 +41,14 @@ const byArch = {
   universal: null,
 };
 
+const isArmName = (name) => /(arm64|aarch64)/i.test(name);
+const isX64Name = (name) => /(x64|amd64|x86_64|intel)/i.test(name);
+
+// electron-builder may output x64 as an unsuffixed DMG when built together with arm64.
+// If we have exactly one arm64 and one non-arm64 DMG, treat the non-arm64 file as x64.
+const armCandidates = files.filter((f) => isArmName(f));
+const nonArmCandidates = files.filter((f) => !isArmName(f));
+
 for (const file of files) {
   const lower = file.toLowerCase();
   const entry = {
@@ -49,12 +57,16 @@ for (const file of files) {
     url: `https://github.com/${repo}/releases/download/${tag}/${file}`,
   };
 
-  if (lower.includes('arm64') || lower.includes('aarch64')) {
+  if (isArmName(lower)) {
     byArch.arm64 = entry;
-  } else if (lower.includes('x64') || lower.includes('amd64')) {
+  } else if (isX64Name(lower)) {
     byArch.x64 = entry;
   } else {
-    byArch.universal = entry;
+    if (armCandidates.length === 1 && nonArmCandidates.length === 1) {
+      byArch.x64 = entry;
+    } else {
+      byArch.universal = entry;
+    }
   }
 }
 
