@@ -831,17 +831,56 @@ streamApp.get('/stream', (req, res) => {
 });
 
 const https = require('https');
-streamApp.get('/api/proxy', (req, res) => {
+streamApp.get('/api/proxy', async (req, res) => {
     const { url } = req.query;
     if (!url) return res.status(400).send('No URL');
+
+    const buildCandidateUrls = (raw) => {
+        const initial = String(raw || '').startsWith('//') ? `https:${raw}` : String(raw || '');
+        const out = [initial];
+        try {
+            const parsed = new URL(initial);
+            const isYtImg = /(^|\.)ytimg\.com$/i.test(parsed.hostname);
+            const isMaxRes = /\/maxresdefault\.(jpg|webp)$/i.test(parsed.pathname);
+            if (isYtImg && isMaxRes) {
+                const fallback = new URL(parsed.toString());
+                fallback.pathname = fallback.pathname.replace(/maxresdefault\.(jpg|webp)$/i, 'hqdefault.jpg');
+                out.push(fallback.toString());
+            }
+        } catch {}
+        return [...new Set(out.filter(Boolean))];
+    };
+
     try {
-        const fullUrl = url.startsWith('//') ? 'https:' + url : url;
-        https.get(fullUrl, (response) => {
-            res.setHeader('Content-Type', response.headers['content-type'] || 'image/jpeg');
-            response.pipe(res);
-        }).on('error', () => res.status(500).send('Proxy Error'));
+        const candidates = buildCandidateUrls(url);
+        let lastStatus = 500;
+
+        for (const candidateUrl of candidates) {
+            try {
+                const response = await fetch(candidateUrl, {
+                    redirect: 'follow',
+                    headers: {
+                        'user-agent': 'Mozilla/5.0 (Aether Proxy)',
+                        'accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+                    },
+                });
+
+                lastStatus = response.status || lastStatus;
+                if (!response.ok) continue;
+
+                const arrayBuf = await response.arrayBuffer();
+                const buf = Buffer.from(arrayBuf);
+                res.setHeader('Content-Type', response.headers.get('content-type') || 'image/jpeg');
+                res.setHeader('Cache-Control', 'public, max-age=3600');
+                return res.status(200).send(buf);
+            } catch (e) {
+                continue;
+            }
+        }
+
+        return res.status(lastStatus === 404 ? 404 : 502).send('Proxy Error');
     } catch (e) {
-        res.status(500).send('Proxy Error');
+        res.status(502).send('Proxy Error');
     }
 });
 

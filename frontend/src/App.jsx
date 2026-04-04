@@ -643,6 +643,15 @@ function App() {
   const getProxyUrl = (url) => {
     if (!url) return '';
     let processed = url.startsWith('//') ? 'https:' + url : url;
+    try {
+      const parsed = new URL(processed);
+      const isYtImg = /(^|\.)ytimg\.com$/i.test(parsed.hostname);
+      const isMaxRes = /\/maxresdefault\.(jpg|webp)$/i.test(parsed.pathname);
+      if (isYtImg && isMaxRes) {
+        parsed.pathname = parsed.pathname.replace(/maxresdefault\.(jpg|webp)$/i, 'hqdefault.jpg');
+        processed = parsed.toString();
+      }
+    } catch {}
     if (processed.startsWith('http://localhost') || processed.startsWith('http://127.0.0.1')) return processed;
     
     if (isStandalone) {
@@ -1324,6 +1333,10 @@ function App() {
             networkState: localAudioRef.current?.networkState,
           });
             localAudioRef.current.play().catch(e => {
+            if (e?.name === 'AbortError') {
+              console.warn('[Aether/Audio] play() interrupted by source refresh (non-fatal)');
+              return;
+            }
             console.error("[Aether/Audio] Autoplay Blocked or Failed:", e, {
               src: localAudioRef.current?.src,
               readyState: localAudioRef.current?.readyState,
@@ -2219,35 +2232,6 @@ function App() {
         });
         setCurrentTrackTitle(track.title);
         updateDiscordRichPresence(track, serverMs);
-
-        // --- AETHER: LOCAL PLAYBACK SYNC (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN ---
-        if (isStandalone && track.actualUrl) {
-            const loadStartTime = Date.now();
-          console.log("[Aether/Audio] Standalone queue fetch stream load", {
-            trackId: track.id,
-            actualUrl: track.actualUrl,
-            url: track.url,
-          });
-            if (!localAudioRef.current) {
-                localAudioRef.current = new Audio();
-                localAudioRef.current.volume = 0.5;
-            }
-            localAudioRef.current.oncanplay = () => {
-                console.log(`[Aether/Audio] Can play after ${Date.now() - loadStartTime}ms (fetchQueue)`);
-            };
-            const streamUrl = `http://localhost:${streamPort}/stream?url=${encodeURIComponent(track.actualUrl || track.url)}`;
-            localAudioRef.current.src = streamUrl;
-            // Trigger background download if not already cached
-            if (window.aether?.download) {
-                console.log(`[Aether] Triggering background download for track ${track.id} (fetchQueue)`);
-                window.aether.download(track.actualUrl || track.url, track.id).then(result => {
-                    console.log(`[Aether] Download result for ${track.id}:`, result);
-                }).catch(e => {
-                    console.error(`[Aether] Download failed for ${track.id}:`, e);
-                });
-            }
-            localAudioRef.current.play().catch(e => console.error("[Aether] Playback blocked:", e));
-        }
       }
 
       setDiagnostics(prev => ({
@@ -2652,10 +2636,12 @@ function App() {
     if (!baseUrl) return null;
     const youtubeId = track.youtubeId || extractYouTubeId(baseUrl);
     const stableId = youtubeId || track.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const thumbnail = track.thumbnail || (youtubeId ? `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg` : '');
     return {
       ...track,
       id: stableId,
       youtubeId,
+      thumbnail,
       actualUrl: track.actualUrl || baseUrl,
       url: track.url || baseUrl,
     };
@@ -2696,8 +2682,11 @@ function App() {
     });
 
     try {
+      const sourceUrl = id && String(id).length === 11
+        ? `https://www.youtube.com/watch?v=${id}`
+        : url;
       console.log(`[Aether] Warmup download request for ${title} (${id})`);
-      const result = await window.aether.download(url, id);
+      const result = await window.aether.download(sourceUrl, id);
       console.log(`[Aether] Warmup result for ${id}:`, result);
       if (result?.success) {
         setDownloadedTracks(prev => Array.from(new Set([...prev, id])));
@@ -3115,10 +3104,9 @@ function App() {
 
     const onShortcut = (e) => {
       const lowerKey = e.key?.toLowerCase?.() || '';
-      const plainMD = !e.metaKey && !e.ctrlKey && !e.altKey && (lowerKey === 'm' || lowerKey === 'd');
-      if (isTypingTarget(document.activeElement) && !plainMD) return;
-
       const isAccelAlt = (e.metaKey || e.ctrlKey) && e.altKey;
+      if (isTypingTarget(document.activeElement) && !isAccelAlt) return;
+
       if (isAccelAlt) {
         if (e.code === 'Space') {
           e.preventDefault();
