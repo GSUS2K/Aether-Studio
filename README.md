@@ -129,3 +129,7 @@ Builds macOS and Windows installers.
 ## Version
 
 Current app version: `12.11.1-SOVEREIGN`
+
+## License
+
+Aether is licensed under the MIT License. See [LICENSE](LICENSE) for the full text.

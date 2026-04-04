@@ -23,7 +23,7 @@
     "desktop"
   ],
   "author": "GSUS_2K",
-  "license": "ISC",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "@distube/yt-dlp": "^2.0.1",
