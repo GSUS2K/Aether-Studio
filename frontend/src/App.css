@@ -9,6 +9,71 @@
   animation: pulse-glow 8s ease-in-out infinite;
 }
 
+/* AURA MODE: Side-channel edge bars (mids/highs) */
+.aura-side-channel {
+  position: fixed;
+  z-index: 24;
+  pointer-events: none;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  background: linear-gradient(to bottom, transparent 0%, rgba(0, 255, 191, 1) 20%, rgba(0, 255, 191, 0.9) 50%, rgba(0, 255, 191, 1) 80%, transparent 100%);
+  box-shadow: 0 0 30px rgba(0, 255, 191, 0.8), inset 0 0 20px rgba(0, 255, 191, 0.5);
+  opacity: 0;
+  transition: opacity 80ms ease-out;
+}
+
+.aura-side-channel-left {
+  left: 0;
+}
+
+.aura-side-channel-right {
+  right: 0;
+}
+
+/* Beat trail echo rings on play button */
+@keyframes beat-ring-burst {
+  0% {
+    r: 20px;
+    opacity: 0.8;
+  }
+  100% {
+    r: 60px;
+    opacity: 0;
+  }
+}
+
+.beat-ring {
+  position: absolute;
+  pointer-events: none;
+}
+
+.beat-ring circle {
+  fill: none;
+  stroke: rgba(0, 255, 191, 0.6);
+  stroke-width: 1.5;
+}
+
+/* Lyric underline shimmer */
+@keyframes lyric-shimmer {
+  0% { 
+    opacity: 0;
+    box-shadow: -20px 0 20px rgba(0, 255, 191, 0.3), 0 0 8px rgba(0, 255, 191, 0.4);
+  }
+  50% { 
+    opacity: 1;
+    box-shadow: 0 0 20px rgba(0, 255, 191, 0.8), 0 0 40px rgba(0, 255, 191, 0.4);
+  }
+  100% { 
+    opacity: 0;
+    box-shadow: 20px 0 20px rgba(0, 255, 191, 0.3), 0 0 8px rgba(0, 255, 191, 0.4);
+  }
+}
+
+.lyric-pulse-line {
+  animation: lyric-shimmer 0.5s ease-in-out;
+}
+
 .draggable {
   -webkit-app-region: drag;
 }
@@ -93,4 +158,113 @@ input[type="range"]::-webkit-slider-thumb {
         padding-left: 1rem !important;
         padding-right: 1rem !important;
     }
+}
+
+@keyframes overlay-marquee-scroll {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(calc(-100% - 2.5rem)); }
+}
+
+.overlay-marquee {
+  overflow: hidden;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.overlay-marquee-track {
+  display: inline-flex;
+  width: max-content;
+  animation: overlay-marquee-scroll 14s linear infinite;
+}
+
+.overlay-marquee-track > span {
+  display: inline-block;
+  padding-right: 2.5rem;
+}
+
+@keyframes cat-paw-wiggle {
+  0%, 100% { transform: rotate(0deg) scale(1); }
+  25% { transform: rotate(-10deg) scale(1.04); }
+  50% { transform: rotate(8deg) scale(1.06); }
+  75% { transform: rotate(-6deg) scale(1.03); }
+}
+
+.cat-paw-wiggle {
+  animation: cat-paw-wiggle 1.8s ease-in-out infinite;
+}
+
+@keyframes doodle-float {
+  0%, 100% { transform: translateY(0px) rotate(0deg); }
+  50% { transform: translateY(-8px) rotate(1.2deg); }
+}
+
+.doodle-float {
+  animation: doodle-float 7s ease-in-out infinite;
+}
+
+@keyframes doodle-glide-a {
+  0% { transform: translate3d(-18vw, 0, 0) scale(1); }
+  35% { transform: translate3d(28vw, -7px, 0) scale(1.03); }
+  65% { transform: translate3d(72vw, 6px, 0) scale(1.01); }
+  100% { transform: translate3d(122vw, 0, 0) scale(1); }
+}
+
+@keyframes doodle-glide-b {
+  0% { transform: translate3d(-22vw, 0, 0) scale(1); }
+  45% { transform: translate3d(48vw, 8px, 0) scale(1.02); }
+  75% { transform: translate3d(88vw, -6px, 0) scale(1.04); }
+  100% { transform: translate3d(128vw, 0, 0) scale(1); }
+}
+
+@keyframes doodle-glide-c {
+  0% { transform: translate3d(-20vw, 0, 0) scale(1); }
+  30% { transform: translate3d(26vw, 7px, 0) scale(1.01); }
+  70% { transform: translate3d(82vw, -8px, 0) scale(1.03); }
+  100% { transform: translate3d(126vw, 0, 0) scale(1); }
+}
+
+.doodle-fly {
+  will-change: transform;
+}
+
+.doodle-glide-a {
+  animation: doodle-glide-a 26s linear infinite;
+}
+
+.doodle-glide-b {
+  animation: doodle-glide-b 30s linear infinite;
+}
+
+.doodle-glide-c {
+  animation: doodle-glide-c 28s linear infinite;
+}
+
+.doodle-cloud-layer {
+  filter: drop-shadow(0 0 12px rgba(124, 248, 211, 0.14));
+}
+
+.doodle-cloud-layer img {
+  mix-blend-mode: screen;
+}
+
+.doodle-bg-layer img {
+  opacity: 0.26;
+  filter: blur(0.1px);
+}
+
+.doodle-mode-active:not(.aura-mode-active) .glass-card {
+  background-color: rgba(8, 12, 16, 0.16) !important;
+  border-color: rgba(255, 255, 255, 0.07) !important;
+}
+
+.doodle-mode-active:not(.aura-mode-active) header {
+  background-color: rgba(7, 10, 14, 0.36) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+@media (max-width: 900px) {
+  .doodle-bg-layer img {
+    opacity: 0.12 !important;
+    transform: scale(0.8);
+  }
 }

@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { setupDiscordSdk } from './discord';
 import axios from 'axios';
 import { BUILD_VERSION } from './buildVersion';
+import catDoodlePeek from './assets/cat-doodle-peek.svg';
 import './App.css';
 
 const getApiBase = () => {
@@ -30,9 +31,9 @@ const UX_VERSION = 'AURA-R3.8';
 const LYRIC_PRESETS_STORAGE_KEY = 'aether.lyricOffsetPresets.v1';
 const SESSION_UI_STORAGE_KEY = 'aether.sessionUi.v1';
 const SESSION_PLAYBACK_STORAGE_KEY = 'aether.sessionPlayback.v1';
+const PLAYLIST_ORDER_STORAGE_KEY = 'aether.playlistOrder.v1';
 const SKIP_EVENTS_STORAGE_KEY = 'aether.skipEvents.v1';
 const LOCK_PREFS_STORAGE_KEY = 'aether.lockPrefs.v1';
-
 const IDLE_PHRASES = [
   "Exploring the Neural Vault",
   "Calibrating Sonic Synapses",
@@ -164,8 +165,8 @@ class ErrorBoundary extends Component {
             Internal decrypt signal failed. The dashboard has encountered a critical parity error.
           </p>
           <div className="flex flex-col gap-4">
-            <button 
-              onClick={() => window.location.reload()} 
+            <button
+              onClick={() => window.location.reload()}
               className="px-10 py-5 bg-white text-black text-sm uppercase tracking-[0.5em] hover:bg-brand-accent transition-all flex items-center gap-4 group"
             >
               <RefreshCw size={18} className="group-hover:rotate-180 transition-transform duration-700" /> Reboot Interface
@@ -190,17 +191,17 @@ function App() {
   const [isAudioBuffering, setIsAudioBuffering] = useState(false);
   const [isAutoplaySeeking, setIsAutoplaySeeking] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [currentTime, setCurrentTime] = useState(0); 
-  const [lyricOffsetMs, setLyricOffsetMs] = useState(0); 
+  const [currentTime, setCurrentTime] = useState(0);
+  const [lyricOffsetMs, setLyricOffsetMs] = useState(0);
   const [isMaximized, setIsMaximized] = useState(false);
-  const [lyrics, setLyrics] = useState([]); 
+  const [lyrics, setLyrics] = useState([]);
   const [isLyricsLoading, setIsLyricsLoading] = useState(false);
   const [activeLyricIndex, setActiveLyricIndex] = useState(-1);
   const [systemStats, setSystemStats] = useState(null);
   const visualizerCanvasRef = useRef(null);
-  const pulseCanvasRef = useRef(null); // Dedicated Pulse Layer (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN
-  const [visualizerMode, setVisualizerMode] = useState('bars'); // 'bars' or 'pulse' (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN
-  const [themeColor, setThemeColor] = useState('#00ffbf'); // Aether Mint default
+  const pulseCanvasRef = useRef(null);
+  const [visualizerMode, setVisualizerMode] = useState('bars');
+  const [themeColor, setThemeColor] = useState('#00ffbf');
   const lyricsContainerRef = useRef(null);
   const activeLyricRef = useRef(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -230,6 +231,8 @@ function App() {
   const [lastAdded, setLastAdded] = useState(null);
   const [currentTrackTitle, setCurrentTrackTitle] = useState("");
   const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
+  const [isDoodleMode, setIsDoodleMode] = useState(true);
+  const [doodleIntensity, setDoodleIntensity] = useState('medium');
   const [uptime, setUptime] = useState("00:00:00");
   const [isLyricsExpanded, setIsLyricsExpanded] = useState(false);
   const [isStatsExpanded, setIsStatsExpanded] = useState(false);
@@ -240,14 +243,24 @@ function App() {
   const [vaultPulse, setVaultPulse] = useState({ bass: 0, mids: 0, highs: 0, energy: 0, spin: 0, stamp: 'AETHER-PULSE' });
   const [vaultSpectrum, setVaultSpectrum] = useState(() => Array(8).fill(0.12));
   const [playlists, setPlaylists] = useState({});
+  const [playlistOrder, setPlaylistOrder] = useState([]);
+  const playlistOrderHydratedRef = useRef(false);
   const [viewingPlaylist, setViewingPlaylist] = useState(null);
   const [newPlaylistName, setNewPlaylistName] = useState('');
+    const [isViewingFullQueue, setIsViewingFullQueue] = useState(false);
+    const [isViewingFullPlaylist, setIsViewingFullPlaylist] = useState(null);
+  const [isLibraryOverlayOpen, setIsLibraryOverlayOpen] = useState(false);
+  const [libraryActionTarget, setLibraryActionTarget] = useState(null);
+  const [isPlayerOverlayOpen, setIsPlayerOverlayOpen] = useState(false);
+  const [draggedPlaylistName, setDraggedPlaylistName] = useState(null);
+  const [draggedQueueIndex, setDraggedQueueIndex] = useState(null);
   const [isCreatingPlaylist, setIsCreatingPlaylist] = useState(false);
   const [activeMenuTrack, setActiveMenuTrack] = useState(null);
   const [isRenamingPlaylist, setIsRenamingPlaylist] = useState(null);
   const [renameValue, setRenameValue] = useState('');
   const [volume, setVolume] = useState(0.5);
   const [volumeToast, setVolumeToast] = useState(false);
+  const [isDownloadingTrack, setIsDownloadingTrack] = useState(false);
   const [sleepTimerValue, setSleepTimerValue] = useState(0); // 0, 15, 30, 60, 120
   const [sleepDeadline, setSleepDeadline] = useState(null);
   const [sleepRemainingStr, setSleepRemainingStr] = useState('');
@@ -271,7 +284,6 @@ function App() {
   const [unlockPasswordInput, setUnlockPasswordInput] = useState('');
   const [lockUseTouchId, setLockUseTouchId] = useState(false);
   const [lockIdleMinutes, setLockIdleMinutes] = useState(5);
-  const [isWindowActive, setIsWindowActive] = useState(() => !document.hidden);
   const [lockError, setLockError] = useState('');
   const [isLockBusy, setIsLockBusy] = useState(false);
   const [storageStats, setStorageStats] = useState(null);
@@ -299,22 +311,78 @@ function App() {
   const animationFrameRef = useRef(null);
   const auraEnergyRef = useRef({ bass: 0, mids: 0, highs: 0, phase: 0 });
   const uiPulseRef = useRef(1);
+  const uiPulseSignalRef = useRef({ bass: 0, rms: 0 });
+  const uiPulsePeakRef = useRef(0);
+  const playButtonRef = useRef(null);
+  const beatRingsRef = useRef(null);
+  const lastBeatRingTimeRef = useRef(0);
   const mixtapeVaultRef = useRef(null);
   const vaultTelemetryRef = useRef({ lastStateAt: 0 });
   const prevTrackRef = useRef(null); // Neural Memory Ref (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN
   const standaloneTrackLoadKeyRef = useRef('');
   const bufferingRescueRef = useRef({ trackKey: '', lastAttemptAt: 0 });
   const skipReasonTimeoutRef = useRef(null);
-  const autoBiometricAttemptRef = useRef(false);
+  const libraryOverlayCreateInputRef = useRef(null);
   const lastWindowModeChangeRef = useRef(0);
   const prematureEndGuardRef = useRef({ trackId: null, retried: false });
   const warmupRetryRef = useRef(new Map());
   const isStandalone = !!window.aether;
-  const [history, setHistory] = useState([]); // Neural Deep Memory (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN
+  const [history, setHistory] = useState([]);
   const [isManualStop, setIsManualStop] = useState(false);
   const [streamPort, setStreamPort] = useState(3333);
+  const [pendingResumeTime, setPendingResumeTime] = useState(null); // Track-specific resume time
   // --- AETHER STUDIO CORE: NEURAL ENGINE STATE (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN ---
   const currentTrack = queue?.[0];
+  const currentTrackSourceUrl = useMemo(() => {
+    if (!currentTrack) return '';
+    if (currentTrack.youtubeId) return `https://www.youtube.com/watch?v=${currentTrack.youtubeId}`;
+    return currentTrack.actualUrl || currentTrack.url || '';
+  }, [currentTrack?.youtubeId, currentTrack?.actualUrl, currentTrack?.url]);
+  const pendingLibraryItems = useMemo(() => {
+    if (libraryActionTarget?.items?.length) return libraryActionTarget.items;
+    return currentTrack ? [currentTrack] : [];
+  }, [libraryActionTarget, currentTrack]);
+  const canAddPendingToVault = pendingLibraryItems.length > 0;
+  const canOpenCurrentSource = Boolean(isStandalone && currentTrackSourceUrl);
+  const canDownloadCurrentTrack = Boolean(isStandalone && window.aether?.exportAudioToFile && currentTrackSourceUrl);
+
+  const handleDownloadCurrentTrack = useCallback(async () => {
+    if (!canDownloadCurrentTrack || !currentTrack || isDownloadingTrack) {
+      setLastAdded('Download unavailable');
+      setTimeout(() => setLastAdded(null), 2200);
+      return;
+    }
+
+    setIsDownloadingTrack(true);
+    setLastAdded('Choose destination folder…');
+
+    try {
+      const result = await window.aether.exportAudioToFile(
+        currentTrackSourceUrl,
+        currentTrack.title || 'track',
+        currentTrack.author || 'unknown'
+      );
+
+      if (result?.cancel) {
+        setLastAdded('Export cancelled');
+        setTimeout(() => setLastAdded(null), 1800);
+        return;
+      }
+
+      if (result?.success === false) {
+        throw new Error(result?.error || 'Save failed');
+      }
+
+      setLastAdded(`Exported: ${currentTrack.title || 'Track'}`);
+      setTimeout(() => setLastAdded(null), 2800);
+    } catch (err) {
+      setLastAdded(`Download failed${err?.message ? `: ${String(err.message).slice(0, 42)}` : ''}`);
+      setTimeout(() => setLastAdded(null), 3000);
+    } finally {
+      setIsDownloadingTrack(false);
+    }
+  }, [canDownloadCurrentTrack, currentTrack, currentTrackSourceUrl, isDownloadingTrack]);
+
   const appendSpotifyImportLog = useCallback((line) => {
     const stamp = new Date().toLocaleTimeString();
     const msg = `[${stamp}] ${line}`;
@@ -520,19 +588,13 @@ function App() {
   }, [refreshLockStatus]);
 
   useEffect(() => {
-    const updateActive = () => {
-      setIsWindowActive(!document.hidden && document.visibilityState === 'visible');
-    };
-    document.addEventListener('visibilitychange', updateActive);
-    window.addEventListener('focus', updateActive);
-    window.addEventListener('blur', updateActive);
-    updateActive();
-    return () => {
-      document.removeEventListener('visibilitychange', updateActive);
-      window.removeEventListener('focus', updateActive);
-      window.removeEventListener('blur', updateActive);
-    };
-  }, []);
+    if (!isLibraryOverlayOpen || !isCreatingPlaylist) return;
+    const t = setTimeout(() => {
+      libraryOverlayCreateInputRef.current?.focus();
+      libraryOverlayCreateInputRef.current?.select?.();
+    }, 0);
+    return () => clearTimeout(t);
+  }, [isLibraryOverlayOpen, isCreatingPlaylist]);
 
   useEffect(() => {
     const loadDebugAndLockPrefs = async () => {
@@ -597,17 +659,6 @@ function App() {
       if (!isAppLocked) setIsAppLocked(true);
     };
 
-    const onVisibility = () => {
-      if (document.hidden) {
-        const elapsed = Date.now() - (lastWindowModeChangeRef.current || 0);
-        if (elapsed >= 0 && elapsed < 3000) {
-          console.log('[Aether/Lock] Skipping hidden lock during window mode transition', { elapsed });
-          return;
-        }
-        lockNow();
-      }
-    };
-
     let idleTimer = null;
     const idleMs = Math.max(1, lockIdleMinutes || 1) * 60 * 1000;
     const resetIdle = () => {
@@ -620,27 +671,14 @@ function App() {
     };
 
     const activityEvents = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
-    document.addEventListener('visibilitychange', onVisibility);
     activityEvents.forEach((eventName) => window.addEventListener(eventName, resetIdle, { passive: true }));
     resetIdle();
 
     return () => {
-      document.removeEventListener('visibilitychange', onVisibility);
       activityEvents.forEach((eventName) => window.removeEventListener(eventName, resetIdle));
       if (idleTimer) clearTimeout(idleTimer);
     };
   }, [isAppLocked, lockIdleMinutes, lockStatus.enabled]);
-
-  useEffect(() => {
-    if (!isStandalone) return;
-    if (!isAppLocked || !lockStatus.touchIdAvailable || !lockStatus.touchIdEnabled || !isWindowActive) {
-      autoBiometricAttemptRef.current = false;
-      return;
-    }
-    if (autoBiometricAttemptRef.current) return;
-    autoBiometricAttemptRef.current = true;
-    handleUnlockWithBiometric();
-  }, [handleUnlockWithBiometric, isAppLocked, isStandalone, lockStatus.touchIdAvailable, lockStatus.touchIdEnabled, isWindowActive]);
 
   const getProxyUrl = (url) => {
     if (!url) return '';
@@ -969,6 +1007,8 @@ function App() {
       isVerticalStack,
       isFocusedMode,
       isAutoplayEnabled,
+      isDoodleMode,
+      doodleIntensity,
       savedAt: Date.now(),
     };
 
@@ -981,7 +1021,7 @@ function App() {
     } catch (e) {
       console.warn('[Aether/Session] Failed to persist UI prefs', e);
     }
-  }, [isStandalone, visualizerMode, isVerticalStack, isFocusedMode, isAutoplayEnabled]);
+  }, [isStandalone, visualizerMode, isVerticalStack, isFocusedMode, isAutoplayEnabled, isDoodleMode, doodleIntensity]);
 
   useEffect(() => {
     if (!isStandalone || !sessionReadyRef.current) return;
@@ -1016,12 +1056,34 @@ function App() {
           if (typeof savedUiPrefs.isVerticalStack === 'boolean') setIsVerticalStack(savedUiPrefs.isVerticalStack);
           if (typeof savedUiPrefs.isFocusedMode === 'boolean') setIsFocusedMode(savedUiPrefs.isFocusedMode);
           if (typeof savedUiPrefs.isAutoplayEnabled === 'boolean') setIsAutoplayEnabled(savedUiPrefs.isAutoplayEnabled);
+          if (typeof savedUiPrefs.isDoodleMode === 'boolean') setIsDoodleMode(savedUiPrefs.isDoodleMode);
+          else if (typeof savedUiPrefs.isCatMode === 'boolean') setIsDoodleMode(savedUiPrefs.isCatMode);
+          if (typeof savedUiPrefs.doodleIntensity === 'string' && ['subtle', 'medium', 'dreamy'].includes(savedUiPrefs.doodleIntensity)) {
+            setDoodleIntensity(savedUiPrefs.doodleIntensity);
+          }
         }
 
         const savedPlaylists = await window.aether?.store?.get('playlists');
         if (savedPlaylists && typeof savedPlaylists === 'object' && !Array.isArray(savedPlaylists)) {
-           setPlaylists(savedPlaylists);
+           const normalizedPlaylists = Object.fromEntries(
+             Object.entries(savedPlaylists).map(([playlistName, tracks]) => {
+               const normalizedTracks = (Array.isArray(tracks) ? tracks : [])
+                 .map((track) => normalizeQueueTrack(track))
+                 .filter(Boolean);
+               return [playlistName, normalizedTracks];
+             })
+           );
+
+           setPlaylists(normalizedPlaylists);
+           window.aether?.store?.set('playlists', normalizedPlaylists);
+           const savedOrder = await window.aether?.store?.get(PLAYLIST_ORDER_STORAGE_KEY);
+           if (Array.isArray(savedOrder)) {
+             setPlaylistOrder(savedOrder.filter((name) => typeof name === 'string' && name.trim()));
+           } else {
+             setPlaylistOrder(Object.keys(normalizedPlaylists));
+           }
         }
+        playlistOrderHydratedRef.current = true;
         const savedVolume = await window.aether?.store?.get('volume');
         if (savedVolume !== undefined && savedVolume !== null) {
           const v = parseFloat(savedVolume);
@@ -1040,16 +1102,19 @@ function App() {
         if (savedPlayback && typeof savedPlayback === 'object') {
           let restoredQueueCount = 0;
           if (Array.isArray(savedPlayback.queue) && savedPlayback.queue.length > 0) {
-            setQueue(savedPlayback.queue);
-            restoredQueueCount = savedPlayback.queue.length;
+            const normalizedQueue = savedPlayback.queue.map((track) => normalizeQueueTrack(track)).filter(Boolean);
+            setQueue(normalizedQueue);
+            restoredQueueCount = normalizedQueue.length;
+            console.log(`[Aether/Session] Restored ${restoredQueueCount} tracks from session`);
           }
           if (typeof savedPlayback.isPlaying === 'boolean') {
+            console.log(`[Aether/Session] Restored isPlaying: ${savedPlayback.isPlaying}`);
             setIsPlaying(savedPlayback.isPlaying);
           }
           if (typeof savedPlayback.currentTime === 'number' && savedPlayback.currentTime > 0) {
             const restoredMs = Math.max(0, Math.floor(savedPlayback.currentTime));
-            setCurrentTime(restoredMs);
-            pendingResumeTimeRef.current = restoredMs;
+            console.log(`[Aether/Session] Restored currentTime: ${restoredMs}ms`);
+            setPendingResumeTime(restoredMs);
           }
 
           if (restoredQueueCount > 0) {
@@ -1070,6 +1135,11 @@ function App() {
           if (typeof savedUiPrefs.isVerticalStack === 'boolean') setIsVerticalStack(savedUiPrefs.isVerticalStack);
           if (typeof savedUiPrefs.isFocusedMode === 'boolean') setIsFocusedMode(savedUiPrefs.isFocusedMode);
           if (typeof savedUiPrefs.isAutoplayEnabled === 'boolean') setIsAutoplayEnabled(savedUiPrefs.isAutoplayEnabled);
+          if (typeof savedUiPrefs.isDoodleMode === 'boolean') setIsDoodleMode(savedUiPrefs.isDoodleMode);
+          else if (typeof savedUiPrefs.isCatMode === 'boolean') setIsDoodleMode(savedUiPrefs.isCatMode);
+          if (typeof savedUiPrefs.doodleIntensity === 'string' && ['subtle', 'medium', 'dreamy'].includes(savedUiPrefs.doodleIntensity)) {
+            setDoodleIntensity(savedUiPrefs.doodleIntensity);
+          }
         }
       } catch (e) {
         console.warn('[Aether/Session] Failed to load web UI prefs', e);
@@ -1187,7 +1257,7 @@ function App() {
         const streamBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
         let didOfflineFallback = false;
         const fallbackToOnlineStream = () => {
-          if (!isLocalDownloaded || didOfflineFallback) return;
+          if (!isPlaying || !isLocalDownloaded || didOfflineFallback) return;
           didOfflineFallback = true;
           const onlineUrl = `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}`;
           console.warn('[Aether/Audio] Offline source stalled, switching to live stream', {
@@ -1205,12 +1275,14 @@ function App() {
         };
         localAudioRef.current.oncanplay = () => {
             console.log(`[Aether/Audio] canplay after ${Date.now() - loadStartTime}ms`);
-          if (pendingResumeTimeRef.current && pendingResumeTimeRef.current > 0) {
-            const resumeSec = Math.floor(pendingResumeTimeRef.current / 1000);
-            localAudioRef.current.currentTime = resumeSec;
-            setCurrentTime(resumeSec * 1000);
-            pendingResumeTimeRef.current = null;
-          }
+            // Apply pending resume time only once per track
+            if (pendingResumeTime && pendingResumeTime > 0) {
+              const resumeSec = Math.floor(pendingResumeTime / 1000);
+              console.log(`[Aether/Audio] Seeking to ${resumeSec}s from pending resume time`);
+              localAudioRef.current.currentTime = resumeSec;
+              setCurrentTime(resumeSec * 1000);
+              setPendingResumeTime(null); // Clear after applying
+            }
         };
         localAudioRef.current.onplaying = () => {
             console.log(`[Aether/Audio] playing after ${Date.now() - loadStartTime}ms`);
@@ -1224,20 +1296,22 @@ function App() {
         };
         localAudioRef.current.onwaiting = () => {
             console.log(`[Aether/Audio] waiting at ${Date.now() - loadStartTime}ms`);
-            setIsAudioBuffering(true);
+            if (isPlaying) setIsAudioBuffering(true);
         };
         localAudioRef.current.onstalled = () => {
             console.log(`[Aether/Audio] stalled at ${Date.now() - loadStartTime}ms`);
-            setIsAudioBuffering(true);
+            if (isPlaying) setIsAudioBuffering(true);
         };
         localAudioRef.current.onwaiting = () => {
             console.log("[Aether/Audio] Buffer Underrun. Visuals paused.");
-            setIsAudioBuffering(true);
+            if (isPlaying) setIsAudioBuffering(true);
         };
         localAudioRef.current.onstalled = () => {
             console.log("[Aether/Audio] Connection Stalled. Maintaining status.");
-            setIsAudioBuffering(true);
-          fallbackToOnlineStream();
+            if (isPlaying) {
+              setIsAudioBuffering(true);
+              fallbackToOnlineStream();
+            }
         };
         localAudioRef.current.onended = () => {
             const advanceQueue = (reason) => {
@@ -1289,8 +1363,10 @@ function App() {
           });
             console.log("[Aether/Audio] Attempting signal recovery. Skip suppressed.");
             // Maintain buffering state instead of skipping to Standby
-            setIsAudioBuffering(true);
-            fallbackToOnlineStream();
+            if (isPlaying) {
+              setIsAudioBuffering(true);
+              fallbackToOnlineStream();
+            }
         };
         
         const streamUrl = isLocalDownloaded
@@ -1308,7 +1384,7 @@ function App() {
         localAudioRef.current.src = streamUrl;
         const startupWatchdog = setTimeout(() => {
           const audio = localAudioRef.current;
-          if (!audio) return;
+          if (!audio || !isPlaying) return;
           const stuckAtStart = (audio.currentTime || 0) < 1 && audio.readyState < 2;
           if (stuckAtStart) {
             console.warn('[Aether/Audio] Startup watchdog triggered', {
@@ -1479,6 +1555,9 @@ function App() {
        if (audioCtxRef.current?.state === 'suspended') audioCtxRef.current.resume();
     } else {
        localAudioRef.current.pause();
+       if (audioCtxRef.current?.state === 'running') {
+        audioCtxRef.current.suspend().catch(() => {});
+       }
     }
   }, [isPlaying, isStandalone]);
 
@@ -1561,6 +1640,56 @@ function App() {
           mixtapeVaultRef.current.style.setProperty('--vault-scale', String(auraScale));
           mixtapeVaultRef.current.style.setProperty('--vault-spin', `${spinDeg}deg`);
           mixtapeVaultRef.current.style.setProperty('--vault-glow', String(clamp01(0.18 + bass * 0.42 + highs * 0.22)));
+        }
+
+        // AURA MODE: Propagate beat energy to transport & lyric underline
+        if (isAuraMode && document.documentElement) {
+          document.documentElement.style.setProperty('--aura-beat-pulse', String(bass * 0.8 + energy * 0.3));
+          document.documentElement.style.setProperty('--aura-edge-glow', String(bass * 0.6 + mids * 0.4));
+
+          // AURA MODE: Trigger beat rings on kick peaks (bass spikes)
+          if (bass > 0.7 && performance.now() - lastBeatRingTimeRef.current > 150) {
+            lastBeatRingTimeRef.current = performance.now();
+            if (beatRingsRef.current) {
+              const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+              svg.setAttribute('viewBox', '0 0 120 120');
+              svg.setAttribute('width', '120');
+              svg.setAttribute('height', '120');
+              svg.setAttribute('class', 'beat-ring');
+              svg.style.position = 'absolute';
+              svg.style.pointerEvents = 'none';
+              svg.style.top = '50%';
+              svg.style.left = '50%';
+              svg.style.transform = 'translate(-50%, -50%)';
+
+              const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+              circle.setAttribute('cx', '60');
+              circle.setAttribute('cy', '60');
+              circle.setAttribute('r', '20');
+              svg.appendChild(circle);
+
+              beatRingsRef.current.appendChild(svg);
+
+              // Animate the circle
+              let startTime = performance.now();
+              const animateBeat = (now) => {
+                const elapsed = now - startTime;
+                const progress = Math.min(elapsed / 600, 1);
+                const r = 20 + progress * 40;
+                const opacity = 0.8 * (1 - progress);
+                
+                circle.setAttribute('r', String(r));
+                circle.style.opacity = String(opacity);
+                
+                if (progress < 1) {
+                  requestAnimationFrame(animateBeat);
+                } else {
+                  svg.remove();
+                }
+              };
+              requestAnimationFrame(animateBeat);
+            }
+          }
         }
 
         const now = performance.now();
@@ -1690,16 +1819,111 @@ function App() {
     window.aether?.store?.set('volume', finalV);
   };
 
+  const orderedPlaylistNames = useMemo(() => {
+    const seen = new Set();
+    const ordered = [];
+    playlistOrder.forEach((name) => {
+      if (playlists[name] && !seen.has(name)) {
+        seen.add(name);
+        ordered.push(name);
+      }
+    });
+    Object.keys(playlists).forEach((name) => {
+      if (!seen.has(name)) ordered.push(name);
+    });
+    return ordered;
+  }, [playlists, playlistOrder]);
+
+  const persistPlaylistOrder = useCallback((nextOrder) => {
+    setPlaylistOrder(nextOrder);
+    window.aether?.store?.set(PLAYLIST_ORDER_STORAGE_KEY, nextOrder);
+  }, []);
+
+  const movePlaylist = useCallback((name, direction) => {
+    setPlaylistOrder((prev) => {
+      const current = prev.length ? prev : Object.keys(playlists);
+      const index = current.indexOf(name);
+      const nextIndex = index + direction;
+      if (index < 0 || nextIndex < 0 || nextIndex >= current.length) return current;
+      const next = [...current];
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      window.aether?.store?.set(PLAYLIST_ORDER_STORAGE_KEY, next);
+      return next;
+    });
+  }, [playlists]);
+
+  const reorderPlaylistByDrag = useCallback((targetName, draggedNameOverride = null) => {
+    const activeDraggedName = draggedNameOverride || draggedPlaylistName;
+    if (!activeDraggedName || !targetName || activeDraggedName === targetName) {
+      setDraggedPlaylistName(null);
+      return;
+    }
+
+    const current = orderedPlaylistNames;
+    const from = current.indexOf(activeDraggedName);
+    const to = current.indexOf(targetName);
+    if (from < 0 || to < 0) {
+      setDraggedPlaylistName(null);
+      return;
+    }
+
+    const next = [...current];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    persistPlaylistOrder(next);
+    setDraggedPlaylistName(null);
+  }, [draggedPlaylistName, orderedPlaylistNames, persistPlaylistOrder]);
+
+  const reorderQueueByDrag = useCallback((targetIndex, draggedIndexOverride = null) => {
+    const from = Number(draggedIndexOverride ?? draggedQueueIndex);
+    const to = Number(targetIndex);
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < 0 || from === to) {
+      setDraggedQueueIndex(null);
+      return;
+    }
+
+    setQueue((prev) => {
+      if (!Array.isArray(prev) || from >= prev.length || to >= prev.length) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+    setDraggedQueueIndex(null);
+  }, [draggedQueueIndex]);
+
+  useEffect(() => {
+    if (!playlistOrderHydratedRef.current) return;
+
+    const playlistNames = Object.keys(playlists);
+    if (playlistNames.length === 0) return;
+
+    const nextOrder = playlistOrder.filter((name) => playlistNames.includes(name));
+    playlistNames.forEach((name) => {
+      if (!nextOrder.includes(name)) nextOrder.push(name);
+    });
+
+    const differs = nextOrder.length !== playlistOrder.length || nextOrder.some((name, idx) => name !== playlistOrder[idx]);
+    if (differs) {
+      setPlaylistOrder(nextOrder);
+      window.aether?.store?.set(PLAYLIST_ORDER_STORAGE_KEY, nextOrder);
+    }
+  }, [playlists, playlistOrder]);
+
   const handleAddToPlaylist = (name, data) => {
     if (!data) return;
     const newPlaylists = { ...playlists };
     if (!newPlaylists[name]) newPlaylists[name] = [];
+    if (!playlistOrder.includes(name)) {
+      persistPlaylistOrder([...playlistOrder, name]);
+    }
     
     if (Array.isArray(data)) {
         let addedCount = 0;
         data.forEach(t => {
-        if (!hasTrackInList(newPlaylists[name], t)) {
-                newPlaylists[name].push(t);
+          const normalizedTrack = normalizeQueueTrack(t) || t;
+          if (!hasTrackInList(newPlaylists[name], normalizedTrack)) {
+                newPlaylists[name].push(normalizedTrack);
                 addedCount++;
             }
         });
@@ -1708,11 +1932,12 @@ function App() {
         setLastAdded(`Vaulted ${addedCount} Node(s)`);
         setTimeout(() => setLastAdded(null), 3000);
     } else {
-        if (!hasTrackInList(newPlaylists[name], data)) {
-          newPlaylists[name].push(data);
+        const normalizedTrack = normalizeQueueTrack(data) || data;
+        if (!hasTrackInList(newPlaylists[name], normalizedTrack)) {
+          newPlaylists[name].push(normalizedTrack);
           setPlaylists(newPlaylists);
           window.aether?.store?.set('playlists', newPlaylists);
-          setLastAdded(`Vaulted: ${data.title}`);
+          setLastAdded(`Vaulted: ${normalizedTrack.title}`);
           setTimeout(() => setLastAdded(null), 3000);
         }
     }
@@ -1763,14 +1988,25 @@ function App() {
 
   const handleGenerateSmartMix = useCallback(() => {
     if (!smartMixTracks.length) return;
-    const smartName = 'SMART_MIX';
-    const next = { ...playlists, [smartName]: smartMixTracks };
-    setPlaylists(next);
-    window.aether?.store?.set('playlists', next);
-    setViewingPlaylist(smartName);
-    setLastAdded(`Smart Mix refreshed • ${smartMixTracks.length} tracks`);
+    const shuffled = [...smartMixTracks].sort(() => Math.random() - 0.5);
+    const pickCount = Math.min(shuffled.length, Math.max(5, Math.ceil(shuffled.length * 0.5)));
+    const selected = shuffled.slice(0, pickCount);
+
+    let added = 0;
+    setQueue((prev) => {
+      const next = Array.isArray(prev) ? [...prev] : [];
+      selected.forEach((track) => {
+        if (!hasTrackInList(next, track)) {
+          next.push(track);
+          added += 1;
+        }
+      });
+      return next;
+    });
+
+    setLastAdded(added > 0 ? `Smart Mix queued • ${added} tracks` : 'Smart Mix already in queue');
     setTimeout(() => setLastAdded(null), 2800);
-  }, [playlists, smartMixTracks]);
+  }, [smartMixTracks, hasTrackInList]);
 
   const handleCleanVault = useCallback(async () => {
     if (isVaultCleaning) return;
@@ -1884,6 +2120,7 @@ function App() {
 
       setPlaylists(next);
       await window.aether?.store?.set?.('playlists', next);
+      persistPlaylistOrder(Object.keys(next).filter((name) => next[name]));
       setLastAdded(`Vault cleaned • deduped ${removedDuplicates}, removed ${removedUnavailable}, normalized ${normalized}`);
       setTimeout(() => setLastAdded(null), 4200);
     } finally {
@@ -1940,6 +2177,7 @@ function App() {
     delete newPlaylists[oldName];
     setPlaylists(newPlaylists);
     window.aether?.store?.set('playlists', newPlaylists);
+    persistPlaylistOrder(playlistOrder.map((name) => (name === oldName ? newName : name)));
     setIsRenamingPlaylist(null);
     if (viewingPlaylist === oldName) setViewingPlaylist(newName);
   };
@@ -1949,6 +2187,7 @@ function App() {
     delete newPlaylists[name];
     setPlaylists(newPlaylists);
     window.aether?.store?.set('playlists', newPlaylists);
+    persistPlaylistOrder(playlistOrder.filter((playlistName) => playlistName !== name));
     if (viewingPlaylist === name) setViewingPlaylist(null);
   };
 
@@ -2635,9 +2874,11 @@ function App() {
 
   const normalizeQueueTrack = useCallback((track) => {
     if (!track) return null;
-    const baseUrl = track.actualUrl || track.url || (track.youtubeId ? `https://www.youtube.com/watch?v=${track.youtubeId}` : '');
-    if (!baseUrl) return null;
-    const youtubeId = track.youtubeId || extractYouTubeId(baseUrl);
+    const idFromTrack = /^[A-Za-z0-9_-]{11}$/.test(String(track.id || '')) ? String(track.id) : null;
+    const rawUrl = track.actualUrl || track.url || '';
+    const youtubeId = track.youtubeId || extractYouTubeId(rawUrl) || idFromTrack || extractYouTubeId(track.thumbnail);
+    const baseUrl = rawUrl || (youtubeId ? `https://www.youtube.com/watch?v=${youtubeId}` : '');
+    if (!baseUrl && !youtubeId) return null;
     const canonicalUrl = youtubeId ? `https://www.youtube.com/watch?v=${youtubeId}` : baseUrl;
     const stableId = youtubeId || track.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const thumbnail = track.thumbnail || (youtubeId ? `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg` : '');
@@ -2846,6 +3087,9 @@ function App() {
           p[res.name] = res.data;
           setPlaylists(p);
           window.aether?.store?.set('playlists', p);
+          if (!playlistOrder.includes(res.name)) {
+            persistPlaylistOrder([...playlistOrder, res.name]);
+          }
           alert(`Vault Node [${res.name}] successfully injected.`);
       }
   };
@@ -2901,57 +3145,65 @@ function App() {
 
   const handleControl = useCallback(async (action) => {
     console.log("[Aether/Control] Signal Bridge Active:", action);
-    console.log("[Aether/Control] Action:", action);
     if (isStandalone) {
         if (action === 'pause') setIsPlaying(false);
         if (action === 'resume') setIsPlaying(true);
         if (action === 'toggle') setIsPlaying(prev => !prev);
+        
+        // PREVIOUS TRACK: If > 3s into current, restart. Otherwise go to previous track.
         if (action === 'previous') {
-            if (currentTime > 3000 || history.length === 0) {
-                // Restart current track if > 3s or no history (Prevents Network Standby)
-                setCurrentTime(0);
-                if (localAudioRef.current) localAudioRef.current.currentTime = 0;
-            } else if (history.length > 0) {
-                // Go to actual previous track
-                const last = history[0];
-                if (last) {
-                    setHistory(h => h.slice(1));
-                    setQueue(q => [last, ...q]);
-                    setIsPlaying(true);
-                }
-            }
             if (currentTime > 3000) {
-                // Restart current track if > 3s
+                // Restart current track
+                console.log("[Aether/Control] Restarting current track (> 3s in)");
                 setCurrentTime(0);
                 if (localAudioRef.current) localAudioRef.current.currentTime = 0;
             } else if (history.length > 0) {
                 // Go to actual previous track
                 const prev = history[0];
+                console.log("[Aether/Control] Restoring previous track:", prev?.title);
                 setHistory(h => h.slice(1));
                 setQueue(q => [prev, ...q]);
+                setCurrentTime(0);
                 setIsPlaying(true);
             } else {
+                // No history, just restart current
+                console.log("[Aether/Control] No history, restarting current");
                 setCurrentTime(0);
                 if (localAudioRef.current) localAudioRef.current.currentTime = 0;
             }
         }
+        
+        // SKIP: Remove current track and play next
         if (action === 'skip') {
+          console.log("[Aether/Control] Skip triggered");
           noteSkipReason('manual_skip', { source: 'transport', title: queue?.[0]?.title });
             setQueue(prev => {
                 const next = prev.slice(1);
                 if (next.length === 0) {
                     setIsPlaying(false);
-              if (isAutoplayEnabled) setTimeout(() => triggerAutoplay(prev[0]), 0); // Force immediate autoplay kick
+              if (isAutoplayEnabled) setTimeout(() => triggerAutoplay(prev[0]), 0);
                 }
                 return next;
             });
             setCurrentTime(0);
+            if (localAudioRef.current) {
+                localAudioRef.current.currentTime = 0;
+                localAudioRef.current.pause();
+            }
         }
+        
+        // CLEAR/STOP: Empty queue and stop playback
         if (action === 'clear' || action === 'stop') {
+            console.log("[Aether/Control] Queue cleared");
             setQueue([]);
+            setHistory([]);
             setIsPlaying(false);
             setCurrentTime(0);
-            setIsManualStop(true); 
+            setIsManualStop(true);
+            if (localAudioRef.current) {
+                localAudioRef.current.currentTime = 0;
+                localAudioRef.current.pause();
+            }
         }
         return;
     }
@@ -3002,16 +3254,42 @@ function App() {
     if (!isPlaying) {
       setUiPulse(1);
       uiPulseRef.current = 1;
+      uiPulseSignalRef.current = { bass: 0, rms: 0 };
+      uiPulsePeakRef.current = 0;
       return;
     }
     let animationFrame;
     const updatePulse = () => {
       if (analyserRef.current) {
-        const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
-        analyserRef.current.getByteFrequencyData(dataArray);
-        const lowFreq = dataArray.slice(0, 10).reduce((a, b) => a + b, 0) / 10;
-        const target = (visualizerMode === 'pulse') ? (1 + (lowFreq / 255) * 0.035) : 1;
-        uiPulseRef.current = lerp(uiPulseRef.current, target, 0.22);
+        const freq = new Uint8Array(analyserRef.current.frequencyBinCount);
+        analyserRef.current.getByteFrequencyData(freq);
+
+        const bassBins = Math.max(8, Math.floor(freq.length * 0.08));
+        let bassSum = 0;
+        for (let i = 0; i < bassBins; i += 1) bassSum += freq[i] || 0;
+        const bassNorm = (bassSum / bassBins) / 255;
+
+        const timeDomain = new Uint8Array(analyserRef.current.fftSize);
+        analyserRef.current.getByteTimeDomainData(timeDomain);
+        let sq = 0;
+        for (let i = 0; i < timeDomain.length; i += 1) {
+          const v = (timeDomain[i] - 128) / 128;
+          sq += v * v;
+        }
+        const rmsNorm = Math.min(1, Math.sqrt(sq / timeDomain.length) * 2.1);
+
+        const smoothBass = lerp(uiPulseSignalRef.current.bass, bassNorm, 0.35);
+        const smoothRms = lerp(uiPulseSignalRef.current.rms, rmsNorm, 0.28);
+        uiPulseSignalRef.current = { bass: smoothBass, rms: smoothRms };
+
+        const beatAccent = clamp01(Math.max(0, bassNorm - smoothBass) * 3.2);
+        uiPulsePeakRef.current = Math.max(beatAccent, uiPulsePeakRef.current * 0.9);
+        const peak = uiPulsePeakRef.current;
+        const energy = clamp01(smoothBass * 0.95 + smoothRms * 0.75 + peak * 1.05);
+
+        const target = (visualizerMode === 'pulse') ? (1 + energy * 0.22) : 1;
+        const smoothing = target > uiPulseRef.current ? 0.62 : 0.2;
+        uiPulseRef.current = lerp(uiPulseRef.current, target, smoothing);
         setUiPulse(visualizerMode === 'pulse' ? uiPulseRef.current : 1);
       }
       animationFrame = requestAnimationFrame(updatePulse);
@@ -3342,13 +3620,25 @@ function App() {
   const panelInteractiveClass = isAuraMode
     ? 'hover:border-brand-accent/35 hover:shadow-[0_18px_60px_rgba(0,255,191,0.08)] hover:-translate-y-[1px]'
     : 'hover:border-brand-accent/20';
-  const immersiveBeatIntensity = clamp01((uiPulse - 1) / 0.06);
+  const immersiveBeatIntensity = isAuraMode
+    ? clamp01((vaultPulse.energy * 0.9) + (vaultPulse.bass * 0.45) + (vaultPulse.highs * 0.12))
+    : 0;
+  const auraCardShadow = isAuraMode
+    ? `0 24px 60px rgba(0,0,0,0.30), inset 0 0 ${10 + immersiveBeatIntensity * 30}px rgba(0,255,191,${0.06 + immersiveBeatIntensity * 0.24})`
+    : undefined;
+  const auraPanelShadow = isAuraMode
+    ? `0 12px 30px rgba(0,0,0,0.24), inset 0 0 ${6 + immersiveBeatIntensity * 18}px rgba(0,255,191,${0.05 + immersiveBeatIntensity * 0.18})`
+    : undefined;
+  const auraCardBorder = isAuraMode ? `rgba(130, 255, 221, ${0.16 + immersiveBeatIntensity * 0.20})` : undefined;
+  const auraPanelBorder = isAuraMode ? `rgba(130, 255, 221, ${0.11 + immersiveBeatIntensity * 0.16})` : undefined;
   const diagnosticsApiBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
   const queuePollDisplay = isStandalone ? 'local' : `${diagnostics.lastQueueFetchMs ?? '—'}ms`;
   const queuePollTime = isStandalone ? 'direct engine' : formatDiagTime(diagnostics.lastQueueFetchAt);
+  const doodleIntensityScale = doodleIntensity === 'subtle' ? 0.75 : doodleIntensity === 'dreamy' ? 1.35 : 1;
+  const doodleIntensityBadge = doodleIntensity === 'subtle' ? 'S' : doodleIntensity === 'dreamy' ? 'D' : 'M';
 
   return (
-    <div className={`fixed inset-0 bg-transparent selection:bg-brand-accent selection:text-brand-dark flex flex-col h-screen overflow-hidden relative isolate ${isVerticalStack ? 'vertical-stack-mode' : ''}`}>
+    <div className={`fixed inset-0 bg-transparent selection:bg-brand-accent selection:text-brand-dark flex flex-col h-screen overflow-hidden relative isolate ${isVerticalStack ? 'vertical-stack-mode' : ''} ${isDoodleMode ? 'doodle-mode-active' : ''} ${isAuraMode ? 'aura-mode-active' : ''}`}>
       <div className="fixed inset-0 bg-[#050505] z-[-2]" />
       {/* Background Mesh (Absolute to avoid flex interference) */}
       <div className="absolute inset-0 bg-mesh pointer-events-none z-[-1]" />
@@ -3384,6 +3674,25 @@ function App() {
          <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-brand-accent/5 blur-[100px] rounded-full animate-pulse-glow" />
          <div className="absolute bottom-[-5%] right-[-5%] w-[40%] h-[40%] bg-brand-accent/10 blur-[80px] rounded-full animate-pulse-glow" style={{ animationDelay: '2s' }} />
       </div>
+
+      {isDoodleMode && (
+        <div className="fixed inset-0 pointer-events-none overflow-hidden z-[-1] doodle-cloud-layer doodle-bg-layer">
+          <img src={catDoodlePeek} alt="doodle" className="absolute top-[10%] left-[-16vw] w-[70px] doodle-fly doodle-glide-a" style={{ opacity: Math.min(0.38, 0.2 * doodleIntensityScale), animationDelay: '-7s' }} draggable={false} />
+          <img src={catDoodlePeek} alt="doodle" className="absolute top-[26%] left-[-16vw] w-[58px] doodle-fly doodle-glide-b" style={{ opacity: Math.min(0.34, 0.18 * doodleIntensityScale), animationDelay: '-13s', transform: 'scaleX(-1)' }} draggable={false} />
+          <img src={catDoodlePeek} alt="doodle" className="absolute top-[42%] left-[-16vw] w-[64px] doodle-fly doodle-glide-c" style={{ opacity: Math.min(0.36, 0.19 * doodleIntensityScale), animationDelay: '-3s' }} draggable={false} />
+          <img src={catDoodlePeek} alt="doodle" className="absolute top-[58%] left-[-16vw] w-[60px] doodle-fly doodle-glide-a" style={{ opacity: Math.min(0.34, 0.17 * doodleIntensityScale), animationDelay: '-18s', transform: 'scaleX(-1)' }} draggable={false} />
+          <img src={catDoodlePeek} alt="doodle" className="absolute top-[74%] left-[-16vw] w-[68px] doodle-fly doodle-glide-b" style={{ opacity: Math.min(0.36, 0.2 * doodleIntensityScale), animationDelay: '-23s' }} draggable={false} />
+          <img src={catDoodlePeek} alt="doodle" className="absolute top-[88%] left-[-16vw] w-[62px] doodle-fly doodle-glide-c" style={{ opacity: Math.min(0.33, 0.17 * doodleIntensityScale), animationDelay: '-29s', transform: 'scaleX(-1)' }} draggable={false} />
+        </div>
+      )}
+
+      {/* AURA MODE: Side-channel edge bars (mids/highs) */}
+      {isAuraMode && (
+        <>
+          <div className="aura-side-channel aura-side-channel-left" style={{ opacity: `var(--aura-edge-glow, 0)` }} />
+          <div className="aura-side-channel aura-side-channel-right" style={{ opacity: `var(--aura-edge-glow, 0)` }} />
+        </>
+      )}
 
       {/* APP HEADER */}
       <header className={topHeaderClass}>
@@ -3448,26 +3757,44 @@ function App() {
               <input 
                 type="text" 
                 placeholder="Search music..." 
-                className={`w-full rounded-full pl-14 pr-10 h-11 text-sm outline-none transition-all ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/5 border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'}`}
+                className={`w-full rounded-full pl-14 pr-24 h-11 text-sm outline-none transition-all ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/5 border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'}`}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
-              {isSearching && <div className="absolute right-5 top-1/2 -translate-y-1/2"><Loader2 className="animate-spin text-brand-accent" size={16} /></div>}
+              <button
+                type="button"
+                onClick={() => {
+                  const order = ['subtle', 'medium', 'dreamy'];
+                  const idx = order.indexOf(doodleIntensity);
+                  const next = order[(idx + 1) % order.length];
+                  setDoodleIntensity(next);
+                  setLastAdded(`Doodle intensity • ${next}`);
+                  setTimeout(() => setLastAdded(null), 1400);
+                }}
+                className={`absolute right-12 top-1/2 -translate-y-1/2 min-w-[24px] h-6 px-1 rounded-full border transition-all flex items-center justify-center text-[8px] font-black tracking-widest ${isDoodleMode ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/5 border-white/15 text-white/35'}`}
+                title={`Doodle intensity: ${doodleIntensity}`}
+              >
+                {doodleIntensityBadge}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !isDoodleMode;
+                  setIsDoodleMode(next);
+                  setLastAdded(next ? 'Doodle mode enabled ✨' : 'Doodle mode disabled');
+                  setTimeout(() => setLastAdded(null), 1800);
+                }}
+                className={`absolute right-5 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full border transition-all flex items-center justify-center text-[11px] ${isDoodleMode ? 'cat-paw-wiggle bg-brand-accent/15 border-brand-accent/35 text-brand-accent shadow-[0_0_12px_rgba(0,255,191,0.25)]' : 'bg-white/5 border-white/15 text-white/45 hover:text-brand-accent hover:border-brand-accent/40'}`}
+                title={isDoodleMode ? 'Disable doodle mode' : 'Enable doodle mode'}
+              >
+                🐾
+              </button>
+              {isSearching && <div className="absolute right-20 top-1/2 -translate-y-1/2"><Loader2 className="animate-spin text-brand-accent" size={16} /></div>}
             </form>
           </div>
 
           {/* MODES & SUITE */}
           <div className="flex items-center justify-end gap-3 min-w-fit order-3 no-drag">
-               {isStandalone && (
-                 <button
-                   onClick={toggleMiniPlayer}
-                   className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${isMiniPlayer ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
-                   title="Toggle Mini Player (Shift+M)"
-                 >
-                   <AppWindow size={16} />
-                 </button>
-               )}
-
                <button
                  onClick={toggleDiagnostics}
                  className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${isDiagnosticsOpen ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
@@ -3475,16 +3802,6 @@ function App() {
                >
                  <Monitor size={16} />
                </button>
-
-               {isStandalone && (
-                 <button
-                   onClick={toggleWindowMaximize}
-                   className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${isMaximized ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
-                   title={isMaximized ? 'Restore Window' : 'Maximize Window'}
-                 >
-                   {isMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-                 </button>
-               )}
 
                {isStandalone && (
                  <button
@@ -3707,7 +4024,7 @@ function App() {
 
       <motion.main 
         className={`flex-1 relative z-10 w-full mb-0 min-h-0 px-4 md:px-6 py-4 ${isVerticalStack ? '!flex !flex-col !gap-8 overflow-y-auto scroll-smooth pb-20 custom-scrollbar' : 'flex flex-row gap-4 overflow-hidden'}`}
-        style={{ scale: isAuraMode ? uiPulse : 1 }}
+        style={{ scale: 1 }}
         transition={{ type: "spring", stiffness: 300, damping: 20 }}
       >
         
@@ -3715,7 +4032,19 @@ function App() {
         <div className={`flex flex-col gap-4 min-w-0 overflow-hidden ${isVerticalStack ? '!w-full !max-w-full !flex-none' : (isFocusedMode ? 'w-full px-0' : 'w-[66.666%] h-full')}`}>
           
           {/* PLAYER CARD */}
-          <div className={`glass-card flex relative overflow-hidden group shrink-0 transition-all duration-700 p-6 md:p-8 flex-col sm:flex-row gap-8 md:gap-10 min-h-[300px] flex-none rounded-[3.5rem] shadow-2xl transition-all ${isAuraMode ? 'bg-white/[0.015] border-white/[0.14] backdrop-blur-[30px] shadow-[0_24px_90px_rgba(0,0,0,0.32)]' : 'border-white/5'}`}>
+          <div
+            className={`glass-card flex relative overflow-hidden group shrink-0 transition-all duration-700 p-6 md:p-8 flex-col sm:flex-row gap-8 md:gap-10 min-h-[300px] flex-none rounded-[3.5rem] shadow-2xl transition-all ${isAuraMode ? 'bg-white/[0.015] border-white/[0.14] backdrop-blur-[30px] shadow-[0_24px_90px_rgba(0,0,0,0.32)]' : 'border-white/5'}`}
+            style={isAuraMode ? { boxShadow: auraCardShadow, borderColor: auraCardBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
+          >
+            {isAuraMode && (
+              <div
+                className="absolute inset-0 pointer-events-none"
+                style={{
+                  background: `radial-gradient(120% 85% at 50% 0%, rgba(0,255,191,${0.06 + immersiveBeatIntensity * 0.16}) 0%, rgba(0,255,191,0) 72%)`,
+                  opacity: 0.85,
+                }}
+              />
+            )}
         {/* TOP BAR / NAVIGATION */}
             {currentTrack && (
               <div className="absolute inset-0 blur-[120px] opacity-10 pointer-events-none group-hover:opacity-20 transition-opacity">
@@ -3776,19 +4105,15 @@ function App() {
                                {isAudioBuffering ? "Buffering" : "Now Playing"}
                            </div>
                            <div className="flex items-center gap-1 no-drag ml-auto">
-                             <button onClick={() => handleControl('clear')} className="p-2 text-white/20 hover:text-red-500 transition-colors" title="Clear Queue"><Trash2 size={14} /></button>
+                             <button disabled={queue.length === 0} onClick={() => handleControl('clear')} className="p-2 text-white/20 hover:text-red-500 transition-colors disabled:opacity-25 disabled:cursor-not-allowed" title="Clear Queue"><Trash2 size={14} /></button>
                              <button onClick={() => {
-                                 if (!currentTrack?.actualUrl) return;
-                                 if (isStandalone) window.aether?.openExternal(currentTrack.actualUrl);
-                             }} className="p-2 text-white/20 hover:text-brand-accent transition-colors" title="Open Source"><ExternalLink size={14} /></button>
-                             <button onClick={() => {
-                                 if (isStandalone && currentTrack && window.aether?.saveToDisk) {
-                                     window.aether.saveToDisk(currentTrack.actualUrl || currentTrack.url, currentTrack.title, currentTrack.author);
-                                 }
-                             }} className="p-2 text-white/20 hover:text-brand-accent transition-colors" title="Download High-Fidelity Signal"><Download size={14} /></button>
-                             <button onClick={() => setActiveMenuTrack(currentTrack)} className="p-2 text-white/20 hover:text-brand-accent transition-colors" title="Save to Vault Overlay"><Plus size={14} /></button>
+                               if (!canOpenCurrentSource) return;
+                               window.aether?.openExternal(currentTrackSourceUrl);
+                             }} disabled={!canOpenCurrentSource} className="p-2 text-white/20 hover:text-brand-accent transition-colors disabled:opacity-25 disabled:cursor-not-allowed" title="Open Source"><ExternalLink size={14} /></button>
+                             <button onClick={handleDownloadCurrentTrack} disabled={!canDownloadCurrentTrack || isDownloadingTrack} className="p-2 text-white/20 hover:text-brand-accent transition-colors disabled:opacity-25 disabled:cursor-not-allowed" title={isDownloadingTrack ? 'Exporting…' : 'Export Audio to File'}><Download size={14} className={isDownloadingTrack ? 'animate-pulse' : ''} /></button>
+                             <button onClick={() => { setLibraryActionTarget({ type: 'track', items: [currentTrack] }); setIsLibraryOverlayOpen(true); }} className="p-2 text-white/20 hover:text-brand-accent transition-colors" title="Save to Library Overlay"><Plus size={14} /></button>
                              <div className="w-px h-3 bg-white/10 mx-1" />
-                             <button onClick={toggleMiniPlayer} className="p-2 text-white/40 hover:text-brand-accent transition-colors" title="Compact Studio Widget"><AppWindow size={16} /></button>
+                               <button onClick={() => setIsPlayerOverlayOpen(true)} className="p-2 text-white/40 hover:text-brand-accent transition-colors" title="Open Player Overlay"><ListMusic size={16} /></button>
                              <button onClick={() => setIsFocusedMode(!isFocusedMode)} className={`p-2 transition-colors ${isFocusedMode ? 'text-brand-accent' : 'text-white/40 hover:text-brand-accent'}`} title="Toggle Focus Mode"><Target size={16} /></button>
                            </div>
                         </div>
@@ -3813,10 +4138,14 @@ function App() {
 
                         {/* COMPACT TRANSPORT CLUSTER - CENTERED */}
                         <div className="flex items-center justify-center w-full mt-2 relative">
-                           
                            <div className={`flex items-center backdrop-blur-3xl border p-2 rounded-3xl gap-4 relative z-10 ${isAuraMode ? 'bg-white/[0.04] border-white/[0.16] shadow-[0_12px_40px_rgba(0,0,0,0.22)]' : 'bg-white/5 border-white/5'}`}>
                               <button onClick={() => handleControl('previous')} className="p-3 hover:text-brand-accent transition-colors active:scale-90"><Rewind size={22} fill="currentColor" /></button>
-                              <button onClick={() => handleControl(isPlaying ? 'pause' : 'resume')} className="w-16 h-16 bg-brand-accent text-black rounded-2xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-xl shadow-brand-accent/20">
+                              <button 
+                                ref={playButtonRef}
+                                onClick={() => handleControl(isPlaying ? 'pause' : 'resume')} 
+                                className={`w-16 h-16 bg-brand-accent text-black rounded-2xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all relative ${isAuraMode ? 'shadow-[0_0_30px_rgba(0,255,191,0.4)] hover:shadow-[0_0_40px_rgba(0,255,191,0.6)]' : 'shadow-xl shadow-brand-accent/20'}`}
+                              >
+                                {isAuraMode && <div ref={beatRingsRef} className="absolute inset-0" />}
                                 {isPlaying ? <Pause size={28} fill="currentColor" /> : <Play size={28} fill="currentColor" className="ml-1" />}
                               </button>
                               <button onClick={() => handleControl('skip')} className="p-3 hover:text-brand-accent transition-colors active:scale-90"><FastForward size={22} fill="currentColor" /></button>
@@ -3836,7 +4165,10 @@ function App() {
 
 
           {/* LYRICS PANEL - FLEX-1 TO FILL GAP */}
-          <div className={`glass-card overflow-hidden flex flex-col transition-all duration-300 min-h-0 ${panelGlassClass} ${panelInteractiveClass} ${isVerticalStack ? 'h-[400px] flex-none' : 'flex-1'}`}>
+          <div
+            className={`glass-card overflow-hidden flex flex-col transition-all duration-300 min-h-0 ${panelGlassClass} ${panelInteractiveClass} ${isVerticalStack ? 'h-[400px] flex-none' : 'flex-1'}`}
+            style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
+          >
             <div className={`border-b border-white/5 flex items-center justify-between ${panelHeaderClass} ${isVerticalStack ? 'px-3 py-2' : 'px-5 py-4'}`}>
               <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
                 <BookOpen size={16} className="text-brand-accent flex-none" />
@@ -3895,13 +4227,23 @@ function App() {
                       <div 
                         key={idx} 
                         ref={isActive ? activeLyricRef : null} 
-                        className={`text-base sm:text-lg lg:text-xl font-bold transition-all duration-700 transform leading-snug py-1.5 ${
+                        className={`text-base sm:text-lg lg:text-xl font-bold transition-all duration-700 transform leading-snug py-1.5 relative ${
                           isActive 
                             ? 'text-brand-accent scale-105 opacity-100 drop-shadow-[0_0_15px_rgba(0,255,191,0.5)]' 
                             : 'text-white/50 opacity-80 hover:opacity-100 transition-opacity cursor-default'
                         }`}
                       >
                         {line.text}
+                        {/* AURA MODE: Lyric pulse underline - live shimmering sync to bass */}
+                        {isActive && isAuraMode && (
+                          <div 
+                            className="absolute bottom-0 left-0 right-0 h-1 rounded-full bg-gradient-to-r from-transparent via-brand-accent to-transparent lyric-pulse-line"
+                            style={{
+                              animation: `lyric-shimmer ${0.4 + (parseFloat(String(vaultPulse.bass)) || 0) * 0.2}s ease-in-out infinite`,
+                              transition: 'opacity 60ms ease-out'
+                            }}
+                          />
+                        )}
                       </div>
                     );
                   })}
@@ -3926,7 +4268,10 @@ function App() {
         {!isFocusedMode && (
           <div className={`flex flex-col gap-4 min-w-0 ${isVerticalStack ? '!w-full !max-w-full !flex-none pb-20' : 'w-[33.333%] h-full overflow-hidden flex-none'}`}>
             {/* QUEUE */}
-            <div className={`${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col overflow-hidden transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}>
+            <div
+              className={`${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col overflow-hidden transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}
+              style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
+            >
             <div className={`p-3 border-b border-white/5 flex items-center justify-between ${panelHeaderClass}`}>
                <div className="flex items-center gap-3">
                  <ListMusic size={18} className="text-brand-accent" />
@@ -3934,15 +4279,23 @@ function App() {
                </div>
                <div className="flex items-center gap-3">
                  <button 
-                  onClick={() => { if (queue.length > 0) setActiveMenuTrack(queue); }}
+                  onClick={() => { if (queue.length > 0) { setLibraryActionTarget({ type: 'queue', items: queue.slice() }); setIsLibraryOverlayOpen(true); } }}
                   className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-brand-accent/20 hover:text-brand-accent"
                   title="Flash Queue to Target Vault"
                  >
                     <Save size={10} />
                  </button>
+                           <button 
+                            onClick={() => setIsViewingFullQueue(true)}
+                            className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-brand-accent/20 hover:text-brand-accent"
+                            title="View Full Queue"
+                            >
+                              <Maximize2 size={10} />
+                            </button>
                  <button
                     onClick={() => {
                         if (queue.length > 1) {
+                            console.log("[Aether/Shuffle] Shuffling queue...");
                             setQueue(prev => {
                                 const q = [...prev];
                                 for (let i = q.length - 1; i > 0; i--) {
@@ -3951,6 +4304,11 @@ function App() {
                                 }
                                 return q;
                             });
+                            // Properly reset audio element
+                            if (localAudioRef.current) {
+                                localAudioRef.current.currentTime = 0;
+                                localAudioRef.current.pause();
+                            }
                             setCurrentTime(0);
                             setIsPlaying(true);
                             if (!isStandalone) {
@@ -3995,14 +4353,20 @@ function App() {
                     </motion.div>
                    );
                 }) : (
-                  <div className="h-full flex flex-col items-center justify-center opacity-10 py-12 text-[10px] font-black tracking-widest uppercase">Buffer Empty</div>
+                  <div className="h-full flex flex-col items-center justify-center opacity-10 py-12 text-[10px] font-black tracking-widest uppercase">
+                    Buffer Empty
+                    {isDoodleMode && <img src={catDoodlePeek} alt="doodle" className="mt-3 h-10 w-auto opacity-70 select-none pointer-events-none" draggable={false} />}
+                  </div>
                 )}
               </AnimatePresence>
             </div>
           </div>
 
           {/* DISCOVERY */}
-          <div className={`${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col overflow-hidden transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}>
+          <div
+            className={`${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col overflow-hidden transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}
+            style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
+          >
             <div className={`p-3 border-b border-white/5 flex items-center justify-between ${panelHeaderClass}`}>
               <div className="flex items-center gap-3">
                 <Globe size={18} className="text-brand-accent" />
@@ -4023,7 +4387,7 @@ function App() {
                         <button onClick={() => handleAdd(t)} className="w-10 h-10 rounded-xl bg-brand-accent/10 text-brand-accent flex items-center justify-center hover:bg-brand-accent hover:text-brand-dark transition-all border border-brand-accent/20">
                           <Plus size={22} />
                         </button>
-                        <button onClick={() => setActiveMenuTrack(t)} className="w-10 h-10 rounded-xl bg-white/5 text-white/30 flex items-center justify-center hover:bg-brand-accent/20 hover:text-brand-accent transition-all border border-white/10">
+                        <button onClick={() => { setLibraryActionTarget({ type: 'track', items: [t] }); setIsLibraryOverlayOpen(true); }} className="w-10 h-10 rounded-xl bg-white/5 text-white/30 flex items-center justify-center hover:bg-brand-accent/20 hover:text-brand-accent transition-all border border-white/10">
                           <HardDrive size={18} />
                         </button>
                      </div>
@@ -4038,92 +4402,59 @@ function App() {
                       <div className="absolute inset-0 blur-xl bg-brand-accent/30 animate-pulse" />
                    </div>
                    <p className="text-[8px] font-black uppercase tracking-[0.4em]">Awaiting Content</p>
+                   {isDoodleMode && <img src={catDoodlePeek} alt="doodle" className="h-10 w-auto opacity-75 select-none pointer-events-none" draggable={false} />}
                 </div>
               )}
             </div>
           </div>
 
           {/* STUDIO LIBRARY */}
-            <div className={`glass-card flex flex-col overflow-hidden studio-vault-container relative shadow-inner library-panel transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass} ${isVerticalStack ? 'min-h-[500px] flex-none' : 'h-full min-h-0'}`}>
-            <div className={`p-3 border-b border-white/5 flex items-center justify-between ${panelHeaderClass}`}>
-               <div className="flex items-center gap-3"><HardDrive size={18} className="text-brand-accent" /><span className="label-caps mb-0 text-[10px] tracking-widest">Studio Library</span></div>
-                <div className="flex items-center gap-4">
-                    {/* VISUALIZER TOGGLE (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN */}
-                    <button 
-                        onClick={() => setVisualizerMode(prev => prev === 'bars' ? 'pulse' : 'bars')}
-                        className={`p-1 px-2 rounded-lg text-[8px] font-black uppercase tracking-widest border transition-all ${visualizerMode === 'pulse' ? 'bg-brand-accent text-brand-dark border-brand-accent shadow-[0_0_15px_rgba(0,255,191,0.4)]' : 'bg-white/5 text-white/30 border-white/10 hover:border-white/20'}`}
-                    >
-                        {visualizerMode === 'bars' ? 'BARS' : 'AURA'}
-                    </button>
-                   {isCreatingPlaylist ? (
-                      <div className="flex items-center gap-2 animate-in slide-in-from-right-4 duration-300">
-                         <input autoFocus className="bg-white/5 border border-brand-accent/30 rounded-lg px-3 py-1 text-[10px] outline-none focus:border-brand-accent w-32" placeholder="Playlist name..." value={newPlaylistName} onChange={(e) => setNewPlaylistName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { if (newPlaylistName) handleAddToPlaylist(newPlaylistName, currentTrack); setIsCreatingPlaylist(false); setNewPlaylistName(''); } if (e.key === 'Escape') { setIsCreatingPlaylist(false); setNewPlaylistName(''); } }} />
-                         <button onClick={() => { setIsCreatingPlaylist(false); setNewPlaylistName(''); }} className="p-1 text-red-500/50 hover:text-red-500"><X size={14} /></button>
-                      </div>
-                   ) : ( 
-                       <div className="flex items-center gap-2">
-                          <button onClick={handleGenerateSmartMix} className="p-1 text-white/40 hover:text-brand-accent transition-colors" title="Generate Smart Mix"><Zap size={14} /></button>
-                          <button onClick={handleCleanVault} disabled={isVaultCleaning} className="p-1 text-white/40 hover:text-brand-accent transition-colors disabled:opacity-40" title="Clean Vault (dedupe + remove unavailable + normalize metadata)"><RefreshCw size={14} className={isVaultCleaning ? 'animate-spin' : ''} /></button>
-                          <button onClick={() => setIsCreatingPlaylist(true)} className="p-1 hover:text-brand-accent transition-colors" title="Create New Vault"><Plus size={16} /></button>
-                            <button onClick={() => { setSpotifyImportUrl(''); setSpotifyImportProgress({ stage: 'idle', progress: 0, message: '' }); setSpotifyImportLogs([]); setIsSpotifyImportOpen(true); }} className="p-1 text-white/40 hover:text-brand-accent transition-colors" title="Import Spotify Playlist"><Music size={14} /></button>
-                          <button onClick={handleImportVault} className="p-1 text-white/40 hover:text-brand-accent transition-colors" title="Import Vault (.aether)"><Upload size={14} /></button>
-                       </div> 
-                    )}
-                </div>
+            <div
+              className={`glass-card flex flex-col overflow-hidden studio-vault-container relative shadow-inner library-panel transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass} ${isVerticalStack ? 'min-h-[500px] flex-none' : 'h-full min-h-0'}`}
+              style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
+            >
+            <div className={`px-2.5 py-2 border-b border-white/5 flex items-center justify-between gap-1.5 ${panelHeaderClass}`}>
+              <div className="flex items-center gap-2 min-w-0">
+                <HardDrive size={16} className="text-brand-accent shrink-0" />
+                <span className="label-caps mb-0 text-[10px] tracking-widest truncate">Studio Library</span>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button onClick={() => setVisualizerMode(prev => prev === 'bars' ? 'pulse' : 'bars')} className={`h-6 px-1.5 rounded-md text-[6px] font-black uppercase tracking-[0.16em] border transition-all whitespace-nowrap ${visualizerMode === 'pulse' ? 'bg-brand-accent text-brand-dark border-brand-accent shadow-[0_0_12px_rgba(0,255,191,0.35)]' : 'bg-white/5 text-white/30 border-white/10 hover:border-white/20'}`}>
+                  {visualizerMode === 'bars' ? 'BARS' : 'AURA'}
+                </button>
+                <button onClick={handleGenerateSmartMix} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Generate Smart Mix"><Zap size={10} /></button>
+                <button onClick={handleCleanVault} disabled={isVaultCleaning} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors disabled:opacity-40 flex items-center justify-center" title="Clean Vault (dedupe + remove unavailable + normalize metadata)"><RefreshCw size={10} className={isVaultCleaning ? 'animate-spin' : ''} /></button>
+                <button onClick={() => setIsLibraryOverlayOpen(true)} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Open Vault Overlay"><ListMusic size={10} /></button>
+                <button onClick={() => { setSpotifyImportUrl(''); setSpotifyImportProgress({ stage: 'idle', progress: 0, message: '' }); setSpotifyImportLogs([]); setIsSpotifyImportOpen(true); }} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Import Spotify Playlist"><Music size={10} /></button>
+                <button onClick={handleImportVault} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Import Vault (.aether)"><Upload size={10} /></button>
+              </div>
             </div>
-            <div className="px-4 py-2 border-b border-white/5 bg-white/[0.02] flex flex-wrap items-center gap-2">
-              <span className="text-[8px] font-black uppercase tracking-[0.2em] text-white/40">Nodes</span>
-              <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-brand-accent/10 border border-brand-accent/20 text-brand-accent">{libraryInsights.unique} unique</span>
-              <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/70">{libraryInsights.total} total</span>
-              <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/70">{libraryInsights.duplicates} dupes</span>
+            <div className="px-4 py-2 border-b border-white/5 bg-white/[0.02] flex flex-col items-center">
+              <div className="flex min-w-0 items-center justify-center gap-2 overflow-hidden">
+                <span className="text-[8px] font-black uppercase tracking-[0.2em] text-white/40">Nodes</span>
+                <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-brand-accent/10 border border-brand-accent/20 text-brand-accent">{libraryInsights.unique} unique</span>
+                <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/70">{libraryInsights.total} total</span>
+                <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/70">{libraryInsights.duplicates} dupes</span>
+              </div>
               {libraryInsights.topArtists.length > 0 && (
-                <span className="text-[8px] font-mono text-white/40 ml-1 truncate">Top: {libraryInsights.topArtists.map(([artist]) => artist).join(' • ')}</span>
+                <div className="mt-1 text-[8px] font-mono text-white/40 text-center truncate w-full">Top: {libraryInsights.topArtists.map(([artist]) => artist).join(' • ')}</div>
               )}
             </div>
             {/* SAFE SCROLL WRAPPER */}
             <div className={`flex-1 min-h-0 relative ${isVerticalStack ? 'h-[500px]' : ''}`}>
                <div className="absolute inset-0 overflow-y-auto p-4 flex flex-col gap-6 pb-12 studio-vault-container custom-scrollbar">
-                  {viewingPlaylist ? (
-                    <div className="flex flex-col gap-4">
-                        <div className="flex items-center gap-4 sticky top-0 bg-brand-dark/95 backdrop-blur-2xl z-20 py-4 mb-6 border-b border-white/5 px-2">
-                           <button onClick={() => setViewingPlaylist(null)} className="w-8 h-8 rounded-lg bg-white/5 hover:bg-brand-accent/20 text-white/40 hover:text-brand-accent transition-all flex items-center justify-center border border-white/10"><ChevronLeft size={16} /></button>
-                            <div className="flex flex-col min-w-0 flex-1">
-                              <span className="text-[9px] font-black text-white/20 uppercase tracking-[0.4em] mb-0.5">Neural Vault //</span>
-                              <span className="text-xl font-black uppercase tracking-tight text-brand-accent truncate drop-shadow-[0_0_15px_rgba(0,255,191,0.3)]">{viewingPlaylist}</span>
-                            </div>
-                            <div className="flex items-center gap-3">
-                               <button onClick={() => handleExportVault(viewingPlaylist)} className="p-1.5 rounded-lg bg-white/5 text-white/40 hover:bg-brand-accent/20 hover:text-brand-accent transition-all border border-white/10" title={`Export ${viewingPlaylist} to .aether`}><Download size={12} /></button>
-                               <div className="text-[9px] font-mono font-black text-brand-accent/30 tracking-tighter mini-hide bg-brand-accent/5 px-2 py-1 rounded-full border border-brand-accent/10">{(playlists[viewingPlaylist] || []).length} NDS</div>
-                            </div>
-                        </div>
-                        <div className="flex flex-col gap-3">
-                           {(playlists[viewingPlaylist] || []).map((track, tidx) => (
-                              <div key={`${viewingPlaylist}-${tidx}`} className="group glass-card p-4 flex items-center gap-4 hover:border-brand-accent/30 bg-white/[0.01] transition-all relative overflow-hidden border-white/5 rounded-2xl">
-                                 <div onClick={() => handleAdd(track)} className="flex-1 flex items-center gap-4 cursor-pointer min-w-0">
-                                    <img src={getProxyUrl(track.thumbnail)} className="w-12 h-12 rounded-xl object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition-all" alt="" />
-                                    <div className="flex-1 min-w-0">
-                                      <div className="text-[12px] font-black truncate uppercase tracking-widest group-hover:text-brand-accent transition-colors">{track.title}</div>
-                                      <div className="text-[10px] font-bold text-white/20 truncate uppercase mt-1">{track.author}</div>
-                                    </div>
-                                 </div>
-                                 <button onClick={(e) => { e.stopPropagation(); handleRemoveFromPlaylist(viewingPlaylist, tidx); }} className="lg:opacity-0 group-hover:opacity-100 p-3 hover:bg-red-500/10 rounded-xl transition-all" title="Purge from Vault">
-                                    <Trash2 size={16} className="text-red-500/30 hover:text-red-500" />
-                                 </button>
-                                 <div className="absolute left-0 top-0 bottom-0 w-1 bg-brand-accent/20 opacity-0 group-hover:opacity-100 transition-opacity" />
-                              </div>
-                           ))}
-                        </div>
-                    </div>
-                 ) : (
-                    <div className="flex flex-col gap-8">
-                       {Object.keys(playlists).map(name => (
+                  <div className="flex flex-col gap-8">
+                        {orderedPlaylistNames.map(name => (
                           <div key={name} className="flex flex-col gap-3">
                              <div className="flex items-center justify-between px-2 group/pheader">
                                 {isRenamingPlaylist === name ? (
                                    <input autoFocus className="bg-white/5 border border-brand-accent/30 rounded-md px-2 py-0.5 text-[9px] font-black text-brand-accent outline-none w-24" value={renameValue} onChange={(e) => setRenameValue(e.target.value)} onBlur={() => handleRenamePlaylist(name, renameValue)} onKeyDown={(e) => { if (e.key === 'Enter') handleRenamePlaylist(name, renameValue); if (e.key === 'Escape') setIsRenamingPlaylist(null); }} />
-                                ) : ( <div onClick={() => setViewingPlaylist(name)} onDoubleClick={() => { setIsRenamingPlaylist(name); setRenameValue(name); }} className="text-[10px] font-black text-brand-accent/50 uppercase tracking-[0.2em] hover:text-brand-accent transition-colors cursor-pointer">{name}</div> )}
+                          ) : ( <div onDoubleClick={() => { setIsRenamingPlaylist(name); setRenameValue(name); }} className="text-[10px] font-black text-brand-accent/50 uppercase tracking-[0.2em] hover:text-brand-accent transition-colors cursor-default">{name}</div> )}
                                 <div className="flex items-center gap-1">
+                                <button onClick={() => movePlaylist(name, -1)} className="text-brand-accent/20 hover:text-brand-accent p-1" title={`Move ${name} up`}><ChevronLeft size={12} /></button>
+                                <button onClick={() => movePlaylist(name, 1)} className="text-brand-accent/20 hover:text-brand-accent p-1" title={`Move ${name} down`}><ChevronRight size={12} /></button>
                                    <button onClick={() => handlePlaylistAddAll(name)} className="text-brand-accent/30 hover:text-brand-accent p-1" title={`Inject ${name} to Queue`}><Plus size={12} /></button>
+                                   <button onClick={() => setIsViewingFullPlaylist(name)} className="text-brand-accent/30 hover:text-brand-accent p-1" title={`View ${name} Fullscreen`}><Maximize2 size={12} /></button>
                                   <button onClick={() => handleDeletePlaylist(name)} className="text-red-500/20 hover:text-red-500 p-1"><Trash2 size={12} /></button>
                                 </div>
                              </div>
@@ -4139,12 +4470,11 @@ function App() {
                                       </button>
                                    </div>
                                 ))}
-                                {playlists[name].length > 2 && ( <button onClick={() => setViewingPlaylist(name)} className="text-[8px] font-black text-white/20 uppercase tracking-widest text-center py-1 hover:text-brand-accent transition-colors">+ {playlists[name].length - 2} more tracks</button> )}
+                                    {playlists[name].length > 2 && ( <button onClick={() => setIsViewingFullPlaylist(name)} className="text-[8px] font-black text-white/20 uppercase tracking-widest text-center py-1 hover:text-brand-accent transition-colors">+ {playlists[name].length - 2} more tracks</button> )}
                              </div>
                           </div>
                        ))}
                     </div>
-                 )}
                </div>
             </div>
           </div>
@@ -4309,7 +4639,7 @@ function App() {
               <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
                 <div>
                   <div className="text-[10px] font-black uppercase tracking-[0.28em] text-brand-accent">App Lock</div>
-                  <div className="text-[11px] text-white/45 mt-1">Secure Aether with password and optional Touch ID.</div>
+                  <div className="text-[11px] text-white/45 mt-1">Secure Aether with password and optional Touch ID. Idle auto-lock stays enabled.</div>
                 </div>
                 <button
                   onClick={() => !isLockBusy && setIsLockModalOpen(false)}
@@ -4683,69 +5013,209 @@ function App() {
         )}
       </AnimatePresence>
       <AnimatePresence>
-        {activeMenuTrack && (
-           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[300] flex items-center justify-center p-6">
-              <div className="absolute inset-0 bg-brand-dark/80 backdrop-blur-md" onClick={() => setActiveMenuTrack(null)} />
-              <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} className="w-full max-w-md glass-card bg-[#0a0a0a] border-brand-accent/20 p-8 relative z-10">
-                 <div className="flex items-center gap-4 mb-8">
-                    {Array.isArray(activeMenuTrack) ? (
-                        <div className="flex-1 min-w-0">
-                           <h3 className="text-lg font-black uppercase tracking-tighter truncate text-brand-accent">Queue Buffer</h3>
-                           <p className="text-brand-accent text-xs font-bold tracking-widest uppercase opacity-60">FLASH TO VAULT ({activeMenuTrack.length} NODES)</p>
+          {isLibraryOverlayOpen && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[300] flex items-center justify-center p-4 md:p-6">
+              <div className="absolute inset-0 bg-black/85 backdrop-blur-2xl" onClick={() => { setIsLibraryOverlayOpen(false); setLibraryActionTarget(null); }} />
+              <div className="absolute inset-0 pointer-events-none overflow-hidden">
+               <div className="absolute -top-20 left-1/3 w-80 h-80 rounded-full bg-brand-accent/10 blur-[110px]" />
+               <div className="absolute bottom-0 right-0 w-[32rem] h-[32rem] rounded-full bg-fuchsia-500/10 blur-[140px]" />
+              </div>
+              <motion.div initial={{ scale: 0.95, y: 18 }} animate={{ scale: 1, y: 0 }} className="w-full max-w-6xl max-h-[88vh] glass-card bg-[#090b0f]/96 border border-brand-accent/20 rounded-[2.2rem] relative z-10 overflow-hidden flex flex-col shadow-[0_28px_100px_rgba(0,0,0,0.55)]">
+                <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-brand-accent/70 to-transparent" />
+                <div className="flex items-center justify-between gap-4 p-5 md:p-6 border-b border-white/8 bg-black/25 backdrop-blur-md">
+                    <div className="flex items-center gap-4 min-w-0">
+                      <div className="w-11 h-11 rounded-2xl bg-brand-accent/10 border border-brand-accent/25 flex items-center justify-center shrink-0">
+                        <HardDrive size={18} className="text-brand-accent" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[9px] font-black uppercase tracking-[0.32em] text-white/30">Neural Library Overlay</div>
+                        <div className="text-xl md:text-2xl font-black uppercase tracking-tight text-brand-accent truncate">Studio Library</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap justify-end">
+                      <button onClick={handleImportVault} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all" title="Import Vault (.aether)">Import</button>
+                      <button onClick={handleGenerateSmartMix} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all" title="Generate Smart Mix">Smart Mix</button>
+                      <button onClick={handleCleanVault} disabled={isVaultCleaning} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all disabled:opacity-40" title="Clean Vault">Clean</button>
+                      <button onClick={() => { setIsLibraryOverlayOpen(false); setLibraryActionTarget(null); }} className="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close">
+                        <X size={18} />
+                      </button>
+                    </div>
+                 </div>
+
+                 <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[0.95fr_1.3fr] gap-4 p-4 md:p-6 overflow-hidden">
+                    <div className="glass-card border border-white/8 bg-gradient-to-b from-white/[0.05] to-white/[0.02] rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 shadow-[0_12px_40px_rgba(0,0,0,0.22)]">
+                      <div className="px-4 py-4 border-b border-white/8 flex items-center justify-between bg-black/20">
+                        <div>
+                          <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Quick Actions</div>
+                          <div className="text-[12px] font-black uppercase tracking-widest text-brand-accent">Add to Vault</div>
                         </div>
-                    ) : (
-                        <>
-                           <img src={getProxyUrl(activeMenuTrack.thumbnail)} className="w-16 h-16 rounded-2xl object-cover border border-white/10" alt="" />
-                           <div className="flex-1 min-w-0">
-                              <h3 className="text-lg font-black uppercase tracking-tighter truncate">{activeMenuTrack.title}</h3>
-                              <p className="text-brand-accent text-xs font-bold tracking-widest uppercase opacity-60">{activeMenuTrack.author}</p>
-                           </div>
-                        </>
-                    )}
-                 </div>
-                 <div className="label-caps mb-4 text-[10px] text-white/30">Target Vault Node</div>
-                 <div className="flex items-center gap-2 mb-2 p-2 rounded-xl bg-brand-accent/5 border border-brand-accent/20 focus-within:border-brand-accent/50 focus-within:shadow-[0_0_15px_rgba(0,255,191,0.1)] transition-all">
-                     <input 
-                        className="bg-transparent border-none outline-none text-[12px] font-black text-brand-accent uppercase tracking-widest placeholder:text-brand-accent/30 w-full px-2 py-2" 
-                        placeholder="Create New Vault..." 
-                        value={newPlaylistName} 
-                        onChange={(e) => setNewPlaylistName(e.target.value)} 
-                        onKeyDown={(e) => { 
-                            if (e.key === 'Enter' && newPlaylistName.trim()) { 
-                                handleAddToPlaylist(newPlaylistName.trim(), activeMenuTrack); 
-                                setNewPlaylistName('');
-                                setActiveMenuTrack(null); 
-                            } 
-                        }} 
-                     />
-                     <button 
-                        onClick={() => {
-                            if (newPlaylistName.trim()) {
-                                handleAddToPlaylist(newPlaylistName.trim(), activeMenuTrack);
-                                setNewPlaylistName('');
-                                setActiveMenuTrack(null);
-                            }
-                        }}
-                        className="p-2 rounded-lg bg-brand-accent/20 text-brand-accent hover:bg-brand-accent hover:text-black transition-all shadow-neon"
-                     >
-                        <Plus size={16} />
-                     </button>
-                  </div>
-                  <div className="h-[1px] bg-brand-accent/10 my-3" />
-                  <div className="flex flex-col gap-2 max-h-[40vh] overflow-y-auto pr-2 custom-scrollbar">
-                    {Object.keys(playlists).map(name => (
-                       <button key={name} onClick={() => handleAddToPlaylist(name, activeMenuTrack)} className="flex items-center justify-between p-4 rounded-xl bg-brand-accent/5 hover:bg-brand-accent/20 border border-brand-accent/20 group transition-all">
-                          <div className="flex items-center gap-3">
-                             <ListMusic size={14} className="text-brand-accent" />
-                             <span className="text-sm font-bold uppercase tracking-widest">Vault: {name}</span>
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => setIsLibraryOverlayOpen(false)} className="p-2 rounded-xl bg-white/5 border border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/40 transition-all" title="Close Overlay">
+                            <X size={14} />
+                          </button>
+                          <button onClick={() => { setIsCreatingPlaylist(true); setNewPlaylistName((prev) => prev || ''); }} className="p-2 rounded-xl bg-brand-accent/10 border border-brand-accent/20 text-brand-accent hover:bg-brand-accent hover:text-black transition-all shadow-[0_0_18px_rgba(0,255,191,0.14)]" title="Create New Vault">
+                            <Plus size={14} />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="p-4 border-b border-white/8 space-y-3 bg-gradient-to-b from-brand-accent/5 to-transparent">
+                        <div className="flex items-center gap-3 rounded-2xl bg-black/20 border border-brand-accent/20 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                          {libraryActionTarget?.type === 'queue' ? (
+                            <div className="w-12 h-12 rounded-xl bg-brand-accent/10 border border-brand-accent/20 flex items-center justify-center text-brand-accent font-black text-[10px]">Q</div>
+                          ) : (
+                            <img src={getProxyUrl(libraryActionTarget?.items?.[0]?.thumbnail || currentTrack?.thumbnail)} className="w-12 h-12 rounded-xl object-cover border border-white/10" alt="" />
+                          )}
+                          <div className="min-w-0">
+                            <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/35">Pending Context</div>
+                            <div className="font-black uppercase tracking-tight text-white truncate">
+                              {libraryActionTarget?.type === 'queue'
+                                ? `Queue Buffer (${libraryActionTarget.items.length})`
+                                : (libraryActionTarget?.items?.[0]?.title || currentTrack?.title || 'Create Empty Vault')}
+                            </div>
                           </div>
-                          <ChevronRight size={14} className="opacity-40 group-hover:translate-x-1 transition-transform" />
-                       </button>
-                    ))}
+                        </div>
+                        <div className="flex items-center gap-2 p-2 rounded-2xl bg-black/30 border border-white/8 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                          <input
+                            ref={libraryOverlayCreateInputRef}
+                            className="bg-transparent border-none outline-none text-[12px] font-black text-brand-accent uppercase tracking-widest placeholder:text-brand-accent/30 w-full px-2 py-2"
+                            placeholder="Create New Vault..."
+                            value={newPlaylistName}
+                            onChange={(e) => setNewPlaylistName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && newPlaylistName.trim()) {
+                                handleAddToPlaylist(newPlaylistName.trim(), pendingLibraryItems);
+                                setNewPlaylistName('');
+                                setIsCreatingPlaylist(false);
+                              }
+                            }}
+                          />
+                          <button
+                            onClick={() => {
+                              if (newPlaylistName.trim()) {
+                                handleAddToPlaylist(newPlaylistName.trim(), pendingLibraryItems);
+                                setNewPlaylistName('');
+                                setIsCreatingPlaylist(false);
+                              }
+                            }}
+                            disabled={!newPlaylistName.trim()}
+                            className="p-2 rounded-lg bg-brand-accent/20 text-brand-accent hover:bg-brand-accent hover:text-black transition-all shadow-neon disabled:opacity-30 disabled:cursor-not-allowed"
+                          >
+                            <Plus size={16} />
+                          </button>
+                        </div>
+                        {!libraryActionTarget && !currentTrack && (
+                          <div className="text-[10px] uppercase tracking-[0.2em] text-white/28 flex items-center gap-2">
+                            <span>No active track context; this will create an empty vault.</span>
+                            {isDoodleMode && <img src={catDoodlePeek} alt="doodle" className="h-5 w-auto opacity-70 select-none pointer-events-none" draggable={false} />}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 space-y-3">
+                        {orderedPlaylistNames.map((name) => (
+                          <div
+                            key={name}
+                            draggable
+                            onClick={() => setViewingPlaylist(name)}
+                            onDragStart={(e) => {
+                              setDraggedPlaylistName(name);
+                              e.dataTransfer.effectAllowed = 'move';
+                              e.dataTransfer.setData('text/plain', name);
+                            }}
+                            onDragEnd={() => setDraggedPlaylistName(null)}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = 'move';
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              const droppedName = e.dataTransfer.getData('text/plain');
+                              reorderPlaylistByDrag(name, droppedName || draggedPlaylistName);
+                            }}
+                            className={`group rounded-2xl border p-3 transition-all cursor-pointer ${draggedPlaylistName === name ? 'border-brand-accent/40 bg-brand-accent/12 shadow-[0_0_18px_rgba(0,255,191,0.08)]' : (viewingPlaylist === name ? 'border-brand-accent/35 bg-brand-accent/10 shadow-[0_0_18px_rgba(0,255,191,0.09)]' : 'border-white/8 bg-black/20 hover:border-brand-accent/30 hover:bg-white/[0.03]')}`}
+                          >
+                            <div className="flex items-center justify-between gap-3 mb-2">
+                              <div className="min-w-0">
+                                <div className="text-[9px] font-black uppercase tracking-[0.26em] text-white/25">Vault Node</div>
+                                <div className="font-black uppercase tracking-tight truncate group-hover:text-brand-accent transition-colors">{name}</div>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                {viewingPlaylist === name && (
+                                  <span className="px-2 py-1 rounded-md bg-brand-accent/12 border border-brand-accent/25 text-brand-accent text-[8px] font-black uppercase tracking-[0.2em]">Focused</span>
+                                )}
+                                <button onClick={(e) => { e.stopPropagation(); handleAddToPlaylist(name, pendingLibraryItems); }} disabled={!canAddPendingToVault} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent/70 hover:text-brand-accent hover:bg-brand-accent/20 transition-all disabled:opacity-30 disabled:cursor-not-allowed" title={`Add pending context to ${name}`}><Plus size={12} /></button>
+                                <button onClick={(e) => { e.stopPropagation(); movePlaylist(name, -1); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title="Move up"><ChevronLeft size={12} /></button>
+                                <button onClick={(e) => { e.stopPropagation(); movePlaylist(name, 1); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title="Move down"><ChevronRight size={12} /></button>
+                                <button onClick={(e) => { e.stopPropagation(); handleExportVault(name); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title={`Export ${name} to .aether`}><Download size={12} /></button>
+                                <button onClick={(e) => { e.stopPropagation(); handleDeletePlaylist(name); }} className="p-2 rounded-lg bg-white/5 text-red-400/60 hover:text-red-400 transition-all" title={`Delete ${name}`}><Trash2 size={12} /></button>
+                              </div>
+                            </div>
+                            <div className="flex items-center justify-between text-[9px] uppercase tracking-[0.2em] text-white/30">
+                              <span>{(playlists[name] || []).length} nodes</span>
+                              <span>{playlists[name]?.length > 0 ? 'Ready' : 'Empty'}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="glass-card border border-white/8 bg-gradient-to-b from-white/[0.05] to-white/[0.02] rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 shadow-[0_12px_40px_rgba(0,0,0,0.22)]">
+                      {viewingPlaylist ? (
+                        <motion.div
+                          key={viewingPlaylist}
+                          initial={{ opacity: 0, y: 8, scale: 0.995 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          transition={{ duration: 0.2, ease: 'easeOut' }}
+                          className="flex flex-col min-h-0 flex-1"
+                        >
+                          <div className="px-4 py-4 border-b border-white/8 flex items-center justify-between bg-black/20">
+                            <div className="min-w-0">
+                              <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Focused Vault</div>
+                              <div className="text-lg font-black uppercase tracking-tight text-brand-accent truncate">{viewingPlaylist}</div>
+                              <div className="mt-1 text-[9px] uppercase tracking-[0.22em] text-white/35">{(playlists[viewingPlaylist] || []).length} tracks</div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button onClick={() => handlePlaylistAddAll(viewingPlaylist)} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent hover:bg-brand-accent hover:text-black transition-all" title={`Add all tracks from ${viewingPlaylist} to queue`}><Plus size={12} /></button>
+                              <button onClick={() => handleExportVault(viewingPlaylist)} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title={`Export ${viewingPlaylist} to .aether`}><Download size={12} /></button>
+                              <button onClick={() => handleDeletePlaylist(viewingPlaylist)} className="p-2 rounded-lg bg-white/5 text-red-400/60 hover:text-red-400 transition-all" title={`Delete ${viewingPlaylist}`}><Trash2 size={12} /></button>
+                              <button onClick={() => setViewingPlaylist(null)} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-red-400 transition-all" title="Back"><ChevronLeft size={12} /></button>
+                            </div>
+                          </div>
+                          <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 space-y-2 bg-gradient-to-b from-brand-accent/5 to-transparent">
+                            {(playlists[viewingPlaylist] || []).map((track, tidx) => (
+                              <div key={`${viewingPlaylist}-${tidx}`} className="group rounded-2xl border border-white/8 bg-black/20 p-3 flex items-center gap-3 hover:border-brand-accent/30 hover:bg-white/[0.03] transition-all">
+                                <img src={getProxyUrl(track.thumbnail)} className="w-11 h-11 rounded-xl object-cover border border-white/10" alt="" />
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-[11px] font-black uppercase tracking-widest truncate group-hover:text-brand-accent transition-colors">{track.title}</div>
+                                  <div className="text-[9px] uppercase tracking-[0.22em] text-white/30 truncate mt-1">{track.author}</div>
+                                </div>
+                                <button onClick={() => handleAdd(track)} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent hover:bg-brand-accent hover:text-black transition-all" title="Add to queue"><Plus size={12} /></button>
+                                <button onClick={() => handleRemoveFromPlaylist(viewingPlaylist, tidx)} className="p-2 rounded-lg bg-white/5 text-red-400/50 hover:text-red-400 transition-all" title="Remove"><Trash2 size={12} /></button>
+                              </div>
+                            ))}
+                          </div>
+                        </motion.div>
+                      ) : (
+                        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 flex flex-col gap-3 bg-gradient-to-b from-brand-accent/5 to-transparent">
+                          <div className="rounded-2xl border border-white/8 bg-black/20 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                            <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Library Stats</div>
+                            <div className="mt-3 grid grid-cols-3 gap-3 text-center">
+                              <div className="rounded-xl bg-white/5 border border-white/8 p-3"><div className="text-brand-accent font-black text-lg">{libraryInsights.unique}</div><div className="text-[8px] uppercase tracking-[0.24em] text-white/30">Unique</div></div>
+                              <div className="rounded-xl bg-white/5 border border-white/8 p-3"><div className="text-brand-accent font-black text-lg">{libraryInsights.total}</div><div className="text-[8px] uppercase tracking-[0.24em] text-white/30">Total</div></div>
+                              <div className="rounded-xl bg-white/5 border border-white/8 p-3"><div className="text-brand-accent font-black text-lg">{libraryInsights.duplicates}</div><div className="text-[8px] uppercase tracking-[0.24em] text-white/30">Dupes</div></div>
+                            </div>
+                          </div>
+                          <div className="text-[10px] uppercase tracking-[0.2em] text-white/25 text-center">Select a vault node to focus it here.</div>
+                          {isDoodleMode && (
+                            <div className="flex items-center justify-center gap-2 opacity-70">
+                              <img src={catDoodlePeek} alt="doodle" className="h-8 w-auto select-none pointer-events-none" draggable={false} />
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                  </div>
-                 <button onClick={() => setActiveMenuTrack(null)} className="w-full mt-6 p-4 text-[10px] uppercase tracking-[0.4em] text-white/20 hover:text-white/40 transition-colors">
-                    Abort Interface
-                 </button>
               </motion.div>
            </motion.div>
         )}
@@ -4769,8 +5239,255 @@ function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      <AnimatePresence>
+        {isPlayerOverlayOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[290] flex items-center justify-center p-4 md:p-6"
+          >
+            <div className="absolute inset-0 bg-black/85 backdrop-blur-xl" onClick={() => setIsPlayerOverlayOpen(false)} />
+            <motion.div
+              initial={{ scale: 0.96, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, y: 20 }}
+              className="w-full max-w-5xl max-h-[88vh] overflow-hidden rounded-[2rem] border border-brand-accent/20 bg-[#090b0f]/95 shadow-[0_0_90px_rgba(0,255,191,0.14)] relative z-10 flex flex-col"
+            >
+              <div className="p-5 md:p-6 border-b border-white/10 relative">
+                <div className="text-center px-16">
+                  <div className="text-[9px] font-black uppercase tracking-[0.32em] text-white/30">Player Overlay</div>
+                  {String(currentTrack?.title || 'Nothing Playing').length > 44 ? (
+                    <div className="overlay-marquee mt-1 text-xl md:text-2xl font-black uppercase tracking-tight text-brand-accent">
+                      <div className="overlay-marquee-track">
+                        <span>{currentTrack?.title || 'Nothing Playing'}</span>
+                        <span>{currentTrack?.title || 'Nothing Playing'}</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-1 text-xl md:text-2xl font-black uppercase tracking-tight text-brand-accent truncate">{currentTrack?.title || 'Nothing Playing'}</div>
+                  )}
+                  <div className="text-[11px] uppercase tracking-[0.22em] text-white/40 truncate mt-1">{currentTrack?.author || 'Awaiting signal'}</div>
+                </div>
+                <button onClick={() => setIsPlayerOverlayOpen(false)} className="absolute right-5 md:right-6 top-1/2 -translate-y-1/2 w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close">
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="p-4 md:p-6 overflow-hidden flex-1 min-h-0">
+                <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-5 flex flex-col items-center justify-center gap-4 min-h-0 min-w-0 h-full">
+                  <img
+                    src={getProxyUrl(currentTrack?.thumbnail)}
+                    className="w-full max-w-[320px] aspect-square rounded-[1.75rem] object-cover border border-white/10 shadow-[0_0_50px_rgba(0,255,191,0.12)]"
+                    alt=""
+                  />
+                  <div className="text-center min-w-0 w-full">
+                    <div className="text-[9px] uppercase tracking-[0.28em] text-white/25">Now Playing</div>
+                    {String(compactLyric || 'Lyric sync loading…').length > 56 ? (
+                      <div className="overlay-marquee mt-1 text-lg font-black tracking-tight text-white/95">
+                        <div className="overlay-marquee-track">
+                          <span>{compactLyric || 'Lyric sync loading…'}</span>
+                          <span>{compactLyric || 'Lyric sync loading…'}</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-1 text-lg font-black tracking-tight text-white/95 truncate">{compactLyric || 'Lyric sync loading…'}</div>
+                    )}
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-white/35 truncate mt-1">{currentTrack?.author || 'No source'}</div>
+                  </div>
+                  <div className="w-full space-y-2">
+                    <div className="h-2 rounded-full bg-white/10 overflow-hidden">
+                      <div className="h-full bg-brand-accent shadow-[0_0_10px_#00ffbf]" style={{ width: `${Math.min(100, Math.max(0, currentTrack?.totalDurationMs ? (currentTime / currentTrack.totalDurationMs) * 100 : 0))}%` }} />
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] font-mono text-white/35">
+                      <span>{formatTime(currentTime)}</span>
+                      <span>{formatTime(currentTrack?.totalDurationMs || currentTrack?.duration || 0)}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     
       {/* GLOBAL BACKGROUND ELEMENTS (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN */}
+            {/* FULL QUEUE OVERLAY */}
+            <AnimatePresence>
+              {isViewingFullQueue && (
+                <motion.div 
+                  initial={{ opacity: 0 }} 
+                  animate={{ opacity: 1 }} 
+                  exit={{ opacity: 0 }} 
+                  className="fixed inset-0 z-[250] flex items-center justify-center p-4"
+                >
+                  <div className="absolute inset-0 bg-brand-dark/90 backdrop-blur-[20px]" onClick={() => setIsViewingFullQueue(false)} />
+                  <motion.div 
+                    initial={{ scale: 0.95, y: 20 }} 
+                    animate={{ scale: 1, y: 0 }} 
+                    exit={{ scale: 0.95, y: 20 }}
+                    className="w-full max-w-2xl max-h-[80vh] glass-card bg-brand-dark/60 border-brand-accent/20 rounded-3xl flex flex-col overflow-hidden relative z-10"
+                  >
+                    <div className="flex items-center justify-between p-6 border-b border-brand-accent/10">
+                      <div className="flex items-center gap-3">
+                        <ListMusic size={20} className="text-brand-accent" />
+                        <div>
+                          <h2 className="text-lg font-black uppercase tracking-tighter text-white">Queue Buffer</h2>
+                          <p className="text-brand-accent text-xs font-bold tracking-widest uppercase opacity-60">{queue.length} TRACK{queue.length !== 1 ? 'S' : ''}</p>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => setIsViewingFullQueue(false)}
+                        className="p-2 rounded-lg bg-white/5 hover:bg-red-500/20 text-white/50 hover:text-red-500 transition-all"
+                      >
+                        <X size={18} />
+                      </button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
+                      <div className="flex flex-col gap-2">
+                        {queue.map((track, idx) => (
+                          <motion.div 
+                            key={`${track.id}-${idx}`}
+                            draggable
+                            onDragStart={(e) => {
+                              setDraggedQueueIndex(idx);
+                              e.dataTransfer.effectAllowed = 'move';
+                              e.dataTransfer.setData('text/plain', String(idx));
+                            }}
+                            onDragEnd={() => setDraggedQueueIndex(null)}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = 'move';
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              const droppedIndex = Number(e.dataTransfer.getData('text/plain'));
+                              reorderQueueByDrag(idx, Number.isInteger(droppedIndex) ? droppedIndex : draggedQueueIndex);
+                            }}
+                            className={`group glass-card p-4 flex items-center gap-4 rounded-xl transition-all cursor-move border ${draggedQueueIndex === idx ? 'bg-brand-accent/15 border-brand-accent/45' : idx === 0 ? 'bg-brand-accent/10 border-brand-accent/30 shadow-[0_0_20px_rgba(0,255,191,0.2)]' : 'bg-white/5 border-white/10 hover:border-brand-accent/20'}`}
+                          >
+                            <div className="text-brand-accent font-black text-sm w-6">{idx + 1}</div>
+                            <img src={getProxyUrl(track.thumbnail)} className="w-10 h-10 rounded-lg object-cover" alt="" />
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[12px] font-black truncate uppercase tracking-widest">{track.title}</div>
+                              <div className="text-[10px] font-bold text-white/40 truncate uppercase mt-1">{track.author}</div>
+                            </div>
+                            {downloadedTracks.includes(track.id) && (
+                              <span className="text-[8px] font-black uppercase tracking-widest text-red-500 border border-red-500/50 px-2 py-0.5 rounded-full">READY</span>
+                            )}
+                            {idx !== 0 && (
+                              <button 
+                                onClick={() => {
+                                  const newQueue = [...queue];
+                                  const [removed] = newQueue.splice(idx, 1);
+                                  newQueue.splice(idx - 1, 0, removed);
+                                  setQueue(newQueue);
+                                }}
+                                className="opacity-0 group-hover:opacity-100 p-2 hover:text-brand-accent transition-all"
+                                title="Move up"
+                              >
+                                <ChevronLeft size={14} />
+                              </button>
+                            )}
+                            {idx !== queue.length - 1 && (
+                              <button 
+                                onClick={() => {
+                                  const newQueue = [...queue];
+                                  const [removed] = newQueue.splice(idx, 1);
+                                  newQueue.splice(idx + 1, 0, removed);
+                                  setQueue(newQueue);
+                                }}
+                                className="opacity-0 group-hover:opacity-100 p-2 hover:text-brand-accent transition-all"
+                                title="Move down"
+                              >
+                                <ChevronRight size={14} />
+                              </button>
+                            )}
+                            {idx !== 0 && (
+                              <button 
+                                onClick={() => setQueue(queue.filter((_, i) => i !== idx))}
+                                className="opacity-0 group-hover:opacity-100 p-2 hover:text-red-500 transition-all"
+                                title="Remove"
+                              >
+                                <Trash2 size={14} className="text-red-500/40 hover:text-red-500" />
+                              </button>
+                            )}
+                          </motion.div>
+                        ))}
+                      </div>
+                    </div>
+                  </motion.div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* FULL PLAYLIST OVERLAY */}
+            <AnimatePresence>
+              {isViewingFullPlaylist && (
+                <motion.div 
+                  initial={{ opacity: 0 }} 
+                  animate={{ opacity: 1 }} 
+                  exit={{ opacity: 0 }} 
+                  className="fixed inset-0 z-[250] flex items-center justify-center p-4"
+                >
+                  <div className="absolute inset-0 bg-brand-dark/90 backdrop-blur-[20px]" onClick={() => setIsViewingFullPlaylist(null)} />
+                  <motion.div 
+                    initial={{ scale: 0.95, y: 20 }} 
+                    animate={{ scale: 1, y: 0 }} 
+                    exit={{ scale: 0.95, y: 20 }}
+                    className="w-full max-w-2xl max-h-[80vh] glass-card bg-brand-dark/60 border-brand-accent/20 rounded-3xl flex flex-col overflow-hidden relative z-10"
+                  >
+                    <div className="flex items-center justify-between p-6 border-b border-brand-accent/10">
+                      <div className="flex items-center gap-3">
+                        <ListMusic size={20} className="text-brand-accent" />
+                        <div>
+                          <h2 className="text-lg font-black uppercase tracking-tighter text-white">Vault: {isViewingFullPlaylist}</h2>
+                          <p className="text-brand-accent text-xs font-bold tracking-widest uppercase opacity-60">{(playlists[isViewingFullPlaylist] || []).length} TRACK{(playlists[isViewingFullPlaylist] || []).length !== 1 ? 'S' : ''}</p>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => setIsViewingFullPlaylist(null)}
+                        className="p-2 rounded-lg bg-white/5 hover:bg-red-500/20 text-white/50 hover:text-red-500 transition-all"
+                      >
+                        <X size={18} />
+                      </button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
+                      <div className="flex flex-col gap-2">
+                        {(playlists[isViewingFullPlaylist] || []).map((track, idx) => (
+                          <motion.div 
+                            key={`${isViewingFullPlaylist}-${track.id}-${idx}`}
+                            className="group glass-card p-4 flex items-center gap-4 rounded-xl transition-all bg-white/5 border border-white/10 hover:border-brand-accent/30 hover:bg-brand-accent/5"
+                          >
+                            <div className="text-brand-accent font-black text-sm w-6">{idx + 1}</div>
+                            <img src={getProxyUrl(track.thumbnail)} className="w-10 h-10 rounded-lg object-cover" alt="" />
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[12px] font-black truncate uppercase tracking-widest">{track.title}</div>
+                              <div className="text-[10px] font-bold text-white/40 truncate uppercase mt-1">{track.author}</div>
+                            </div>
+                            <button 
+                              onClick={() => handleAdd(track)}
+                              className="opacity-0 group-hover:opacity-100 p-2 rounded-lg bg-brand-accent/20 hover:bg-brand-accent/40 text-brand-accent transition-all"
+                              title="Add to Queue"
+                            >
+                              <Plus size={14} />
+                            </button>
+                            <button 
+                              onClick={() => handleRemoveFromPlaylist(isViewingFullPlaylist, idx)}
+                              className="opacity-0 group-hover:opacity-100 p-2 hover:text-red-500 transition-all"
+                              title="Remove from Vault"
+                            >
+                              <Trash2 size={14} className="text-red-500/40 hover:text-red-500" />
+                            </button>
+                          </motion.div>
+                        ))}
+                      </div>
+                    </div>
+                  </motion.div>
+                </motion.div>
+              )}
+            </AnimatePresence>
       <div className="fixed inset-0 pointer-events-none z-[-2] overflow-hidden select-none bg-black">
          {/* Baseline Neural Glow (Optimized) */}
          <div className="absolute inset-0 bg-brand-accent/5 backdrop-blur-[60px] animate-pulse" />
