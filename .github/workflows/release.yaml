@@ -58,8 +58,10 @@ jobs:
           libxss1 \
           libasound2t64 \
           libxtst6 \
+          fuse3 \
           xauth \
           xvfb
+        sudo apt-get install -y libfuse2 || sudo apt-get install -y libfuse2t64 || true
 
     - name: Install root dependencies
       run: npm install --include=dev --ignore-scripts
@@ -91,8 +93,32 @@ jobs:
     - name: Build frontend
       run: npm run build --prefix frontend
 
-    - name: Build Electron installers
+    - name: Ensure app-builder executable permission (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        chmod +x node_modules/app-builder-bin/linux/x64/app-builder || true
+        chmod +x node_modules/app-builder-bin/linux/arm64/app-builder || true
+
+    - name: Build Electron installers (macOS/Windows)
+      if: matrix.os != 'ubuntu-latest'
       run: ${{ matrix.build_cmd }}
+
+    - name: Build Electron installers (Linux retry)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        set -e
+        for attempt in 1 2 3; do
+          echo "Linux AppImage build attempt ${attempt}/3"
+          if npx electron-builder --linux AppImage --x64 --publish=never; then
+            exit 0
+          fi
+          if [ "$attempt" -lt 3 ]; then
+            echo "Transient AppImage tool download failure, retrying in 15s..."
+            sleep 15
+          fi
+        done
+        echo "Linux AppImage build failed after 3 attempts"
+        exit 1
 
     - name: Upload installers
       uses: actions/upload-artifact@v4
