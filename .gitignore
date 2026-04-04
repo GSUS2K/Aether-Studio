@@ -1,7 +1,13 @@
 node_modules
+frontend/node_modules
 LAPTOP_BACKEND_SETUP.md
 .env.local
 .env
+.env.*
 WEB_DEPLOYMENT.md
 dist
+frontend/dist
 TODO.md
+.DS_Store
+cookies.txt
+.wrangler/

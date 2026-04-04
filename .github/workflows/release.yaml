@@ -1,10 +1,14 @@
-name: Build Desktop Installers
+name: Publish GitHub Release
 
 on:
   push:
-    branches: [ main ]
+    tags:
+    - 'v*'
   workflow_dispatch:
 
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -32,23 +36,17 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Setup Node
-      uses: actions/setup-node@v3
+      uses: actions/setup-node@v4
       with:
         node-version: 22
+        cache: npm
+        cache-dependency-path: |
+          package-lock.json
+          frontend/package-lock.json
 
-    # Cache dependencies (faster builds)
-    - name: Cache node modules
-      uses: actions/cache@v4
-      with:
-        path: |
-          node_modules
-          frontend/node_modules
-        key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
-
-    # Linux dependencies for Electron
     - name: Install Linux dependencies
       if: matrix.os == 'ubuntu-latest'
       run: |
@@ -63,15 +61,12 @@ jobs:
           xauth \
           xvfb
 
-    # Install root deps (skip scripts to avoid yt-dlp issues)
-    - name: Install root deps
-      run: npm install --include=dev --ignore-scripts
+    - name: Install root dependencies
+      run: npm ci --include=dev --ignore-scripts
 
-    # Install frontend deps
-    - name: Install frontend deps
-      run: cd frontend && npm install --ignore-scripts
+    - name: Install frontend dependencies
+      run: npm ci --prefix frontend --ignore-scripts
 
-    # Install yt-dlp manually (avoid GitHub API rate limit)
     - name: Install yt-dlp manually (macOS)
       if: matrix.os == 'macos-latest'
       run: |
@@ -93,11 +88,9 @@ jobs:
         New-Item -ItemType Directory -Force -Path desktop/bin | Out-Null
         Invoke-WebRequest -Uri https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe -OutFile desktop/bin/yt-dlp.exe
 
-    # Build React frontend
     - name: Build frontend
-      run: cd frontend && npm run build
+      run: npm run build --prefix frontend
 
-    # Build Electron app
     - name: Build Electron installers
       run: ${{ matrix.build_cmd }}
 
@@ -107,3 +100,37 @@ jobs:
         name: aether-${{ matrix.label }}-installers
         path: ${{ matrix.artifact_glob }}
         if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Download macOS installers
+      uses: actions/download-artifact@v4
+      with:
+        name: aether-macos-installers
+        path: release-assets/macos
+
+    - name: Download Windows installers
+      uses: actions/download-artifact@v4
+      with:
+        name: aether-windows-installers
+        path: release-assets/windows
+
+    - name: Download Linux installers
+      uses: actions/download-artifact@v4
+      with:
+        name: aether-linux-installers
+        path: release-assets/linux
+
+    - name: Publish GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          release-assets/macos/*
+          release-assets/windows/*
+          release-assets/linux/*
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

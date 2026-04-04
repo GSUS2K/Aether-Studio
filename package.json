@@ -66,8 +66,7 @@
       "frontend/dist/**/*",
       "package.json",
       "icon.png",
-      "lyrics-fetcher.js",
-      ".env"
+      "lyrics-fetcher.js"
     ],
     "asarUnpack": [
       "**/node_modules/@distube/yt-dlp/bin/*",
