@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('aether', {
   getOfflineTracks: () => ipcRenderer.invoke('aether:get-offline-tracks'),
   getLocalIp: () => ipcRenderer.invoke('aether:get-local-ip'),
   saveToDisk: (url, title, author) => ipcRenderer.invoke('aether:save-to-disk', { url, title, author }),
+  exportAudioToFile: (url, title, author) => ipcRenderer.invoke('aether:export-audio-file', { url, title, author }),
   getStorageStats: () => ipcRenderer.invoke('aether:get-storage-stats'),
   updateStoragePolicy: (payload) => ipcRenderer.invoke('aether:update-storage-policy', payload),
   getStorageEstimate: (payload) => ipcRenderer.invoke('aether:get-storage-estimate', payload),

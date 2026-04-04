@@ -7,11 +7,12 @@
   "scripts": {
     "start": "NODE_ENV=production electron .",
     "dev": "electron .",
+    "prepare-binaries": "node scripts/prepare-bundled-binaries.cjs",
     "build-frontend": "cd frontend && npm install && npm run build",
-    "package": "npm run build-frontend && electron-builder build --mac --dir",
-    "dist": "npm run build-frontend && electron-builder build --mac",
-    "dist:win": "npm run build-frontend && electron-builder build --win --x64",
-    "dist:all": "npm run build-frontend && electron-builder build --mac --win --x64",
+    "package": "npm run prepare-binaries && npm run build-frontend && electron-builder build --mac --dir",
+    "dist": "npm run prepare-binaries && npm run build-frontend && electron-builder build --mac",
+    "dist:win": "npm run prepare-binaries && npm run build-frontend && electron-builder build --win --x64",
+    "dist:all": "npm run prepare-binaries && npm run build-frontend && electron-builder build --mac --win --x64",
     "test": "echo \"Error: no test specified\" && exit 1",
     "electron": "electron .",
   "electron:build": "electron-builder"

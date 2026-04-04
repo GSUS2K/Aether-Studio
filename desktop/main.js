@@ -1779,6 +1779,83 @@ app.whenReady().then(async () => {
         }
     });
 
+    ipcMain.handle('aether:export-audio-file', async (event, { url, title, author }) => {
+        try {
+            if (!url) return { success: false, error: 'Missing URL' };
+
+            const ready = await ensureYtDlpPathWithTimeout(8000);
+            if (!ready) return { success: false, error: 'yt-dlp unavailable' };
+
+            const safeBase = `${title || 'track'}-${author || 'unknown'}`
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '-')
+                .replace(/^-+|-+$/g, '')
+                .slice(0, 64) || 'track';
+
+            const suggestedPath = path.join(app.getPath('downloads'), `${safeBase}.m4a`);
+            const pick = await dialog.showSaveDialog(mainWindow, {
+                title: 'Export Audio File',
+                defaultPath: suggestedPath,
+                filters: [
+                    { name: 'Audio (M4A)', extensions: ['m4a'] },
+                    { name: 'All Files', extensions: ['*'] },
+                ],
+            });
+
+            if (pick?.canceled || !pick?.filePath) return { success: false, cancel: true };
+
+            let targetPath = pick.filePath;
+            if (!/\.[A-Za-z0-9]+$/.test(path.basename(targetPath))) {
+                targetPath = `${targetPath}.m4a`;
+            }
+
+            await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
+
+            const MIN_VALID_AUDIO_BYTES = 64 * 1024;
+            const args = [
+                url,
+                '-f', 'bestaudio[ext=m4a]/bestaudio',
+                '-o', targetPath,
+                '--no-part',
+                '--no-continue',
+                '--no-check-certificates',
+                '--no-warnings',
+                '--quiet',
+            ];
+
+            await new Promise((resolve, reject) => {
+                const proc = spawn(ytdlpPath, args);
+                let stderr = '';
+
+                proc.stderr.on('data', (data) => {
+                    stderr += data.toString();
+                });
+
+                proc.on('error', (err) => reject(err));
+
+                proc.on('close', (code) => {
+                    try {
+                        const size = fs.existsSync(targetPath) ? fs.statSync(targetPath).size : 0;
+                        if (code === 0 && size >= MIN_VALID_AUDIO_BYTES) {
+                            return resolve();
+                        }
+                        if (fs.existsSync(targetPath) && size < MIN_VALID_AUDIO_BYTES) {
+                            try { fs.unlinkSync(targetPath); } catch {}
+                        }
+                        return reject(new Error(stderr.trim() || `yt-dlp exited with code ${code}`));
+                    } catch (e) {
+                        return reject(e);
+                    }
+                });
+            });
+
+            return { success: true, filePath: targetPath };
+        } catch (e) {
+            console.error(`[Aether] export-audio-file failed: ${e.message}`);
+            return { success: false, error: e.message };
+        }
+    });
+
     ipcMain.handle('aether:get-offline-tracks', async () => {
         return await offlineEngine.getDownloadedTracks();
     });
