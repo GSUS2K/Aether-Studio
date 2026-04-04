@@ -368,7 +368,7 @@ function App() {
       setTimeout(() => setLastAdded(null), 2200);
       return;
     }
-    const sceneUrl = `${AETHER_SHARE_ORIGIN}/?scene=${encoded}`;
+    const sceneUrl = `${AETHER_SHARE_ORIGIN}/#scene=${encoded}`;
     setSharedScene(normalizeScenePayload(payload));
     setIsSharedSceneOpen(true);
 
@@ -4616,9 +4616,13 @@ function App() {
                 <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent mb-4">Aether Shared Scene</div>
                 <div className="rounded-2xl border border-white/10 bg-black/30 p-4 md:p-5 flex flex-col md:flex-row gap-4 md:gap-5">
                   <img
-                    src={getProxyUrl(sharedScene.thumbnail || (sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : ''))}
+                    src={sharedScene.thumbnail || (sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : '')}
                     alt="scene"
                     className="w-full md:w-40 h-40 rounded-2xl object-cover border border-white/10"
+                    onError={(e) => {
+                      const fallback = sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : '';
+                      if (fallback && e.currentTarget.src !== fallback) e.currentTarget.src = fallback;
+                    }}
                   />
                   <div className="flex-1 min-w-0">
                     <div className="font-black text-brand-accent text-lg truncate">{sharedScene.title || 'Aether Scene'}</div>
