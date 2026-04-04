@@ -368,7 +368,7 @@ function App() {
       setTimeout(() => setLastAdded(null), 2200);
       return;
     }
-    const sceneUrl = `${AETHER_SHARE_ORIGIN}/#scene=${encoded}`;
+    const sceneUrl = `${AETHER_SHARE_ORIGIN}/?scene=${encoded}`;
     setSharedScene(normalizeScenePayload(payload));
     setIsSharedSceneOpen(true);
 
