@@ -16,12 +16,12 @@ export default {
     const scene = normalizeScenePayload(decoded);
     const pageUrl = `https://aetherstudio.me/?scene=${encodeURIComponent(encoded)}`;
 
-    // Bots get OG HTML. Humans get redirected to app URL.
+    // Bots get OG HTML. Humans should receive normal app HTML from origin.
     const ua = (request.headers.get('user-agent') || '').toLowerCase();
     const isBot = /(discordbot|twitterbot|slackbot|facebookexternalhit|linkedinbot|whatsapp|telegrambot|embedly|quora link preview|pinterest|googlebot)/i.test(ua);
 
     if (!isBot) {
-      return Response.redirect(pageUrl, 302);
+      return fetch(request);
     }
 
     const title = escapeHtml(`${scene.title} — ${scene.author}`.slice(0, 120));
@@ -48,10 +48,9 @@ export default {
   <meta name="twitter:description" content="${description}" />
   <meta name="twitter:image" content="${image}" />
 
-  <meta http-equiv="refresh" content="0;url=${escapeHtml(pageUrl)}" />
 </head>
 <body>
-  <p>Redirecting to shared scene… <a href="${escapeHtml(pageUrl)}">Open</a></p>
+  <p>Shared scene preview for bots. Open: <a href="${escapeHtml(pageUrl)}">${escapeHtml(pageUrl)}</a></p>
 </body>
 </html>`;
 
