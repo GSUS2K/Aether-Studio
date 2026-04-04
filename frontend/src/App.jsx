@@ -238,6 +238,7 @@ function App() {
   const [sharedScene, setSharedScene] = useState(null);
   const [isSharedSceneOpen, setIsSharedSceneOpen] = useState(false);
   const [vaultPulse, setVaultPulse] = useState({ bass: 0, mids: 0, highs: 0, energy: 0, spin: 0, stamp: 'AETHER-PULSE' });
+  const [vaultSpectrum, setVaultSpectrum] = useState(() => Array(8).fill(0.12));
   const [playlists, setPlaylists] = useState({});
   const [viewingPlaylist, setViewingPlaylist] = useState(null);
   const [newPlaylistName, setNewPlaylistName] = useState('');
@@ -1550,6 +1551,18 @@ function App() {
         const now = performance.now();
         if (isMixtapeVaultOpen && now - vaultTelemetryRef.current.lastStateAt > 120) {
           vaultTelemetryRef.current.lastStateAt = now;
+          const sampledBars = Array.from({ length: 8 }, (_, i) => {
+            const start = Math.floor((i / 8) * bufferLength);
+            const end = Math.max(start + 1, Math.floor(((i + 1) / 8) * bufferLength));
+            let total = 0;
+            let count = 0;
+            for (let b = start; b < end; b++) {
+              total += dataArray[b] || 0;
+              count += 1;
+            }
+            return clamp01((total / Math.max(count, 1)) / 255);
+          });
+
           setVaultPulse({
             bass,
             mids,
@@ -1565,6 +1578,7 @@ function App() {
               `h=${Math.round(highs * 100)}`,
             ].join(' · '),
           });
+          setVaultSpectrum((prev) => sampledBars.map((v, idx) => lerp(prev[idx] ?? 0, v, 0.45)));
         }
 
         if (visualizerMode === 'bars' && ctx) {
@@ -4536,6 +4550,18 @@ function App() {
                       }}
                     >
                       <div
+                        className="absolute left-1/2 top-4 -translate-x-1/2 w-2.5 h-2.5 rounded-full bg-brand-accent"
+                        style={{
+                          boxShadow: `0 0 ${10 + (vaultPulse.highs * 18)}px rgba(0,255,191,${0.35 + vaultPulse.highs * 0.45})`,
+                        }}
+                      />
+                      <div
+                        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-full w-[2px] h-[34%] rounded-full bg-brand-accent/70"
+                        style={{
+                          opacity: 0.45 + (vaultPulse.energy * 0.45),
+                        }}
+                      />
+                      <div
                         className="absolute inset-0 m-auto w-8 h-8 rounded-full bg-brand-accent/80"
                         style={{
                           transform: `scale(${1 + (vaultPulse.bass * 0.4) + (vaultPulse.energy * 0.12)})`,
@@ -4546,24 +4572,18 @@ function App() {
                   </div>
 
                   <div className="grid grid-cols-8 gap-1 items-end h-16 mb-4">
-                    {[
-                      10 + (vaultPulse.bass * 42),
-                      12 + (vaultPulse.mids * 30),
-                      14 + (vaultPulse.highs * 36),
-                      18 + (vaultPulse.energy * 48),
-                      12 + (vaultPulse.bass * 28),
-                      24 + (vaultPulse.energy * 54),
-                      16 + (vaultPulse.mids * 34),
-                      18 + (vaultPulse.highs * 40),
-                    ].map((h, idx) => (
-                      <motion.div
-                        key={idx}
-                        animate={{ height: [h * 0.55, h, h * 0.7, h * 0.95] }}
-                        transition={{ duration: 0.9 + idx * 0.08, repeat: Infinity, repeatType: 'mirror', ease: 'easeInOut' }}
-                        className="rounded-md bg-brand-accent/70"
-                        style={{ opacity: 0.55 + vaultPulse.energy * 0.4 }}
-                      />
-                    ))}
+                    {vaultSpectrum.map((bin, idx) => {
+                      const h = 8 + (bin * 54);
+                      return (
+                        <motion.div
+                          key={idx}
+                          animate={{ height: h }}
+                          transition={{ duration: 0.12, ease: 'easeOut' }}
+                          className="rounded-md bg-brand-accent/75"
+                          style={{ opacity: 0.45 + (bin * 0.5) + (vaultPulse.energy * 0.2) }}
+                        />
+                      );
+                    })}
                   </div>
 
                   <div className="text-center">

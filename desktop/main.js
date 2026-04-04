@@ -1299,6 +1299,11 @@ app.whenReady().then(async () => {
     }
 
     // --- UNIVERSAL MEDIA BRIDGE (V7.1.0) ---
+    const failedShortcuts = [];
+    let registeredShortcutCount = 0;
+    const isMac = process.platform === 'darwin';
+    const isLikelySystemMediaKey = (keys) => /^Media|^Volume/.test(String(keys || ''));
+
     const registerShortcut = (keys, command) => {
         try {
             const ok = globalShortcut.register(keys, () => {
@@ -1307,9 +1312,17 @@ app.whenReady().then(async () => {
                 }
             });
             if (!ok) {
-                console.warn(`[Aether/Shortcuts] Failed to register ${keys} -> ${command}`);
+                failedShortcuts.push({ keys, command });
+                if (isMac && isLikelySystemMediaKey(keys)) {
+                    console.log(`[Aether/Shortcuts] Media key unavailable (likely owned by macOS): ${keys} -> ${command}`);
+                } else {
+                    console.warn(`[Aether/Shortcuts] Failed to register ${keys} -> ${command}`);
+                }
+            } else {
+                registeredShortcutCount += 1;
             }
         } catch (e) {
+            failedShortcuts.push({ keys, command });
             console.warn(`[Aether/Shortcuts] Error registering ${keys}: ${e.message}`);
         }
     };
@@ -1337,6 +1350,16 @@ app.whenReady().then(async () => {
     registerShortcut('F10', 'mute');
     registerShortcut('F11', 'volume-down');
     registerShortcut('F12', 'volume-up');
+
+    if (failedShortcuts.length > 0) {
+        const failedKeys = failedShortcuts.map(item => item.keys).join(', ');
+        console.log(`[Aether/Shortcuts] Registered ${registeredShortcutCount} shortcut(s). Failed ${failedShortcuts.length}: ${failedKeys}`);
+        if (isMac) {
+            console.log('[Aether/Shortcuts] Tip: macOS may reserve media keys. Use fallback chords: Ctrl/Cmd+Alt+Space/Left/Right/Up/Down/M.');
+        }
+    } else {
+        console.log(`[Aether/Shortcuts] Registered ${registeredShortcutCount} shortcut(s).`);
+    }
 
     // --- NEURAL WATCHER (V6.9.0) ---
     const musicDir = process.env.LOCAL_MUSIC_PATH || path.join(app.getPath('music'), 'Aether Studio');
@@ -1905,4 +1928,10 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('will-quit', () => {
+    try {
+        globalShortcut.unregisterAll();
+    } catch {}
 });
