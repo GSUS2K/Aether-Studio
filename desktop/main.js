@@ -43,6 +43,9 @@ const decodeHtmlEntities = (value) => String(value || '')
     .replace(/&#x2F;/g, '/');
 
 const APP_LOCK_STORE_KEY = 'appLock';
+const SESSION_PLAYBACK_STORE_KEY = 'aether.sessionPlayback.v1';
+let isAppQuitting = false;
+const activeStreamProcesses = new Set();
 const getLockRecord = () => store.get(APP_LOCK_STORE_KEY) || null;
 const canPromptTouchId = () => {
     try {
@@ -950,9 +953,9 @@ streamApp.get('/stream', async (req, res) => {
         }
     };
     
-    if (seekTime > 0) {
-        args.push('--download-sections', `*${seekTime}-inf`);
-    }
+    // IMPORTANT: avoid server-side section slicing for live stdout streaming.
+    // It can create unstable decode/buffer loops on app resume. Seeking is
+    // handled client-side only when the media element reports seekable ranges.
 
     if (ffmpegPath) {
         args.push('--ffmpeg-location', ffmpegPath);
@@ -963,6 +966,7 @@ streamApp.get('/stream', async (req, res) => {
     }
 
     const proc = spawn(ytdlpPath, args);
+    activeStreamProcesses.add(proc);
 
     proc.stdout.on('data', () => {
         if (!firstChunkTime) {
@@ -972,6 +976,7 @@ streamApp.get('/stream', async (req, res) => {
     });
 
     proc.on('error', (err) => {
+        activeStreamProcesses.delete(proc);
         fs.appendFileSync(path.join(app.getPath('desktop'), 'AetherDebug.log'), `\n[Stream Spawn Fault]\nytdlpPath: ${ytdlpPath}\nerr: ${err.message}\nstack: ${err.stack}\n`);
         console.error(`[Aether] Engine launch error: ${err.message}`);
         if (!res.headersSent) res.status(500).send(`Neural Engine failed: ${err.message}`);
@@ -998,6 +1003,7 @@ streamApp.get('/stream', async (req, res) => {
     });
 
     proc.on('close', (code) => {
+        activeStreamProcesses.delete(proc);
         const streamTotal = Date.now() - startTime;
         const ytdlpTotal = Date.now() - ytdlpStart;
         const remuxDur = remuxStart ? Date.now() - remuxStart : null;
@@ -1007,6 +1013,7 @@ streamApp.get('/stream', async (req, res) => {
 
     req.on('close', () => {
         console.log(`[Aether] Stream request closed for ${trackId} after ${Date.now() - startTime}ms`);
+        activeStreamProcesses.delete(proc);
         proc.kill('SIGKILL');
     });
 });
@@ -1604,7 +1611,12 @@ app.whenReady().then(async () => {
     });
 
     ipcMain.handle('aether:store-get', (event, key) => store.get(key));
-    ipcMain.handle('aether:store-set', (event, key, val) => store.set(key, val));
+    ipcMain.handle('aether:store-set', (event, key, val) => {
+        // During shutdown, ignore playback session rewrites and keep queue cleared.
+        if (isAppQuitting && key === SESSION_PLAYBACK_STORE_KEY) return true;
+        store.set(key, val);
+        return true;
+    });
     ipcMain.handle('aether:get-port', () => actualPort);
 
     ipcMain.handle('aether:lock-status', () => {
@@ -2231,13 +2243,52 @@ app.whenReady().then(async () => {
         } catch (err) { return []; }
     });
 
+  // Store previous CPU usage for percentage calculation
+  let prevCpuUsage = process.cpuUsage();
+  let prevTime = Date.now();
+
   ipcMain.handle('aether:stats', async () => {
-    const memUsage = process.memoryUsage();
-    const cpuUsage = process.cpuUsage();
-    return {
-      appMem: Math.round(memUsage.heapUsed / 1024 / 1024),
-      appCpu: ((cpuUsage.user + cpuUsage.system) / 1000000).toFixed(1)
-    };
+    try {
+      const memUsage = process.memoryUsage();
+      const cpuUsage = process.cpuUsage();
+      const now = Date.now();
+      
+      // Total app memory: Node backend + Chromium renderer (MB)
+      let totalMem = Math.round(memUsage.heapUsed / 1024 / 1024);
+      try {
+        if (mainWindow && mainWindow.webContents) {
+          const rendererInfo = mainWindow.webContents.getProcessMemoryInfo();
+          const rendererMem = Math.round((rendererInfo.workingSetSize || 0) / 1024 / 1024);
+          totalMem += rendererMem;
+        }
+      } catch (e) {
+        // Fallback silently if renderer info unavailable
+      }
+      
+      // App CPU percentage (main process + renderer estimate)
+      const userDiff = cpuUsage.user - prevCpuUsage.user;
+      const systemDiff = cpuUsage.system - prevCpuUsage.system;
+      const timeDiff = (now - prevTime) * 1000; // convert ms to microseconds
+      
+      let cpuPercent = 0;
+      if (timeDiff > 0) {
+        cpuPercent = Math.min(100, Math.round(((userDiff + systemDiff) / timeDiff) * 100));
+      }
+      
+      prevCpuUsage = cpuUsage;
+      prevTime = now;
+      
+      return {
+        appMem: totalMem,    // Total MB used by Aether
+        appCpu: cpuPercent   // Percentage of CPU (0-100)
+      };
+    } catch (err) {
+      console.warn('[Aether/Stats] Error calculating stats', err);
+      return {
+        appMem: 0,
+        appCpu: 0
+      };
+    }
   });
 
   ipcMain.handle('aether:get-local-ip', () => {
@@ -2260,6 +2311,33 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('before-quit', () => {
+    isAppQuitting = true;
+
+    // Clear in-memory queues so no playback state survives process teardown.
+    try {
+        studioQueues.clear();
+    } catch {}
+
+    // Clear persisted playback session queue/time so reopen starts clean.
+    try {
+        store.delete(SESSION_PLAYBACK_STORE_KEY);
+    } catch {}
+
+    // Clear transient cache files (keeps downloaded library intact).
+    try {
+        keepDownloadedOnlyCleanup();
+    } catch {}
+
+    // Hard-stop active stream workers to avoid stale pipes on next launch.
+    try {
+        for (const proc of activeStreamProcesses) {
+            try { proc.kill('SIGKILL'); } catch {}
+        }
+        activeStreamProcesses.clear();
+    } catch {}
 });
 
 app.on('will-quit', () => {

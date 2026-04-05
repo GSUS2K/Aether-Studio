@@ -320,7 +320,7 @@ function App() {
   const vaultTelemetryRef = useRef({ lastStateAt: 0 });
   const prevTrackRef = useRef(null); // Neural Memory Ref (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN
   const standaloneTrackLoadKeyRef = useRef('');
-  const bufferingRescueRef = useRef({ trackKey: '', lastAttemptAt: 0 });
+  const bufferingRescueRef = useRef({ trackKey: '', lastAttemptAt: 0, attempts: 0 });
   const skipReasonTimeoutRef = useRef(null);
   const libraryOverlayCreateInputRef = useRef(null);
   const lastWindowModeChangeRef = useRef(0);
@@ -1101,6 +1101,7 @@ function App() {
         const savedPlayback = await window.aether?.store?.get(SESSION_PLAYBACK_STORAGE_KEY);
         if (savedPlayback && typeof savedPlayback === 'object') {
           let restoredQueueCount = 0;
+          let restoredWasPlaying = false;
           if (Array.isArray(savedPlayback.queue) && savedPlayback.queue.length > 0) {
             const normalizedQueue = savedPlayback.queue.map((track) => normalizeQueueTrack(track)).filter(Boolean);
             setQueue(normalizedQueue);
@@ -1109,7 +1110,10 @@ function App() {
           }
           if (typeof savedPlayback.isPlaying === 'boolean') {
             console.log(`[Aether/Session] Restored isPlaying: ${savedPlayback.isPlaying}`);
-            setIsPlaying(savedPlayback.isPlaying);
+            restoredWasPlaying = savedPlayback.isPlaying;
+            // Hardening: after cold restart, resume in a paused state to avoid rapid
+            // play/buffer loops from stale stream/session state.
+            setIsPlaying(false);
           }
           if (typeof savedPlayback.currentTime === 'number' && savedPlayback.currentTime > 0) {
             const restoredMs = Math.max(0, Math.floor(savedPlayback.currentTime));
@@ -1118,7 +1122,11 @@ function App() {
           }
 
           if (restoredQueueCount > 0) {
-            setSessionRestoreNotice(`Restored session • ${restoredQueueCount} track${restoredQueueCount > 1 ? 's' : ''}`);
+            setSessionRestoreNotice(
+              restoredWasPlaying
+                ? `Restored session paused • ${restoredQueueCount} track${restoredQueueCount > 1 ? 's' : ''}`
+                : `Restored session • ${restoredQueueCount} track${restoredQueueCount > 1 ? 's' : ''}`
+            );
             setTimeout(() => setSessionRestoreNotice(''), 3500);
           }
         }
@@ -1216,7 +1224,8 @@ function App() {
     const track = queue[0];
     const loadStartTime = Date.now();
     const trackUrl = track.actualUrl || track.url;
-    const trackLoadKey = track.id || track.youtubeId || `${track.title || ''}|${track.author || ''}|${trackUrl || ''}`;
+    const baseTrackLoadKey = track.id || track.youtubeId || `${track.title || ''}|${track.author || ''}|${trackUrl || ''}`;
+    const trackLoadKey = `${baseTrackLoadKey}|p:${streamPort}`;
 
     console.log("[Aether/Audio] Queue head details", {
       id: track.id,
@@ -1242,7 +1251,7 @@ function App() {
     if (track && standaloneTrackLoadKeyRef.current !== trackLoadKey) {
       standaloneTrackLoadKeyRef.current = trackLoadKey;
         setCurrentTrackTitle(track.title);
-        setIsAudioBuffering(true);
+        setIsAudioBuffering(!!isPlaying);
         
         if (!localAudioRef.current) {
             localAudioRef.current = new Audio();
@@ -1278,15 +1287,36 @@ function App() {
             // Apply pending resume time only once per track
             if (pendingResumeTime && pendingResumeTime > 0) {
               const resumeSec = Math.floor(pendingResumeTime / 1000);
-              console.log(`[Aether/Audio] Seeking to ${resumeSec}s from pending resume time`);
-              localAudioRef.current.currentTime = resumeSec;
-              setCurrentTime(resumeSec * 1000);
-              setPendingResumeTime(null); // Clear after applying
+              let canSeek = !!isLocalDownloaded;
+              if (!canSeek) {
+                try {
+                  const seekable = localAudioRef.current?.seekable;
+                  canSeek = !!(seekable && seekable.length > 0 && seekable.end(seekable.length - 1) >= Math.max(0, resumeSec - 1));
+                } catch {
+                  canSeek = false;
+                }
+              }
+
+              if (canSeek) {
+                console.log(`[Aether/Audio] Seeking to ${resumeSec}s from pending resume time`);
+                localAudioRef.current.currentTime = resumeSec;
+                setCurrentTime(resumeSec * 1000);
+              } else {
+                console.warn('[Aether/Audio] Resume seek skipped (stream not seekable yet)', {
+                  trackId: track.id,
+                  title: track.title,
+                  resumeSec,
+                });
+                setCurrentTime(0);
+              }
+              setPendingResumeTime(null); // Clear after first canplay gate
             }
         };
         localAudioRef.current.onplaying = () => {
             console.log(`[Aether/Audio] playing after ${Date.now() - loadStartTime}ms`);
+            if (localAudioRef.current) localAudioRef.current.muted = false;
             setIsAudioBuffering(false);
+            bufferingRescueRef.current = { trackKey: trackLoadKey, lastAttemptAt: 0, attempts: 0 };
             setDiagnostics(prev => ({
               ...prev,
               lastSongFetchMs: Math.max(0, Date.now() - loadStartTime),
@@ -1295,19 +1325,13 @@ function App() {
             }));
         };
         localAudioRef.current.onwaiting = () => {
-            console.log(`[Aether/Audio] waiting at ${Date.now() - loadStartTime}ms`);
-            if (isPlaying) setIsAudioBuffering(true);
-        };
-        localAudioRef.current.onstalled = () => {
-            console.log(`[Aether/Audio] stalled at ${Date.now() - loadStartTime}ms`);
-            if (isPlaying) setIsAudioBuffering(true);
-        };
-        localAudioRef.current.onwaiting = () => {
             console.log("[Aether/Audio] Buffer Underrun. Visuals paused.");
-            if (isPlaying) setIsAudioBuffering(true);
+          if (localAudioRef.current) localAudioRef.current.muted = true;
+          if (isPlaying) setIsAudioBuffering(true);
         };
         localAudioRef.current.onstalled = () => {
             console.log("[Aether/Audio] Connection Stalled. Maintaining status.");
+          if (localAudioRef.current) localAudioRef.current.muted = true;
             if (isPlaying) {
               setIsAudioBuffering(true);
               fallbackToOnlineStream();
@@ -1332,8 +1356,7 @@ function App() {
                   ? `https://www.youtube.com/watch?v=${track.youtubeId}`
                   : track.actualUrl || track.url;
                 const streamBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
-                const resumeSec = Math.max(0, Math.floor((playedMs - 1500) / 1000));
-                const recoveryUrl = `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}${resumeSec > 0 ? `&time=${resumeSec}` : ''}`;
+                const recoveryUrl = `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&_r=${Date.now()}`;
                 console.warn('[Aether/Audio] Premature end detected, attempting one recovery play', {
                   title: track.title,
                   playedMs,
@@ -1363,6 +1386,7 @@ function App() {
           });
             console.log("[Aether/Audio] Attempting signal recovery. Skip suppressed.");
             // Maintain buffering state instead of skipping to Standby
+            if (localAudioRef.current) localAudioRef.current.muted = true;
             if (isPlaying) {
               setIsAudioBuffering(true);
               fallbackToOnlineStream();
@@ -1423,6 +1447,8 @@ function App() {
             });
                 setIsAudioBuffering(true);
             });
+        } else {
+          setIsAudioBuffering(false);
         }
         const clearWatchdog = () => clearTimeout(startupWatchdog);
         localAudioRef.current.onplaying = ((orig) => (...args) => {
@@ -1447,27 +1473,49 @@ function App() {
       if (!audio || !isAudioBuffering) return;
 
       const now = Date.now();
-      if (bufferingRescueRef.current.trackKey === trackKey && now - bufferingRescueRef.current.lastAttemptAt < 7000) {
+      const sameTrack = bufferingRescueRef.current.trackKey === trackKey;
+      const attempts = sameTrack ? (bufferingRescueRef.current.attempts || 0) : 0;
+      const lastAttemptAt = sameTrack ? (bufferingRescueRef.current.lastAttemptAt || 0) : 0;
+
+      // Backoff + cap to avoid infinite thrash while still giving enough chances to recover.
+      if (attempts >= 3) {
+        console.warn('[Aether/Audio] Buffering rescue exhausted; pausing playback to prevent screech loop', {
+          trackId: currentTrack.id,
+          title: currentTrack.title,
+          attempts,
+        });
+        audio.pause();
+        setIsPlaying(false);
+        setIsAudioBuffering(false);
+        if (audio) audio.muted = false;
         return;
       }
-      bufferingRescueRef.current = { trackKey, lastAttemptAt: now };
+      if (lastAttemptAt > 0 && now - lastAttemptAt < 6000) {
+        return;
+      }
+
+      bufferingRescueRef.current = { trackKey, lastAttemptAt: now, attempts: attempts + 1 };
 
       const sourceUrl = currentTrack.youtubeId
         ? `https://www.youtube.com/watch?v=${currentTrack.youtubeId}`
         : currentTrack.actualUrl || currentTrack.url;
       if (!sourceUrl) return;
 
-      const rescueUrl = `http://localhost:${streamPort}/stream?url=${encodeURIComponent(sourceUrl)}`;
+      const rescueUrl = `http://localhost:${streamPort}/stream?url=${encodeURIComponent(sourceUrl)}&_r=${Date.now()}`;
       console.warn('[Aether/Audio] Buffering rescue triggered', {
         trackId: currentTrack.id,
         title: currentTrack.title,
         from: audio.src,
         to: rescueUrl,
+        attempt: attempts + 1,
         readyState: audio.readyState,
         currentTime: audio.currentTime,
       });
 
+      audio.muted = true;
+      audio.pause();
       audio.src = rescueUrl;
+      audio.load();
       audio.play().catch((e) => {
         console.error('[Aether/Audio] Buffering rescue failed; keeping current track in buffering state', e);
       });
@@ -1555,6 +1603,7 @@ function App() {
        if (audioCtxRef.current?.state === 'suspended') audioCtxRef.current.resume();
     } else {
        localAudioRef.current.pause();
+       setIsAudioBuffering(false);
        if (audioCtxRef.current?.state === 'running') {
         audioCtxRef.current.suspend().catch(() => {});
        }
@@ -1589,34 +1638,37 @@ function App() {
     };
 
     const runVisualizer = () => {
-      if (!analyserRef.current) return;
+      if (!analyserRef.current || !auraEnergyRef.current) return;
       const bufferLength = analyserRef.current.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
       
       const draw = () => {
-        animationFrameRef.current = requestAnimationFrame(draw);
-        
-        const canvas = visualizerCanvasRef.current;
-        const pulseCanvas = pulseCanvasRef.current;
-        if (!canvas && !pulseCanvas) return;
+        try {
+          animationFrameRef.current = requestAnimationFrame(draw);
+          
+          const canvas = visualizerCanvasRef.current;
+          const pulseCanvas = pulseCanvasRef.current;
+          if (!canvas && !pulseCanvas) return;
 
-        const ctx = canvas?.getContext('2d');
-        const pCtx = pulseCanvas?.getContext('2d');
-        
-        const width = canvas?.width || 800;
-        const height = canvas?.height || 40;
-        const pWidth = pulseCanvas?.width || 800;
-        const pHeight = pulseCanvas?.height || 400;
+          const ctx = canvas?.getContext('2d');
+          const pCtx = pulseCanvas?.getContext('2d');
+          
+          const width = canvas?.width || 800;
+          const height = canvas?.height || 40;
+          const pWidth = pulseCanvas?.width || 800;
+          const pHeight = pulseCanvas?.height || 400;
 
         if (ctx) ctx.clearRect(0, 0, width, height);
         if (pCtx) pCtx.clearRect(0, 0, pWidth, pHeight);
 
+        if (!analyserRef.current) return;
         analyserRef.current.getByteFrequencyData(dataArray);
 
         const bassRaw = (dataArray[1] + dataArray[2] + dataArray[3]) / (3 * 255);
         const midsRaw = dataArray.slice(8, 28).reduce((a, b) => a + b, 0) / (20 * 255);
         const highsRaw = dataArray.slice(30, 70).reduce((a, b) => a + b, 0) / (40 * 255);
 
+        if (!auraEnergyRef.current) return;
         auraEnergyRef.current.bass = lerp(auraEnergyRef.current.bass, bassRaw, 0.22);
         auraEnergyRef.current.mids = lerp(auraEnergyRef.current.mids, midsRaw, 0.18);
         auraEnergyRef.current.highs = lerp(auraEnergyRef.current.highs, highsRaw, 0.14);
@@ -1648,7 +1700,7 @@ function App() {
           document.documentElement.style.setProperty('--aura-edge-glow', String(bass * 0.6 + mids * 0.4));
 
           // AURA MODE: Trigger beat rings on kick peaks (bass spikes)
-          if (bass > 0.7 && performance.now() - lastBeatRingTimeRef.current > 150) {
+          if (lastBeatRingTimeRef.current !== undefined && bass > 0.7 && performance.now() - lastBeatRingTimeRef.current > 150) {
             lastBeatRingTimeRef.current = performance.now();
             if (beatRingsRef.current) {
               const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -1796,6 +1848,10 @@ function App() {
             pCtx.lineTo(x2, y2);
             pCtx.stroke();
           }
+        }
+        } catch (e) {
+          console.error('[Aether/Visualizer] Frame error (likely post-restart):', e.message);
+          // Silently continue - visualizer will recover on next frame
         }
       };
       
@@ -3383,7 +3439,7 @@ function App() {
       isStandalone,
     });
 
-    bufferingRescueRef.current = { trackKey: '', lastAttemptAt: 0 };
+    bufferingRescueRef.current = { trackKey: '', lastAttemptAt: 0, attempts: 0 };
     standaloneTrackLoadKeyRef.current = '';
 
     audio.pause();
@@ -3391,8 +3447,8 @@ function App() {
     audio.load();
 
     const nextSrc = isStandalone
-      ? `http://localhost:${streamPort}/stream?url=${encodeURIComponent(sourceUrl)}&time=${Math.floor(resumeAt)}`
-      : `${API_BASE}/stream?url=${encodeURIComponent(sourceUrl)}&time=${Math.floor(resumeAt)}`;
+      ? `http://localhost:${streamPort}/stream?url=${encodeURIComponent(sourceUrl)}&_r=${Date.now()}`
+      : `${API_BASE}/stream?url=${encodeURIComponent(sourceUrl)}&_r=${Date.now()}`;
 
     audio.src = nextSrc;
     audio.currentTime = 0;
