@@ -3,7 +3,7 @@ import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Glob
 import { motion, AnimatePresence } from 'framer-motion';
 import { setupDiscordSdk } from './discord';
 import axios from 'axios';
-import { BUILD_VERSION } from './buildVersion';
+import { BUILD_VERSION, UX_VERSION } from './buildVersion';
 import catDoodlePeek from './assets/cat-doodle-peek.svg';
 import './App.css';
 
@@ -27,7 +27,6 @@ const getApiBase = () => {
 };
 const API_BASE = getApiBase();
 const DEFAULT_GUILD_ID = 'local_studio';
-const UX_VERSION = 'V1';
 const LYRIC_PRESETS_STORAGE_KEY = 'aether.lyricOffsetPresets.v1';
 const SESSION_UI_STORAGE_KEY = 'aether.sessionUi.v1';
 const SESSION_PLAYBACK_STORAGE_KEY = 'aether.sessionPlayback.v1';
@@ -5218,7 +5217,7 @@ function App() {
           <div className={`flex flex-col gap-4 min-w-0 ${isVerticalStack ? '!w-full !max-w-full !flex-none pb-20' : 'w-[33.333%] h-full overflow-hidden flex-none'}`}>
             {/* QUEUE */}
             <div
-              className={`${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col overflow-hidden transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}
+              className={`${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col ${isAutoplayMenuOpen ? 'overflow-visible z-[340]' : 'overflow-hidden'} transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}
               style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
             >
             <div className={`p-3 border-b border-white/5 flex items-center justify-between ${panelHeaderClass}`}>

@@ -1,10 +1,28 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { execSync } from 'node:child_process'
+import path from 'node:path'
+
+const getCommitCount = () => {
+  try {
+    const repoRoot = path.resolve(__dirname, '..')
+    const raw = execSync('git rev-list --count HEAD', { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim()
+    const count = Number.parseInt(raw, 10)
+    return Number.isFinite(count) && count > 0 ? String(count) : '1'
+  } catch {
+    return '1'
+  }
+}
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  define: {
+    'import.meta.env.VITE_COMMIT_COUNT': JSON.stringify(getCommitCount()),
+  },
   base: './', // Root-relative assets for Discord Activities
   server: {
     host: '0.0.0.0', // Allow any host for VM access
