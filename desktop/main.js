@@ -46,6 +46,118 @@ const decodeHtmlEntities = (value) => String(value || '')
 
 const APP_LOCK_STORE_KEY = 'appLock';
 const SESSION_PLAYBACK_STORE_KEY = 'aether.sessionPlayback.v1';
+let autoUpdater = null;
+const updateState = {
+    enabled: false,
+    status: 'idle',
+    message: '',
+    available: false,
+    downloaded: false,
+    version: null,
+    progress: 0,
+    checkedAt: null,
+};
+
+const emitUpdateState = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    try {
+        mainWindow.webContents.send('aether:update-status', { ...updateState });
+    } catch {}
+};
+
+const setUpdateState = (patch = {}) => {
+    Object.assign(updateState, patch);
+    emitUpdateState();
+};
+
+const initAutoUpdater = () => {
+    if (!app.isPackaged) {
+        setUpdateState({ enabled: false, status: 'unsupported', message: 'Updates are available in packaged builds only.' });
+        return;
+    }
+
+    try {
+        ({ autoUpdater } = require('electron-updater'));
+    } catch (e) {
+        setUpdateState({ enabled: false, status: 'unsupported', message: 'Updater module unavailable.' });
+        logDebug('autoUpdater unavailable', { error: e?.message || String(e) });
+        return;
+    }
+
+    if (!autoUpdater) {
+        setUpdateState({ enabled: false, status: 'unsupported', message: 'Updater not initialized.' });
+        return;
+    }
+
+    autoUpdater.autoDownload = false;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.allowPrerelease = false;
+    autoUpdater.allowDowngrade = false;
+
+    setUpdateState({ enabled: true, status: 'idle', message: 'Updater ready.' });
+
+    autoUpdater.on('checking-for-update', () => {
+        setUpdateState({ status: 'checking', message: 'Checking for updates…', checkedAt: Date.now(), progress: 0 });
+    });
+
+    autoUpdater.on('update-available', (info) => {
+        setUpdateState({
+            status: 'available',
+            message: 'Update available.',
+            available: true,
+            downloaded: false,
+            version: info?.version || null,
+            progress: 0,
+            checkedAt: Date.now(),
+        });
+    });
+
+    autoUpdater.on('update-not-available', () => {
+        setUpdateState({
+            status: 'up-to-date',
+            message: 'You are on the latest version.',
+            available: false,
+            downloaded: false,
+            version: null,
+            progress: 0,
+            checkedAt: Date.now(),
+        });
+    });
+
+    autoUpdater.on('download-progress', (progress) => {
+        setUpdateState({
+            status: 'downloading',
+            message: 'Downloading update…',
+            progress: Number.isFinite(progress?.percent) ? Math.max(0, Math.min(100, progress.percent)) : 0,
+        });
+    });
+
+    autoUpdater.on('update-downloaded', (info) => {
+        setUpdateState({
+            status: 'downloaded',
+            message: 'Update ready. Restart to install.',
+            available: true,
+            downloaded: true,
+            version: info?.version || updateState.version || null,
+            progress: 100,
+        });
+    });
+
+    autoUpdater.on('error', (err) => {
+        const msg = err?.message || 'Update check failed.';
+        setUpdateState({ status: 'error', message: msg });
+        logDebug('autoUpdater error', { error: msg });
+    });
+
+    setTimeout(() => {
+        autoUpdater.checkForUpdates().catch((e) => {
+            const msg = e?.message || 'Initial update check failed.';
+            setUpdateState({ status: 'error', message: msg });
+            logDebug('initial autoUpdater check failed', { error: msg });
+        });
+    }, 12000);
+};
+
 let isAppQuitting = false;
 let quitCleanupInProgress = false;
 let quitCleanupCompleted = false;
@@ -1619,6 +1731,7 @@ function createWindow() {
 app.whenReady().then(async () => {
     await initRPC();
     createWindow();
+    initAutoUpdater();
     ensureYtDlpPath().catch(() => {});
 
     try {
@@ -1719,6 +1832,58 @@ app.whenReady().then(async () => {
         return true;
     });
     ipcMain.handle('aether:get-port', () => actualPort);
+
+    ipcMain.handle('aether:update-get-status', () => ({ ...updateState }));
+
+    ipcMain.handle('aether:update-check', async () => {
+        if (!autoUpdater || !updateState.enabled) {
+            return { success: false, error: 'Updater unavailable in this build.', state: { ...updateState } };
+        }
+        try {
+            await autoUpdater.checkForUpdates();
+            return { success: true, state: { ...updateState } };
+        } catch (e) {
+            const msg = e?.message || 'Update check failed.';
+            setUpdateState({ status: 'error', message: msg });
+            return { success: false, error: msg, state: { ...updateState } };
+        }
+    });
+
+    ipcMain.handle('aether:update-download', async () => {
+        if (!autoUpdater || !updateState.enabled) {
+            return { success: false, error: 'Updater unavailable in this build.', state: { ...updateState } };
+        }
+        if (!updateState.available) {
+            return { success: false, error: 'No available update to download.', state: { ...updateState } };
+        }
+        try {
+            await autoUpdater.downloadUpdate();
+            return { success: true, state: { ...updateState } };
+        } catch (e) {
+            const msg = e?.message || 'Update download failed.';
+            setUpdateState({ status: 'error', message: msg });
+            return { success: false, error: msg, state: { ...updateState } };
+        }
+    });
+
+    ipcMain.handle('aether:update-quit-and-install', async () => {
+        if (!autoUpdater || !updateState.enabled) {
+            return { success: false, error: 'Updater unavailable in this build.' };
+        }
+        if (!updateState.downloaded) {
+            return { success: false, error: 'No downloaded update ready to install.' };
+        }
+        try {
+            setTimeout(() => {
+                try {
+                    autoUpdater.quitAndInstall(false, true);
+                } catch {}
+            }, 60);
+            return { success: true };
+        } catch (e) {
+            return { success: false, error: e?.message || 'Failed to restart for update.' };
+        }
+    });
 
     ipcMain.handle('aether:lock-status', () => {
         const record = getLockRecord();

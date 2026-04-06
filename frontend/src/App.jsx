@@ -428,6 +428,9 @@ function App() {
   const [spotifyImportProgress, setSpotifyImportProgress] = useState({ stage: 'idle', progress: 0, message: '' });
   const [isSpotifyImporting, setIsSpotifyImporting] = useState(false);
   const [spotifyImportLogs, setSpotifyImportLogs] = useState([]);
+  const [updateInfo, setUpdateInfo] = useState({ enabled: false, status: 'idle', message: '', available: false, downloaded: false, version: null, progress: 0 });
+  const [isUpdateBusy, setIsUpdateBusy] = useState(false);
+  const [updateToast, setUpdateToast] = useState('');
   const [isVaultCleaning, setIsVaultCleaning] = useState(false);
   const [isWarmupUnavailable, setIsWarmupUnavailable] = useState(false);
   const [isOfflineRemovalBusy, setIsOfflineRemovalBusy] = useState(false);
@@ -484,6 +487,8 @@ function App() {
   const standaloneTrackLoadKeyRef = useRef('');
   const bufferingRescueRef = useRef({ trackKey: '', lastAttemptAt: 0, attempts: 0 });
   const skipReasonTimeoutRef = useRef(null);
+  const updateToastTimeoutRef = useRef(null);
+  const prevUpdateStatusRef = useRef('idle');
   const libraryOverlayCreateInputRef = useRef(null);
   const lastWindowModeChangeRef = useRef(0);
   const prematureEndGuardRef = useRef({ trackId: null, retried: false });
@@ -507,8 +512,81 @@ function App() {
   const canAddPendingToVault = pendingLibraryItems.length > 0;
   const canOpenCurrentSource = Boolean(isStandalone && currentTrackSourceUrl);
   const canDownloadCurrentTrack = Boolean(isStandalone && window.aether?.exportAudioToFile && currentTrackSourceUrl);
+  const canUseUpdater = Boolean(isStandalone && window.aether?.getUpdateStatus && window.aether?.checkForUpdates && window.aether?.downloadUpdate && window.aether?.quitAndInstallUpdate);
   const isMacPlatform = isStandalone ? window.aether?.platform === 'darwin' : /mac/i.test(navigator?.platform || '');
   const defaultGlobalMediaShortcutsEnabled = isMacPlatform;
+
+  const updateActionLabel = useMemo(() => {
+    if (!canUseUpdater || !updateInfo?.enabled) return 'UPDATE';
+    if (updateInfo.downloaded) return 'RESTART';
+    if (updateInfo.status === 'downloading') return `${Math.round(Number(updateInfo.progress || 0))}%`;
+    if (updateInfo.available) return 'DOWNLOAD';
+    if (updateInfo.status === 'checking') return 'CHECKING';
+    if (updateInfo.status === 'up-to-date') return 'UP-TO-DATE';
+    if (updateInfo.status === 'error') return 'RETRY';
+    return 'CHECK';
+  }, [canUseUpdater, updateInfo]);
+
+  const handleUpdateAction = useCallback(async () => {
+    if (!canUseUpdater || isUpdateBusy) return;
+    setIsUpdateBusy(true);
+    try {
+      if (updateInfo.downloaded) {
+        const res = await window.aether.quitAndInstallUpdate();
+        if (!res?.success) {
+          setLastAdded(`Update restart failed${res?.error ? `: ${String(res.error).slice(0, 46)}` : ''}`);
+          setTimeout(() => setLastAdded(null), 2600);
+        }
+        return;
+      }
+      if (updateInfo.available) {
+        const res = await window.aether.downloadUpdate();
+        if (!res?.success) {
+          setLastAdded(`Update download failed${res?.error ? `: ${String(res.error).slice(0, 46)}` : ''}`);
+          setTimeout(() => setLastAdded(null), 2600);
+        }
+        return;
+      }
+      const res = await window.aether.checkForUpdates();
+      if (!res?.success && res?.error) {
+        setLastAdded(`Update check failed: ${String(res.error).slice(0, 42)}`);
+        setTimeout(() => setLastAdded(null), 2400);
+      }
+    } catch (e) {
+      setLastAdded(`Updater error: ${String(e?.message || e).slice(0, 46)}`);
+      setTimeout(() => setLastAdded(null), 2600);
+    } finally {
+      setIsUpdateBusy(false);
+    }
+  }, [canUseUpdater, isUpdateBusy, updateInfo?.downloaded, updateInfo?.available]);
+
+  useEffect(() => {
+    if (!canUseUpdater || !updateInfo?.enabled) return;
+    const prevStatus = prevUpdateStatusRef.current;
+    const nextStatus = String(updateInfo?.status || 'idle');
+    if (prevStatus === nextStatus) return;
+    prevUpdateStatusRef.current = nextStatus;
+
+    let toast = '';
+    if (nextStatus === 'available') {
+      toast = `Update available${updateInfo?.version ? ` • v${updateInfo.version}` : ''}`;
+    } else if (nextStatus === 'downloaded') {
+      toast = `Update ready${updateInfo?.version ? ` • v${updateInfo.version}` : ''} • restart to install`;
+    } else if (nextStatus === 'error') {
+      toast = `Updater issue${updateInfo?.message ? `: ${String(updateInfo.message).slice(0, 58)}` : ''}`;
+    }
+
+    if (!toast) return;
+    setUpdateToast(toast);
+    if (updateToastTimeoutRef.current) clearTimeout(updateToastTimeoutRef.current);
+    updateToastTimeoutRef.current = setTimeout(() => setUpdateToast(''), nextStatus === 'downloaded' ? 5200 : 3600);
+
+    return () => {
+      if (updateToastTimeoutRef.current) {
+        clearTimeout(updateToastTimeoutRef.current);
+      }
+    };
+  }, [canUseUpdater, updateInfo?.enabled, updateInfo?.status, updateInfo?.version, updateInfo?.message]);
 
   const handleDownloadCurrentTrack = useCallback(async () => {
     if (!canDownloadCurrentTrack || !currentTrack || isDownloadingTrack) {
@@ -1560,6 +1638,24 @@ function App() {
       });
     }
 
+    let unsubscribeUpdateStatus = null;
+    if (window.aether?.getUpdateStatus) {
+      window.aether.getUpdateStatus()
+        .then((state) => {
+          if (state && typeof state === 'object') {
+            setUpdateInfo((prev) => ({ ...prev, ...state }));
+          }
+        })
+        .catch(() => {});
+    }
+    if (window.aether?.onUpdateStatus) {
+      unsubscribeUpdateStatus = window.aether.onUpdateStatus((state) => {
+        if (state && typeof state === 'object') {
+          setUpdateInfo((prev) => ({ ...prev, ...state }));
+        }
+      });
+    }
+
     const handleResize = () => {
       // If window is significantly taller than the standard 800px, assume we want elastic mode
       if (window.innerHeight > 820) setIsMaximized(true);
@@ -1577,6 +1673,7 @@ function App() {
       if (pollInterval) clearInterval(pollInterval); 
       clearInterval(statsInterval); 
       clearInterval(uptimeInterval);
+      if (typeof unsubscribeUpdateStatus === 'function') unsubscribeUpdateStatus();
     };
   }, []);
 
@@ -4476,6 +4573,18 @@ function App() {
                  <Monitor size={16} />
                </button>
 
+               {canUseUpdater && updateInfo?.enabled && (
+                 <button
+                   onClick={handleUpdateAction}
+                   disabled={isUpdateBusy || updateInfo?.status === 'checking' || updateInfo?.status === 'downloading'}
+                   className={`h-10 px-3 rounded-2xl flex items-center gap-2 transition-all border no-drag disabled:opacity-60 disabled:cursor-not-allowed ${updateInfo?.downloaded ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : updateInfo?.available ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
+                   title={updateInfo?.message || 'Check for updates'}
+                 >
+                   <RefreshCw size={14} className={`${updateInfo?.status === 'checking' || updateInfo?.status === 'downloading' ? 'animate-spin' : ''}`} />
+                   <span className="text-[10px] font-black uppercase tracking-widest">{updateActionLabel}</span>
+                 </button>
+               )}
+
                <div className="relative">
                  <button
                    onClick={() => setIsSleepTimerMenuOpen(prev => !prev)}
@@ -5486,6 +5595,18 @@ function App() {
           >
             <Clock size={14} className="text-brand-accent" />
             <span className="text-[10px] uppercase tracking-[0.2em]">{sessionRestoreNotice}</span>
+          </motion.div>
+        )}
+
+        {updateToast && (
+          <motion.div
+            initial={{ opacity: 0, y: -18, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -12, scale: 0.96 }}
+            className="fixed top-32 left-1/2 -translate-x-1/2 px-5 py-2.5 bg-[#06090d]/90 text-brand-accent font-black rounded-2xl border border-brand-accent/30 backdrop-blur-xl z-[210] flex items-center gap-3"
+          >
+            <RefreshCw size={12} className={`${updateInfo?.status === 'downloading' || updateInfo?.status === 'checking' ? 'animate-spin' : ''}`} />
+            <span className="text-[9px] uppercase tracking-[0.18em]">{updateToast}</span>
           </motion.div>
         )}
 

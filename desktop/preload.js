@@ -8,6 +8,15 @@ contextBridge.exposeInMainWorld('aether', {
   getLyrics: (track, artist, duration, query, url) => ipcRenderer.invoke('aether:get-lyrics', { track, artist, duration, query, url }),
   updateRPC: (details) => ipcRenderer.invoke('aether:update-rpc', details),
   getStats: () => ipcRenderer.invoke('aether:stats'),
+  getUpdateStatus: () => ipcRenderer.invoke('aether:update-get-status'),
+  checkForUpdates: () => ipcRenderer.invoke('aether:update-check'),
+  downloadUpdate: () => ipcRenderer.invoke('aether:update-download'),
+  quitAndInstallUpdate: () => ipcRenderer.invoke('aether:update-quit-and-install'),
+  onUpdateStatus: (callback) => {
+    const handler = (event, payload) => callback(payload);
+    ipcRenderer.on('aether:update-status', handler);
+    return () => ipcRenderer.removeListener('aether:update-status', handler);
+  },
   getLockStatus: () => ipcRenderer.invoke('aether:lock-status'),
   setAppLock: (password, useTouchId) => ipcRenderer.invoke('aether:lock-set-password', { password, useTouchId }),
   verifyAppLockPassword: (password) => ipcRenderer.invoke('aether:lock-verify-password', { password }),

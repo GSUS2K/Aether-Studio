@@ -30,11 +30,15 @@ jobs:
           build_cmd: npx electron-builder --win nsis --x64 --publish=never
           artifact_glob: |
             dist/*.exe
+            dist/*.exe.blockmap
+            dist/latest.yml
         - os: ubuntu-latest
           label: linux
           build_cmd: npx electron-builder --linux AppImage --x64 --publish=never
           artifact_glob: |
             dist/*.AppImage
+            dist/*.AppImage.zsync
+            dist/latest-linux.yml
 
     steps:
     - name: Checkout
