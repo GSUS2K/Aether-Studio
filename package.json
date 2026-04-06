@@ -54,10 +54,16 @@
     "mac": {
       "category": "public.app-category.music",
       "target": "dmg",
+      "artifactName": "${productName}-${arch}.${ext}",
       "icon": "icon.png"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "artifactName": "${productName}-Setup-${arch}.${ext}"
+    },
+    "linux": {
+      "target": "AppImage",
+      "artifactName": "${productName}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
