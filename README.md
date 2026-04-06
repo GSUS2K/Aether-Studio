@@ -128,7 +128,22 @@ Builds macOS and Windows installers.
 
 ## Version
 
-Current app version: `12.11.1-SOVEREIGN`
+Current app version: `Utario`
+
+## To Do
+
+- Music real-time transmission instead of download / pre-warm to save storage and data.
+- Make Raspberry Pi 5 as backend server containing songs and transmitting to apps while keeping yt-dlp as backup option if song isn't available.
+- .aether files fix.
+- Ability to add custom music and lyrics.
+- QoL changes.
+- Aura rework.
+- On no lyrics, immersive output change.
+- Add AI maybe.
+- Change doodle mode.
+- Change mini player appearance.
+- Unclutter UI.
+- SQLLite?/PostGresSQL?
 
 ## License
 

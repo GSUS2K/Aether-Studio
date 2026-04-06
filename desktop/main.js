@@ -45,6 +45,9 @@ const decodeHtmlEntities = (value) => String(value || '')
 const APP_LOCK_STORE_KEY = 'appLock';
 const SESSION_PLAYBACK_STORE_KEY = 'aether.sessionPlayback.v1';
 let isAppQuitting = false;
+let quitCleanupInProgress = false;
+let quitCleanupCompleted = false;
+let finalTeardownCompleted = false;
 const activeStreamProcesses = new Set();
 const getLockRecord = () => store.get(APP_LOCK_STORE_KEY) || null;
 const canPromptTouchId = () => {
@@ -667,6 +670,110 @@ const keepDownloadedOnlyCleanup = () => {
         }
     }
     return { removedFiles, removedBytes };
+};
+
+const YOUTUBE_ID_PATTERN = /^[A-Za-z0-9_-]{11}$/;
+
+const extractPossibleYouTubeId = (value) => {
+    if (!value) return null;
+    const text = String(value).trim();
+    if (!text) return null;
+    if (YOUTUBE_ID_PATTERN.test(text)) return text;
+    const match = text.match(/(?:v=|youtu\.be\/|\/shorts\/|\/embed\/|\/v\/)([A-Za-z0-9_-]{11})/i);
+    return match ? match[1] : null;
+};
+
+const collectPinnedDownloadIdsFromPlaylists = () => {
+    const pinned = new Set();
+    const playlists = store.get('playlists');
+    if (!playlists || typeof playlists !== 'object') return pinned;
+
+    for (const tracks of Object.values(playlists)) {
+        if (!Array.isArray(tracks)) continue;
+        for (const track of tracks) {
+            if (!track || typeof track !== 'object') continue;
+
+            const rawId = String(track.id || '').trim();
+            if (rawId) pinned.add(rawId);
+
+            const ytFromId = extractPossibleYouTubeId(rawId);
+            if (ytFromId) pinned.add(ytFromId);
+
+            const ytFromExplicit = extractPossibleYouTubeId(track.youtubeId);
+            if (ytFromExplicit) pinned.add(ytFromExplicit);
+
+            const ytFromUrl = extractPossibleYouTubeId(track.actualUrl || track.url);
+            if (ytFromUrl) pinned.add(ytFromUrl);
+        }
+    }
+
+    return pinned;
+};
+
+const cleanupWarmupDownloadsOnQuit = async () => {
+    try {
+        const downloaded = await offlineEngine.getDownloadedTracks();
+        if (!Array.isArray(downloaded) || downloaded.length === 0) {
+            return { scanned: 0, removed: 0, kept: 0, failed: 0 };
+        }
+
+        const pinned = collectPinnedDownloadIdsFromPlaylists();
+        const warmupOnly = downloaded.filter((id) => YOUTUBE_ID_PATTERN.test(String(id || '').trim()));
+        const candidates = warmupOnly.filter((id) => !pinned.has(id));
+
+        let removed = 0;
+        let failed = 0;
+
+        for (const id of candidates) {
+            try {
+                const result = await offlineEngine.removeDownload(id, { cancelInProgress: true, removeSidecars: true });
+                if (result?.success) removed += 1;
+                else failed += 1;
+            } catch {
+                failed += 1;
+            }
+        }
+
+        return {
+            scanned: warmupOnly.length,
+            removed,
+            kept: Math.max(0, warmupOnly.length - removed - failed),
+            failed,
+        };
+    } catch (e) {
+        console.warn('[Aether/Storage] Quit warmup cleanup failed', e?.message || e);
+        return { scanned: 0, removed: 0, kept: 0, failed: 0, error: e?.message || String(e) };
+    }
+};
+
+const runFinalTeardown = () => {
+    if (finalTeardownCompleted) return;
+    finalTeardownCompleted = true;
+
+    isAppQuitting = true;
+
+    // Clear in-memory queues so no playback state survives process teardown.
+    try {
+        studioQueues.clear();
+    } catch {}
+
+    // Clear persisted playback session queue/time so reopen starts clean.
+    try {
+        store.delete(SESSION_PLAYBACK_STORE_KEY);
+    } catch {}
+
+    // Clear transient cache files (keeps downloaded library intact except warmup-orphan cleanup above).
+    try {
+        keepDownloadedOnlyCleanup();
+    } catch {}
+
+    // Hard-stop active stream workers to avoid stale pipes on next launch.
+    try {
+        for (const proc of activeStreamProcesses) {
+            try { proc.kill('SIGKILL'); } catch {}
+        }
+        activeStreamProcesses.clear();
+    } catch {}
 };
 
 const estimateStorageReclaim = (mode = 'cap', payload = {}) => {
@@ -1481,6 +1588,9 @@ function createWindow() {
     ];
     const menu = Menu.buildFromTemplate(template);
     Menu.setApplicationMenu(menu);
+    } else {
+        // Hide default app menu on non-macOS platforms.
+        Menu.setApplicationMenu(null);
   }
 
   mainWindow.on('maximize', () => {
@@ -1529,6 +1639,9 @@ app.whenReady().then(async () => {
     const failedShortcuts = [];
     let registeredShortcutCount = 0;
     const isMac = process.platform === 'darwin';
+    const GLOBAL_MEDIA_SHORTCUTS_KEY = 'aether.globalMediaShortcuts.enabled';
+    const defaultGlobalMediaShortcutsEnabled = isMac;
+    const globalMediaShortcutsEnabled = Boolean(store.get(GLOBAL_MEDIA_SHORTCUTS_KEY, defaultGlobalMediaShortcutsEnabled));
     const isLikelySystemMediaKey = (keys) => /^Media|^Volume/.test(String(keys || ''));
 
     const registerShortcut = (keys, command) => {
@@ -1554,35 +1667,21 @@ app.whenReady().then(async () => {
         }
     };
 
-    // Standard media keys
-    registerShortcut('MediaPlayPause', 'toggle');
-    registerShortcut('MediaNextTrack', 'skip');
-    registerShortcut('MediaPreviousTrack', 'previous');
-    registerShortcut('VolumeMute', 'mute');
-    registerShortcut('VolumeDown', 'volume-down');
-    registerShortcut('VolumeUp', 'volume-up');
-
-    // Reliable cross-platform fallback chords (when function/media keys are owned by OS)
-    registerShortcut('CommandOrControl+Alt+Space', 'toggle');
-    registerShortcut('CommandOrControl+Alt+Left', 'previous');
-    registerShortcut('CommandOrControl+Alt+Right', 'skip');
-    registerShortcut('CommandOrControl+Alt+Down', 'volume-down');
-    registerShortcut('CommandOrControl+Alt+Up', 'volume-up');
-    registerShortcut('CommandOrControl+Alt+M', 'mute');
-
-    // Optional literal F-keys for keyboards with Fn-lock / media-layer disabled
-    registerShortcut('F7', 'previous');
-    registerShortcut('F8', 'toggle');
-    registerShortcut('F9', 'skip');
-    registerShortcut('F10', 'mute');
-    registerShortcut('F11', 'volume-down');
-    registerShortcut('F12', 'volume-up');
+    if (globalMediaShortcutsEnabled) {
+        // Conservative global shortcuts only: playback media keys.
+        // Avoid volume/F-key/chord grabs that can conflict with OS and other apps.
+        registerShortcut('MediaPlayPause', 'toggle');
+        registerShortcut('MediaNextTrack', 'skip');
+        registerShortcut('MediaPreviousTrack', 'previous');
+    } else {
+        console.log('[Aether/Shortcuts] Global media shortcuts disabled for this platform/profile.');
+    }
 
     if (failedShortcuts.length > 0) {
         const failedKeys = failedShortcuts.map(item => item.keys).join(', ');
         console.log(`[Aether/Shortcuts] Registered ${registeredShortcutCount} shortcut(s). Failed ${failedShortcuts.length}: ${failedKeys}`);
         if (isMac) {
-            console.log('[Aether/Shortcuts] Tip: macOS may reserve media keys. Use fallback chords: Ctrl/Cmd+Alt+Space/Left/Right/Up/Down/M.');
+            console.log('[Aether/Shortcuts] Tip: macOS may reserve media keys for system apps.');
         }
     } else {
         console.log(`[Aether/Shortcuts] Registered ${registeredShortcutCount} shortcut(s).`);
@@ -1684,18 +1783,34 @@ app.whenReady().then(async () => {
 
     ipcMain.handle('aether:window-resize', (event, { width, height, alwaysOnTop }) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
-            if (alwaysOnTop) {
+            const miniMode = !!alwaysOnTop;
+
+            // Normalize window state before changing size constraints.
+            // This avoids stale maximize/fullscreen state causing disabled native controls.
+            if (mainWindow.isFullScreen()) {
+                mainWindow.setFullScreen(false);
+            }
+            if (mainWindow.isMaximized()) {
+                mainWindow.unmaximize();
+            }
+
+            if (miniMode) {
                 mainWindow.setResizable(false);
+                if (typeof mainWindow.setMaximizable === 'function') mainWindow.setMaximizable(false);
+                if (typeof mainWindow.setFullScreenable === 'function') mainWindow.setFullScreenable(false);
                 mainWindow.setMinimumSize(width || 420, height || 190);
                 mainWindow.setMaximumSize(width || 420, height || 190);
             } else {
                 mainWindow.setResizable(true);
+                if (typeof mainWindow.setMaximizable === 'function') mainWindow.setMaximizable(true);
+                if (typeof mainWindow.setFullScreenable === 'function') mainWindow.setFullScreenable(true);
                 mainWindow.setMinimumSize(1000, 700);
-                mainWindow.setMaximumSize(0, 0);
+                // Use a large cap to effectively remove the fixed-size lock from mini mode.
+                mainWindow.setMaximumSize(10000, 10000);
             }
             mainWindow.setSize(width || 1280, height || 800, true);
             mainWindow.center();
-            mainWindow.setAlwaysOnTop(!!alwaysOnTop);
+            mainWindow.setAlwaysOnTop(miniMode);
         }
     });
 
@@ -1870,6 +1985,50 @@ app.whenReady().then(async () => {
 
     ipcMain.handle('aether:get-offline-tracks', async () => {
         return await offlineEngine.getDownloadedTracks();
+    });
+
+    ipcMain.handle('aether:get-offline-downloads', async () => {
+        try {
+            const downloads = await offlineEngine.getDownloadedTrackDetails();
+            return { success: true, downloads };
+        } catch (e) {
+            return { success: false, error: e?.message || 'Failed to list downloaded tracks.', downloads: [] };
+        }
+    });
+
+    ipcMain.handle('aether:remove-offline-track', async (event, { trackId } = {}) => {
+        try {
+            const id = String(trackId || '').trim();
+            if (!id) return { success: false, error: 'Missing trackId' };
+
+            const result = await offlineEngine.removeDownload(id, { cancelInProgress: true, removeSidecars: true });
+            downloadBackoffByTrack.delete(id);
+
+            const downloaded = await offlineEngine.getDownloadedTracks();
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('aether:library-update', downloaded);
+            }
+
+            return { success: !!result?.success, result, downloaded };
+        } catch (e) {
+            return { success: false, error: e?.message || 'Failed to remove offline track.' };
+        }
+    });
+
+    ipcMain.handle('aether:clear-offline-downloads', async () => {
+        try {
+            const result = await offlineEngine.clearAllDownloads({ cancelInProgress: true, removeSidecars: true });
+            downloadBackoffByTrack.clear();
+
+            const downloaded = await offlineEngine.getDownloadedTracks();
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('aether:library-update', downloaded);
+            }
+
+            return { success: !!result?.success, result, downloaded };
+        } catch (e) {
+            return { success: false, error: e?.message || 'Failed to clear offline downloads.' };
+        }
     });
 
     ipcMain.handle('aether:get-storage-stats', async () => {
@@ -2313,31 +2472,34 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+    if (quitCleanupCompleted) {
+        runFinalTeardown();
+        return;
+    }
+
+    event.preventDefault();
+    if (quitCleanupInProgress) return;
+
+    quitCleanupInProgress = true;
     isAppQuitting = true;
 
-    // Clear in-memory queues so no playback state survives process teardown.
-    try {
-        studioQueues.clear();
-    } catch {}
+    (async () => {
+        const summary = await cleanupWarmupDownloadsOnQuit();
+        console.log('[Aether/Storage] Quit warmup cleanup summary', summary);
 
-    // Clear persisted playback session queue/time so reopen starts clean.
-    try {
-        store.delete(SESSION_PLAYBACK_STORE_KEY);
-    } catch {}
+        runFinalTeardown();
 
-    // Clear transient cache files (keeps downloaded library intact).
-    try {
-        keepDownloadedOnlyCleanup();
-    } catch {}
-
-    // Hard-stop active stream workers to avoid stale pipes on next launch.
-    try {
-        for (const proc of activeStreamProcesses) {
-            try { proc.kill('SIGKILL'); } catch {}
-        }
-        activeStreamProcesses.clear();
-    } catch {}
+        quitCleanupCompleted = true;
+        quitCleanupInProgress = false;
+        app.quit();
+    })().catch((e) => {
+        console.warn('[Aether/Storage] Quit cleanup fatal error', e?.message || e);
+        runFinalTeardown();
+        quitCleanupCompleted = true;
+        quitCleanupInProgress = false;
+        app.quit();
+    });
 });
 
 app.on('will-quit', () => {

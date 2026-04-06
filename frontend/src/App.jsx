@@ -1,5 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, Component } from 'react';
-import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, Cpu, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, Shuffle, Timer, Download, Upload, Save, Lock, Fingerprint } from 'lucide-react';
+import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, Cpu, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { setupDiscordSdk } from './discord';
 import axios from 'axios';
@@ -27,13 +27,40 @@ const getApiBase = () => {
 };
 const API_BASE = getApiBase();
 const DEFAULT_GUILD_ID = 'local_studio';
-const UX_VERSION = 'AURA-R3.8';
+const UX_VERSION = 'V1';
 const LYRIC_PRESETS_STORAGE_KEY = 'aether.lyricOffsetPresets.v1';
 const SESSION_UI_STORAGE_KEY = 'aether.sessionUi.v1';
 const SESSION_PLAYBACK_STORAGE_KEY = 'aether.sessionPlayback.v1';
 const PLAYLIST_ORDER_STORAGE_KEY = 'aether.playlistOrder.v1';
 const SKIP_EVENTS_STORAGE_KEY = 'aether.skipEvents.v1';
 const LOCK_PREFS_STORAGE_KEY = 'aether.lockPrefs.v1';
+const SHORTCUTS_STORAGE_KEY = 'aether.shortcuts.v1';
+const GLOBAL_SHORTCUTS_ENABLED_STORAGE_KEY = 'aether.globalMediaShortcuts.enabled';
+const DEFAULT_SHORTCUTS = Object.freeze({
+  playPause: 'Mod+Alt+Space',
+  previous: 'Mod+Alt+ArrowLeft',
+  next: 'Mod+Alt+ArrowRight',
+  volumeUp: 'Mod+Alt+ArrowUp',
+  volumeDown: 'Mod+Alt+ArrowDown',
+  mute: 'Mod+Alt+M',
+  miniPlayer: 'Shift+M',
+  diagnostics: 'D',
+});
+const SHORTCUT_FIELDS = [
+  { id: 'playPause', label: 'Play / Pause' },
+  { id: 'previous', label: 'Previous Track' },
+  { id: 'next', label: 'Next Track' },
+  { id: 'volumeUp', label: 'Volume Up' },
+  { id: 'volumeDown', label: 'Volume Down' },
+  { id: 'mute', label: 'Mute / Unmute' },
+  { id: 'miniPlayer', label: 'Toggle Mini Player' },
+  { id: 'diagnostics', label: 'Toggle Diagnostics' },
+];
+const AUTOPLAY_MOOD_MODES = Object.freeze([
+  { id: 'flow', label: 'Flow' },
+  { id: 'safe', label: 'Safe' },
+  { id: 'explore', label: 'Explore' },
+]);
 const IDLE_PHRASES = [
   "Exploring the Neural Vault",
   "Calibrating Sonic Synapses",
@@ -144,6 +171,127 @@ const normalizeScenePayload = (raw) => {
   };
 };
 
+const getCanonicalKeyToken = (token) => {
+  const raw = String(token || '').trim();
+  if (!raw) return null;
+  const lower = raw.toLowerCase();
+  if (lower === 'space' || raw === ' ') return 'Space';
+  if (lower === 'left' || lower === 'arrowleft') return 'ArrowLeft';
+  if (lower === 'right' || lower === 'arrowright') return 'ArrowRight';
+  if (lower === 'up' || lower === 'arrowup') return 'ArrowUp';
+  if (lower === 'down' || lower === 'arrowdown') return 'ArrowDown';
+  if (lower === 'esc' || lower === 'escape') return 'Escape';
+  if (lower === 'enter' || lower === 'return') return 'Enter';
+  if (lower === 'slash' || lower === '/') return '/';
+  if (/^[a-z]$/i.test(raw)) return raw.toUpperCase();
+  if (/^\d$/.test(raw)) return raw;
+  return null;
+};
+
+const parseShortcutCombo = (combo, isMacPlatform) => {
+  const parts = String(combo || '')
+    .split('+')
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return null;
+
+  const model = {
+    ctrl: false,
+    meta: false,
+    alt: false,
+    shift: false,
+    key: null,
+  };
+
+  for (const part of parts) {
+    const lower = part.toLowerCase();
+    if (lower === 'mod') {
+      if (isMacPlatform) model.meta = true;
+      else model.ctrl = true;
+      continue;
+    }
+    if (lower === 'cmd' || lower === 'command' || lower === 'meta') {
+      model.meta = true;
+      continue;
+    }
+    if (lower === 'ctrl' || lower === 'control') {
+      model.ctrl = true;
+      continue;
+    }
+    if (lower === 'alt' || lower === 'option') {
+      model.alt = true;
+      continue;
+    }
+    if (lower === 'shift') {
+      model.shift = true;
+      continue;
+    }
+    if (model.key) return null;
+    model.key = getCanonicalKeyToken(part);
+    if (!model.key) return null;
+  }
+
+  if (!model.key) return null;
+  return model;
+};
+
+const buildCanonicalShortcutCombo = (parsed, isMacPlatform) => {
+  if (!parsed?.key) return '';
+  const out = [];
+  if (isMacPlatform ? parsed.meta : parsed.ctrl) out.push('Mod');
+  if (parsed.ctrl && isMacPlatform) out.push('Ctrl');
+  if (parsed.meta && !isMacPlatform) out.push('Meta');
+  if (parsed.alt) out.push('Alt');
+  if (parsed.shift) out.push('Shift');
+  out.push(parsed.key);
+  return out.join('+');
+};
+
+const getEventKeyToken = (e) => {
+  if (!e) return null;
+  if (e.code === 'Space') return 'Space';
+  if (e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'ArrowUp' || e.code === 'ArrowDown') return e.code;
+  if (e.code === 'Escape') return 'Escape';
+  if (e.code === 'Enter') return 'Enter';
+  if (e.code?.startsWith('Key')) return e.code.slice(3).toUpperCase();
+  if (e.code?.startsWith('Digit')) return e.code.slice(5);
+  return getCanonicalKeyToken(e.key);
+};
+
+const isShortcutEventMatch = (e, combo, isMacPlatform) => {
+  const parsed = parseShortcutCombo(combo, isMacPlatform);
+  if (!parsed) return false;
+  const key = getEventKeyToken(e);
+  if (!key || key !== parsed.key) return false;
+  if (e.ctrlKey !== parsed.ctrl) return false;
+  if (e.metaKey !== parsed.meta) return false;
+  if (e.altKey !== parsed.alt) return false;
+  if (e.shiftKey !== parsed.shift) return false;
+  return true;
+};
+
+const toReadableShortcut = (combo, isMacPlatform) => {
+  const parsed = parseShortcutCombo(combo, isMacPlatform);
+  if (!parsed) return String(combo || '');
+  const parts = [];
+  if (parsed.ctrl) parts.push(isMacPlatform ? '⌃' : 'Ctrl');
+  if (parsed.meta) parts.push(isMacPlatform ? '⌘' : 'Meta');
+  if (parsed.alt) parts.push(isMacPlatform ? '⌥' : 'Alt');
+  if (parsed.shift) parts.push(isMacPlatform ? '⇧' : 'Shift');
+  parts.push(parsed.key === 'Space' ? 'Space' : parsed.key);
+  return parts.join(isMacPlatform ? '' : '+');
+};
+
+const sanitizeShortcutMap = (candidate, isMacPlatform) => {
+  const next = {};
+  SHORTCUT_FIELDS.forEach(({ id }) => {
+    const raw = candidate?.[id] ?? DEFAULT_SHORTCUTS[id];
+    const parsed = parseShortcutCombo(raw, isMacPlatform);
+    next[id] = parsed ? buildCanonicalShortcutCombo(parsed, isMacPlatform) : DEFAULT_SHORTCUTS[id];
+  });
+  return next;
+};
+
 class ErrorBoundary extends Component {
   constructor(props) {
     super(props);
@@ -248,10 +396,19 @@ function App() {
   const [viewingPlaylist, setViewingPlaylist] = useState(null);
   const [newPlaylistName, setNewPlaylistName] = useState('');
     const [isViewingFullQueue, setIsViewingFullQueue] = useState(false);
+    const [isViewingFullDiscovery, setIsViewingFullDiscovery] = useState(false);
     const [isViewingFullPlaylist, setIsViewingFullPlaylist] = useState(null);
   const [isLibraryOverlayOpen, setIsLibraryOverlayOpen] = useState(false);
   const [libraryActionTarget, setLibraryActionTarget] = useState(null);
   const [isPlayerOverlayOpen, setIsPlayerOverlayOpen] = useState(false);
+  const [isShortcutSettingsOpen, setIsShortcutSettingsOpen] = useState(false);
+  const [shortcutSettingsError, setShortcutSettingsError] = useState('');
+  const [shortcuts, setShortcuts] = useState(DEFAULT_SHORTCUTS);
+  const [shortcutDraft, setShortcutDraft] = useState(DEFAULT_SHORTCUTS);
+  const [globalMediaShortcutsEnabled, setGlobalMediaShortcutsEnabled] = useState(false);
+  const [isTipsOverlayOpen, setIsTipsOverlayOpen] = useState(false);
+  const [hideFirstRunTips, setHideFirstRunTips] = useState(false);
+  const [tipsDontShowAgain, setTipsDontShowAgain] = useState(false);
   const [draggedPlaylistName, setDraggedPlaylistName] = useState(null);
   const [draggedQueueIndex, setDraggedQueueIndex] = useState(null);
   const [isCreatingPlaylist, setIsCreatingPlaylist] = useState(false);
@@ -264,6 +421,7 @@ function App() {
   const [sleepTimerValue, setSleepTimerValue] = useState(0); // 0, 15, 30, 60, 120
   const [sleepDeadline, setSleepDeadline] = useState(null);
   const [sleepRemainingStr, setSleepRemainingStr] = useState('');
+  const [isSleepTimerMenuOpen, setIsSleepTimerMenuOpen] = useState(false);
   const [localIp, setLocalIp] = useState('');
   const [isMiniPlayer, setIsMiniPlayer] = useState(false);
   const [isSpotifyImportOpen, setIsSpotifyImportOpen] = useState(false);
@@ -273,6 +431,7 @@ function App() {
   const [spotifyImportLogs, setSpotifyImportLogs] = useState([]);
   const [isVaultCleaning, setIsVaultCleaning] = useState(false);
   const [isWarmupUnavailable, setIsWarmupUnavailable] = useState(false);
+  const [isOfflineRemovalBusy, setIsOfflineRemovalBusy] = useState(false);
   const [skipReasonToast, setSkipReasonToast] = useState('');
   const [skipEvents, setSkipEvents] = useState([]);
   const [lockStatus, setLockStatus] = useState({ enabled: false, touchIdAvailable: false, touchIdEnabled: false });
@@ -290,9 +449,13 @@ function App() {
   const [storagePolicy, setStoragePolicy] = useState({ cacheCapMb: 2048, maxCacheAgeDays: 30 });
   const [storageEstimate, setStorageEstimate] = useState({ cap: null, age: null, downloadsOnly: null });
   const [isStorageBusy, setIsStorageBusy] = useState(false);
+  const [offlineDownloads, setOfflineDownloads] = useState([]);
+  const [isOfflineDownloadsBusy, setIsOfflineDownloadsBusy] = useState(false);
   
   const fileInputRef = useRef(null);
   const [isAutoplayEnabled, setIsAutoplayEnabled] = useState(true);
+  const [autoplayMoodMode, setAutoplayMoodMode] = useState('flow');
+  const [isAutoplayMenuOpen, setIsAutoplayMenuOpen] = useState(false);
   const [isVerticalStack, setIsVerticalStack] = useState(false);
   const [isFocusedMode, setIsFocusedMode] = useState(false);
   const expandedContainerRef = useRef(null);
@@ -304,7 +467,7 @@ function App() {
   const pendingResumeTimeRef = useRef(null);
 
 
-  // Audio Analysis Refs (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN
+  // Audio Analysis Refs (NOVA
   const audioCtxRef = useRef(null);
   const analyserRef = useRef(null);
   const sourceRef = useRef(null);
@@ -318,7 +481,7 @@ function App() {
   const lastBeatRingTimeRef = useRef(0);
   const mixtapeVaultRef = useRef(null);
   const vaultTelemetryRef = useRef({ lastStateAt: 0 });
-  const prevTrackRef = useRef(null); // Neural Memory Ref (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN
+  const prevTrackRef = useRef(null); // Neural Memory Ref (NOVA
   const standaloneTrackLoadKeyRef = useRef('');
   const bufferingRescueRef = useRef({ trackKey: '', lastAttemptAt: 0, attempts: 0 });
   const skipReasonTimeoutRef = useRef(null);
@@ -331,7 +494,7 @@ function App() {
   const [isManualStop, setIsManualStop] = useState(false);
   const [streamPort, setStreamPort] = useState(3333);
   const [pendingResumeTime, setPendingResumeTime] = useState(null); // Track-specific resume time
-  // --- AETHER STUDIO CORE: NEURAL ENGINE STATE (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN ---
+  // --- AETHER STUDIO CORE: NEURAL ENGINE STATE (NOVA ---
   const currentTrack = queue?.[0];
   const currentTrackSourceUrl = useMemo(() => {
     if (!currentTrack) return '';
@@ -345,6 +508,8 @@ function App() {
   const canAddPendingToVault = pendingLibraryItems.length > 0;
   const canOpenCurrentSource = Boolean(isStandalone && currentTrackSourceUrl);
   const canDownloadCurrentTrack = Boolean(isStandalone && window.aether?.exportAudioToFile && currentTrackSourceUrl);
+  const isMacPlatform = isStandalone ? window.aether?.platform === 'darwin' : /mac/i.test(navigator?.platform || '');
+  const defaultGlobalMediaShortcutsEnabled = isMacPlatform;
 
   const handleDownloadCurrentTrack = useCallback(async () => {
     if (!canDownloadCurrentTrack || !currentTrack || isDownloadingTrack) {
@@ -404,6 +569,104 @@ function App() {
     if (skipReasonTimeoutRef.current) clearTimeout(skipReasonTimeoutRef.current);
     skipReasonTimeoutRef.current = setTimeout(() => setSkipReasonToast(''), 2200);
   }, [currentTrack?.id, currentTrack?.title]);
+
+  const openTipsOverlay = useCallback(() => {
+    setTipsDontShowAgain(hideFirstRunTips);
+    setIsTipsOverlayOpen(true);
+  }, [hideFirstRunTips]);
+
+  const persistHideFirstRunTips = useCallback((nextHideFirstRunTips) => {
+    const nextValue = Boolean(nextHideFirstRunTips);
+    try {
+      if (isStandalone && window.aether?.store?.set) {
+        (async () => {
+          const rawExisting = await window.aether?.store?.get?.(SESSION_UI_STORAGE_KEY);
+          const existing = rawExisting && typeof rawExisting === 'object' ? rawExisting : {};
+          await window.aether.store.set(SESSION_UI_STORAGE_KEY, {
+            ...existing,
+            hideFirstRunTips: nextValue,
+            savedAt: Date.now(),
+          });
+        })().catch((e) => {
+          console.warn('[Aether/Session] Failed to persist hideFirstRunTips (standalone)', e);
+        });
+        return;
+      }
+
+      let existing = {};
+      try {
+        const raw = localStorage.getItem(SESSION_UI_STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : null;
+        if (parsed && typeof parsed === 'object') existing = parsed;
+      } catch {}
+
+      localStorage.setItem(SESSION_UI_STORAGE_KEY, JSON.stringify({
+        ...existing,
+        hideFirstRunTips: nextValue,
+        savedAt: Date.now(),
+      }));
+    } catch (e) {
+      console.warn('[Aether/Session] Failed to persist hideFirstRunTips', e);
+    }
+  }, [isStandalone]);
+
+  const closeTipsOverlay = useCallback(() => {
+    const nextHide = Boolean(tipsDontShowAgain);
+    setIsTipsOverlayOpen(false);
+    setHideFirstRunTips(nextHide);
+    persistHideFirstRunTips(nextHide);
+  }, [persistHideFirstRunTips, tipsDontShowAgain]);
+
+  const openShortcutSettings = useCallback(() => {
+    setShortcutSettingsError('');
+    setShortcutDraft(shortcuts);
+    setIsShortcutSettingsOpen(true);
+  }, [shortcuts]);
+
+  const closeShortcutSettings = useCallback(() => {
+    setIsShortcutSettingsOpen(false);
+    setShortcutSettingsError('');
+  }, []);
+
+  const resetShortcutSettingsToDefaults = useCallback(() => {
+    setShortcutSettingsError('');
+    setShortcutDraft(sanitizeShortcutMap(DEFAULT_SHORTCUTS, isMacPlatform));
+  }, [isMacPlatform]);
+
+  const saveShortcutSettings = useCallback(async () => {
+    const normalized = sanitizeShortcutMap(shortcutDraft, isMacPlatform);
+    const seen = new Map();
+
+    for (const { id, label } of SHORTCUT_FIELDS) {
+      const parsed = parseShortcutCombo(normalized[id], isMacPlatform);
+      if (!parsed) {
+        setShortcutSettingsError(`Invalid shortcut for ${label}.`);
+        return;
+      }
+      const key = buildCanonicalShortcutCombo(parsed, isMacPlatform);
+      if (seen.has(key)) {
+        setShortcutSettingsError(`Shortcut conflict: ${label} and ${seen.get(key)} both use ${toReadableShortcut(key, isMacPlatform)}.`);
+        return;
+      }
+      seen.set(key, label);
+    }
+
+    setShortcuts(normalized);
+    setShortcutSettingsError('');
+    setIsShortcutSettingsOpen(false);
+    setLastAdded('Shortcuts updated');
+    setTimeout(() => setLastAdded(null), 1600);
+
+    try {
+      if (isStandalone && window.aether?.store?.set) {
+        await window.aether.store.set(GLOBAL_SHORTCUTS_ENABLED_STORAGE_KEY, !!globalMediaShortcutsEnabled);
+      } else {
+        localStorage.setItem(GLOBAL_SHORTCUTS_ENABLED_STORAGE_KEY, JSON.stringify(!!globalMediaShortcutsEnabled));
+      }
+    } catch (e) {
+      console.warn('[Aether/Shortcuts] Failed to persist global media shortcut toggle', e);
+    }
+  }, [globalMediaShortcutsEnabled, isMacPlatform, isStandalone, shortcutDraft]);
 
   const copyVaultSceneEmbed = useCallback(async () => {
     const totalDurationMs = currentTrack?.totalDurationMs || currentTrack?.duration || 0;
@@ -651,6 +914,17 @@ function App() {
       console.warn('[Aether/Prefs] Failed to persist lock prefs', e);
     }
   }, [isStandalone, lockIdleMinutes]);
+
+  useEffect(() => {
+    if (!isAutoplayMenuOpen) return;
+    const close = () => setIsAutoplayMenuOpen(false);
+    window.addEventListener('click', close);
+    window.addEventListener('blur', close);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('blur', close);
+    };
+  }, [isAutoplayMenuOpen]);
 
   useEffect(() => {
     if (!lockStatus.enabled) return;
@@ -1007,8 +1281,10 @@ function App() {
       isVerticalStack,
       isFocusedMode,
       isAutoplayEnabled,
+      autoplayMoodMode,
       isDoodleMode,
       doodleIntensity,
+      hideFirstRunTips,
       savedAt: Date.now(),
     };
 
@@ -1021,7 +1297,20 @@ function App() {
     } catch (e) {
       console.warn('[Aether/Session] Failed to persist UI prefs', e);
     }
-  }, [isStandalone, visualizerMode, isVerticalStack, isFocusedMode, isAutoplayEnabled, isDoodleMode, doodleIntensity]);
+  }, [isStandalone, visualizerMode, isVerticalStack, isFocusedMode, isAutoplayEnabled, autoplayMoodMode, isDoodleMode, doodleIntensity, hideFirstRunTips]);
+
+  useEffect(() => {
+    if (!sessionReadyRef.current) return;
+    try {
+      if (isStandalone && window.aether?.store?.set) {
+        window.aether.store.set(SHORTCUTS_STORAGE_KEY, shortcuts);
+      } else {
+        localStorage.setItem(SHORTCUTS_STORAGE_KEY, JSON.stringify(shortcuts));
+      }
+    } catch (e) {
+      console.warn('[Aether/Shortcuts] Failed to persist shortcut map', e);
+    }
+  }, [isStandalone, shortcuts]);
 
   useEffect(() => {
     if (!isStandalone || !sessionReadyRef.current) return;
@@ -1050,17 +1339,49 @@ function App() {
 
       // Load persisted state asynchronously
       const loadPersisted = async () => {
+        let resolvedHideFirstRunTips = false;
         const savedUiPrefs = await window.aether?.store?.get(SESSION_UI_STORAGE_KEY);
         if (savedUiPrefs && typeof savedUiPrefs === 'object') {
           if (typeof savedUiPrefs.visualizerMode === 'string') setVisualizerMode(savedUiPrefs.visualizerMode);
           if (typeof savedUiPrefs.isVerticalStack === 'boolean') setIsVerticalStack(savedUiPrefs.isVerticalStack);
           if (typeof savedUiPrefs.isFocusedMode === 'boolean') setIsFocusedMode(savedUiPrefs.isFocusedMode);
           if (typeof savedUiPrefs.isAutoplayEnabled === 'boolean') setIsAutoplayEnabled(savedUiPrefs.isAutoplayEnabled);
+          if (typeof savedUiPrefs.autoplayMoodMode === 'string' && AUTOPLAY_MOOD_MODES.some((m) => m.id === savedUiPrefs.autoplayMoodMode)) {
+            setAutoplayMoodMode(savedUiPrefs.autoplayMoodMode);
+          }
           if (typeof savedUiPrefs.isDoodleMode === 'boolean') setIsDoodleMode(savedUiPrefs.isDoodleMode);
           else if (typeof savedUiPrefs.isCatMode === 'boolean') setIsDoodleMode(savedUiPrefs.isCatMode);
           if (typeof savedUiPrefs.doodleIntensity === 'string' && ['subtle', 'medium', 'dreamy'].includes(savedUiPrefs.doodleIntensity)) {
             setDoodleIntensity(savedUiPrefs.doodleIntensity);
           }
+          if (typeof savedUiPrefs.hideFirstRunTips === 'boolean') {
+            resolvedHideFirstRunTips = savedUiPrefs.hideFirstRunTips;
+            setHideFirstRunTips(savedUiPrefs.hideFirstRunTips);
+            setTipsDontShowAgain(savedUiPrefs.hideFirstRunTips);
+          }
+        }
+
+        try {
+          const savedShortcuts = await window.aether?.store?.get(SHORTCUTS_STORAGE_KEY);
+          const normalized = sanitizeShortcutMap(savedShortcuts || DEFAULT_SHORTCUTS, isMacPlatform);
+          setShortcuts(normalized);
+          setShortcutDraft(normalized);
+        } catch (e) {
+          const normalized = sanitizeShortcutMap(DEFAULT_SHORTCUTS, isMacPlatform);
+          setShortcuts(normalized);
+          setShortcutDraft(normalized);
+        }
+
+        try {
+          const savedGlobalEnabled = await window.aether?.store?.get(GLOBAL_SHORTCUTS_ENABLED_STORAGE_KEY);
+          const resolved = typeof savedGlobalEnabled === 'boolean' ? savedGlobalEnabled : defaultGlobalMediaShortcutsEnabled;
+          setGlobalMediaShortcutsEnabled(resolved);
+        } catch {
+          setGlobalMediaShortcutsEnabled(defaultGlobalMediaShortcutsEnabled);
+        }
+
+        if (!resolvedHideFirstRunTips) {
+          setTimeout(() => setIsTipsOverlayOpen(true), 700);
         }
 
         const savedPlaylists = await window.aether?.store?.get('playlists');
@@ -1096,6 +1417,14 @@ function App() {
         if (savedDownloaded) {
             console.log(`[Aether] Loaded ${savedDownloaded.length} downloaded tracks:`, savedDownloaded);
             setDownloadedTracks(savedDownloaded);
+        }
+        if (window.aether?.getOfflineDownloads) {
+          try {
+            const details = await window.aether.getOfflineDownloads();
+            if (details?.success && Array.isArray(details.downloads)) {
+              setOfflineDownloads(details.downloads);
+            }
+          } catch {}
         }
 
         const savedPlayback = await window.aether?.store?.get(SESSION_PLAYBACK_STORAGE_KEY);
@@ -1136,6 +1465,7 @@ function App() {
       loadPersisted();
     } else {
       try {
+        let resolvedHideFirstRunTips = false;
         const rawUiPrefs = localStorage.getItem(SESSION_UI_STORAGE_KEY);
         const savedUiPrefs = rawUiPrefs ? JSON.parse(rawUiPrefs) : null;
         if (savedUiPrefs && typeof savedUiPrefs === 'object') {
@@ -1143,14 +1473,43 @@ function App() {
           if (typeof savedUiPrefs.isVerticalStack === 'boolean') setIsVerticalStack(savedUiPrefs.isVerticalStack);
           if (typeof savedUiPrefs.isFocusedMode === 'boolean') setIsFocusedMode(savedUiPrefs.isFocusedMode);
           if (typeof savedUiPrefs.isAutoplayEnabled === 'boolean') setIsAutoplayEnabled(savedUiPrefs.isAutoplayEnabled);
+          if (typeof savedUiPrefs.autoplayMoodMode === 'string' && AUTOPLAY_MOOD_MODES.some((m) => m.id === savedUiPrefs.autoplayMoodMode)) {
+            setAutoplayMoodMode(savedUiPrefs.autoplayMoodMode);
+          }
           if (typeof savedUiPrefs.isDoodleMode === 'boolean') setIsDoodleMode(savedUiPrefs.isDoodleMode);
           else if (typeof savedUiPrefs.isCatMode === 'boolean') setIsDoodleMode(savedUiPrefs.isCatMode);
           if (typeof savedUiPrefs.doodleIntensity === 'string' && ['subtle', 'medium', 'dreamy'].includes(savedUiPrefs.doodleIntensity)) {
             setDoodleIntensity(savedUiPrefs.doodleIntensity);
           }
+          if (typeof savedUiPrefs.hideFirstRunTips === 'boolean') {
+            resolvedHideFirstRunTips = savedUiPrefs.hideFirstRunTips;
+            setHideFirstRunTips(savedUiPrefs.hideFirstRunTips);
+            setTipsDontShowAgain(savedUiPrefs.hideFirstRunTips);
+          }
+        }
+
+        if (!resolvedHideFirstRunTips) {
+          setTimeout(() => setIsTipsOverlayOpen(true), 700);
+        }
+
+        const rawShortcuts = localStorage.getItem(SHORTCUTS_STORAGE_KEY);
+        const savedShortcuts = rawShortcuts ? JSON.parse(rawShortcuts) : null;
+        const normalized = sanitizeShortcutMap(savedShortcuts || DEFAULT_SHORTCUTS, isMacPlatform);
+        setShortcuts(normalized);
+        setShortcutDraft(normalized);
+
+        const rawGlobalEnabled = localStorage.getItem(GLOBAL_SHORTCUTS_ENABLED_STORAGE_KEY);
+        if (rawGlobalEnabled == null) {
+          setGlobalMediaShortcutsEnabled(defaultGlobalMediaShortcutsEnabled);
+        } else {
+          setGlobalMediaShortcutsEnabled(Boolean(JSON.parse(rawGlobalEnabled)));
         }
       } catch (e) {
         console.warn('[Aether/Session] Failed to load web UI prefs', e);
+        const normalized = sanitizeShortcutMap(DEFAULT_SHORTCUTS, isMacPlatform);
+        setShortcuts(normalized);
+        setShortcutDraft(normalized);
+        setGlobalMediaShortcutsEnabled(defaultGlobalMediaShortcutsEnabled);
       }
       sessionReadyRef.current = true;
 
@@ -1179,7 +1538,7 @@ function App() {
     fetchSystemStats();
     const statsInterval = setInterval(fetchSystemStats, 10000);
     
-    // Maximized State Listener (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN - Fixed bridge + Height fail-safe
+    // Maximized State Listener (NOVA - Fixed bridge + Height fail-safe
     if (window.aether?.onMaximized) {
       window.aether.onMaximized((state) => {
         lastWindowModeChangeRef.current = Date.now();
@@ -1192,6 +1551,13 @@ function App() {
       window.aether.onLibraryUpdate((data) => {
         console.log(`[Aether] Library update received:`, data);
         setDownloadedTracks(data);
+        if (window.aether?.getOfflineDownloads) {
+          window.aether.getOfflineDownloads().then((res) => {
+            if (res?.success && Array.isArray(res.downloads)) {
+              setOfflineDownloads(res.downloads);
+            }
+          }).catch(() => {});
+        }
       });
     }
 
@@ -1217,15 +1583,16 @@ function App() {
 
 
 
-  // --- AETHER: STANDALONE PLAYBACK LOOP (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN ---
+  // --- AETHER: STANDALONE PLAYBACK LOOP (NOVA ---
   useEffect(() => {
     console.log("[Aether/Audio] Queue effect fired", { queueLength: queue?.length, currentTrack: queue?.[0]?.title, isPlaying, isStandalone });
     if (!isStandalone || !queue || queue.length === 0) return;
     const track = queue[0];
     const loadStartTime = Date.now();
     const trackUrl = track.actualUrl || track.url;
-    const baseTrackLoadKey = track.id || track.youtubeId || `${track.title || ''}|${track.author || ''}|${trackUrl || ''}`;
-    const trackLoadKey = `${baseTrackLoadKey}|p:${streamPort}`;
+    const baseTrackLoadKey = track.queueNonce || track.id || track.youtubeId || `${track.title || ''}|${track.author || ''}|${trackUrl || ''}`;
+    const isHeadDownloaded = downloadedTracks.includes(track.id);
+    const trackLoadKey = `${baseTrackLoadKey}|p:${streamPort}|d:${isHeadDownloaded ? 1 : 0}`;
 
     console.log("[Aether/Audio] Queue head details", {
       id: track.id,
@@ -1236,7 +1603,7 @@ function App() {
       url: track.url,
       trackUrl,
       isPlaying,
-      downloaded: downloadedTracks.includes(track.id),
+      downloaded: isHeadDownloaded,
     });
 
     // Pre-warm next queue tracks
@@ -1259,6 +1626,7 @@ function App() {
         }
 
         const isLocalDownloaded = downloadedTracks.includes(track.id);
+        const streamNonce = encodeURIComponent(String(track.queueNonce || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`));
         // Reconstruct YouTube URL if we have the ID (avoids expired direct URLs)
         const youtubeUrl = track.youtubeId
           ? `https://www.youtube.com/watch?v=${track.youtubeId}`
@@ -1268,7 +1636,7 @@ function App() {
         const fallbackToOnlineStream = () => {
           if (!isPlaying || !isLocalDownloaded || didOfflineFallback) return;
           didOfflineFallback = true;
-          const onlineUrl = `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}`;
+          const onlineUrl = `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&_q=${streamNonce}`;
           console.warn('[Aether/Audio] Offline source stalled, switching to live stream', {
             trackId: track.id,
             title: track.title,
@@ -1278,7 +1646,7 @@ function App() {
           localAudioRef.current.play().catch(() => {});
         };
 
-        // Neural Flow Bridge (V12.11.1-SOVEREIGN-SOVEREIGN) - High-Fidelity Signal Acquisition
+        // Neural Flow Bridge (NOVA) - High-Fidelity Signal Acquisition
         localAudioRef.current.onloadstart = () => {
             console.log(`[Aether/Audio] loadstart at ${Date.now() - loadStartTime}ms`);
         };
@@ -1394,8 +1762,8 @@ function App() {
         };
         
         const streamUrl = isLocalDownloaded
-          ? `${streamBase}/offline/${track.id}.m4a`
-          : `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}`;
+          ? `${streamBase}/offline/${track.id}.m4a?_q=${streamNonce}`
+          : `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&_q=${streamNonce}`;
         prematureEndGuardRef.current = { trackId: track.id, retried: false };
         console.log("[Aether/Audio] Initializing Stream:", streamUrl, {
             isLocalDownloaded,
@@ -1405,6 +1773,7 @@ function App() {
         });
         
         localAudioRef.current.crossOrigin = "anonymous";
+        setCurrentTime(0);
         localAudioRef.current.src = streamUrl;
         const startupWatchdog = setTimeout(() => {
           const audio = localAudioRef.current;
@@ -1524,7 +1893,7 @@ function App() {
     return () => clearTimeout(timer);
   }, [isStandalone, isPlaying, isAudioBuffering, currentTime, currentTrack?.id, currentTrack?.youtubeId, currentTrack?.title, currentTrack?.author, currentTrack?.actualUrl, currentTrack?.url, streamPort]);
 
-  // --- AETHER: UNIFIED DISCORD RPC ENGINE (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN ---
+  // --- AETHER: UNIFIED DISCORD RPC ENGINE (NOVA ---
   useEffect(() => {
     if (!isStandalone || !window.aether?.updateRPC) return;
 
@@ -1610,7 +1979,7 @@ function App() {
     }
   }, [isPlaying, isStandalone]);
 
-  // Audio Visualizer Loop (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN
+  // Audio Visualizer Loop (NOVA
   useEffect(() => {
     if (!isStandalone || !localAudioRef.current) return;
 
@@ -2252,10 +2621,37 @@ function App() {
     const seed = seedTrack || currentTrack || history[0];
     if (!seed) return;
 
-    const normalizeTitle = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const normalizeTitle = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const normalizeArtist = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
     const seedTitleNorm = normalizeTitle(seed.title);
+    const seedArtistNorm = normalizeArtist(seed.author);
+    const seedDuration = Number(seed.totalDurationMs || seed.duration || 0);
     const seedId = String(seed.id || seed.youtubeId || '').trim();
     const seedUrl = String(seed.actualUrl || seed.url || '').trim();
+
+    const recentTracks = [...queue, ...history].slice(0, 24);
+    const recentTrackKeys = new Set(recentTracks.map((t) => normalizeTrackIdentity(t)).filter(Boolean));
+    const recentArtistKeys = recentTracks.map((t) => normalizeArtist(t?.author)).filter(Boolean);
+    const recentArtistSet = new Set(recentArtistKeys.slice(0, autoplayMoodMode === 'flow' ? 10 : autoplayMoodMode === 'safe' ? 6 : 4));
+
+    const skipSignals = (skipEvents || []).slice(-160);
+    const signalByTrack = new Map();
+    const signalByArtist = new Map();
+    const toSignalDelta = (reason) => {
+      const r = String(reason || '').toLowerCase();
+      if (r.includes('natural_end')) return 2;
+      if (r.includes('manual_skip')) return -2;
+      if (r.includes('premature') || r.includes('error') || r.includes('stalled')) return -1;
+      return 0;
+    };
+    for (const event of skipSignals) {
+      const titleKey = normalizeTitle(event?.title);
+      const artistKey = normalizeArtist(event?.author || '');
+      const delta = toSignalDelta(event?.reason);
+      if (titleKey) signalByTrack.set(titleKey, (signalByTrack.get(titleKey) || 0) + delta);
+      if (artistKey) signalByArtist.set(artistKey, (signalByArtist.get(artistKey) || 0) + delta);
+    }
+
     const isSameAsSeed = (candidate) => {
       if (!candidate) return false;
       const candidateId = String(candidate.id || candidate.youtubeId || '').trim();
@@ -2284,21 +2680,79 @@ function App() {
         new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 10000))
       ]);
 
-      if (recs && recs.length > 0) {
-        const filtered = recs.filter(r => !queue.some(q => q.title === r.title) && !isSameAsSeed(r));
-        if (filtered.length > 0) {
-          handleAdd(filtered[0]);
-          return;
+      const queueHasTitle = (candidate) => queue.some((q) => normalizeTitle(q?.title) === normalizeTitle(candidate?.title));
+      const buildScore = (candidate) => {
+        const cTitle = normalizeTitle(candidate?.title);
+        const cArtist = normalizeArtist(candidate?.author);
+        const cDuration = Number(candidate?.totalDurationMs || candidate?.duration || 0);
+        const cKey = normalizeTrackIdentity(candidate);
+
+        // Hard-ish guards
+        if (!cTitle) return -9999;
+        if (isSameAsSeed(candidate)) return -5000;
+        if (queueHasTitle(candidate)) return -4000;
+
+        let score = 0;
+
+        // (1) Session memory guardrails and no immediate repeat
+        if (recentTrackKeys.has(cKey)) score -= autoplayMoodMode === 'explore' ? 18 : 35;
+        if (recentArtistSet.has(cArtist)) score -= autoplayMoodMode === 'explore' ? 8 : 16;
+
+        // (2) Context continuity scoring (artist, duration proxy)
+        if (seedArtistNorm && cArtist && seedArtistNorm === cArtist) {
+          score += autoplayMoodMode === 'flow' ? 9 : autoplayMoodMode === 'safe' ? 5 : 2;
         }
+        if (seedDuration > 0 && cDuration > 0) {
+          const ratio = Math.abs(cDuration - seedDuration) / Math.max(seedDuration, 1);
+          const continuity = Math.max(0, 1 - Math.min(1, ratio));
+          score += autoplayMoodMode === 'flow' ? continuity * 10 : autoplayMoodMode === 'safe' ? continuity * 7 : continuity * 4;
+        }
+
+        // (3) Skip-aware learning and (5) source reliability filter
+        const trackSignal = signalByTrack.get(cTitle) || 0;
+        const artistSignal = signalByArtist.get(cArtist) || 0;
+        score += trackSignal * (autoplayMoodMode === 'safe' ? 2.4 : autoplayMoodMode === 'flow' ? 1.8 : 1.0);
+        score += artistSignal * (autoplayMoodMode === 'safe' ? 1.4 : 1.0);
+
+        // (4) Mood continuity / novelty bias
+        if (autoplayMoodMode === 'explore') {
+          if (!recentArtistSet.has(cArtist)) score += 8;
+          score += Math.random() * 4;
+        } else if (autoplayMoodMode === 'safe') {
+          if (trackSignal < -2 || artistSignal < -4) score -= 40;
+          if (trackSignal > 0) score += 6;
+        } else {
+          // flow
+          if (!recentArtistSet.has(cArtist)) score += 2;
+        }
+
+        return score;
+      };
+
+      let pool = Array.isArray(recs) ? recs.slice() : [];
+
+      // Fallback Path: Neural Breadth Search (by artist/title)
+      if (pool.length === 0) {
+        console.log("[Aether] Primary Discovery failed, broadening signal...");
+        const fallbackResults = await window.aether.search(seed.author || seed.title?.split('-')?.[0] || seed.title || 'music');
+        pool = Array.isArray(fallbackResults) ? fallbackResults : [];
       }
 
-      // Fallback Path: Neural Breadth Search (by artist)
-      console.log("[Aether] Primary Discovery failed, broadening signal...");
-      const fallbackResults = await window.aether.search(seed.author || seed.title.split('-')[0]);
-      if (fallbackResults && fallbackResults.length > 0) {
-        const candidates = fallbackResults.filter(r => r.title !== seed.title && !isSameAsSeed(r));
-        if (candidates.length > 0) {
-          handleAdd(candidates[Math.floor(Math.random() * Math.min(3, candidates.length))]);
+      if (pool.length > 0) {
+        const ranked = pool
+          .map((candidate) => ({ candidate, score: buildScore(candidate) }))
+          .filter((entry) => entry.score > -3000)
+          .sort((a, b) => b.score - a.score);
+
+        if (ranked.length > 0) {
+          const topN = autoplayMoodMode === 'safe' ? 2 : autoplayMoodMode === 'flow' ? 3 : Math.min(7, ranked.length);
+          const finalists = ranked.slice(0, Math.max(1, topN));
+          const selected = autoplayMoodMode === 'explore'
+            ? finalists[Math.floor(Math.random() * finalists.length)]
+            : finalists[0];
+
+          handleAdd(selected.candidate);
+          return;
         }
       }
     } catch (e) {
@@ -2312,7 +2766,7 @@ function App() {
     const interval = setInterval(() => {
         fetchQueue();
         if (isPlaying) {
-            // Heartbeat Sync (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN
+            // Heartbeat Sync (NOVA
             axios.post(`${API_BASE}/api/heartbeat/${DEFAULT_GUILD_ID}`, { 
                 currentTime, 
                 isPlaying 
@@ -2335,7 +2789,7 @@ function App() {
           triggerAutoplay(seed);
         }
     }
-  }, [queue.length, isAutoplayEnabled, isStandalone, isManualStop, isAutoplaySeeking, currentTrack, history]);
+  }, [queue.length, isAutoplayEnabled, isStandalone, isManualStop, isAutoplaySeeking, currentTrack, history, autoplayMoodMode, skipEvents]);
 
   useEffect(() => {
     if (!isStandalone || !window.aether?.onSpotifyImportProgress) return;
@@ -2353,7 +2807,7 @@ function App() {
     };
   }, [appendSpotifyImportLog, isStandalone]);
 
-  // --- AETHER: DYNAMIC THEME SYNC (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN ---
+  // --- AETHER: DYNAMIC THEME SYNC (NOVA ---
   useEffect(() => {
     if (!currentTrack?.thumbnail) return;
     const updateTheme = async () => {
@@ -2419,7 +2873,7 @@ function App() {
     updateTheme();
   }, [currentTrack?.thumbnail]);
 
-  // --- AETHER: HARDWARE MEDIA SESSION BRIDGE (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN ---
+  // --- AETHER: HARDWARE MEDIA SESSION BRIDGE (NOVA ---
   useEffect(() => {
     if (!('mediaSession' in navigator) || !currentTrack) return;
     try {
@@ -2445,7 +2899,7 @@ function App() {
         });
     }
 
-    // --- NEURAL WATCHER LISTENER (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN ---
+    // --- NEURAL WATCHER LISTENER (NOVA ---
     if (isStandalone && window.aether?.onLibraryUpdate) {
         window.aether.onLibraryUpdate((event) => {
             console.log("[Aether] Neural Sync detected change:", event);
@@ -2453,7 +2907,7 @@ function App() {
         });
     }
 
-    // --- UNIVERSAL CONTROL RECEIVER (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN ---
+    // --- UNIVERSAL CONTROL RECEIVER (NOVA ---
     if (isStandalone && window.aether?.onControl) {
         window.aether.onControl((action) => {
             console.log("[Aether/Hardware] Action Received:", action);
@@ -2484,7 +2938,7 @@ function App() {
             }
         });
     }
-  }, [isStandalone]);
+  }, [defaultGlobalMediaShortcutsEnabled, isMacPlatform, isStandalone]);
 
   const fetchQueue = async () => {
     const startedAt = performance.now();
@@ -2594,7 +3048,7 @@ function App() {
           state: `by ${track.author}`.slice(0, 127),
           assets: {
             large_image: track.thumbnail || "https://cdn.discordapp.com/embed/avatars/0.png",
-            large_text: `V12.11.1-SOVEREIGN // Q: ${queue.length}`.slice(0, 127)
+            large_text: `NOVA // Q: ${queue.length}`.slice(0, 127)
           },
           timestamps: {
             start: Date.now() - playbackMs
@@ -2705,6 +3159,29 @@ function App() {
       setIsStorageBusy(false);
     }
   }, [isStandalone, refreshStorageEstimate, refreshStorageStats, storagePolicy.cacheCapMb, storagePolicy.maxCacheAgeDays]);
+
+  const refreshOfflineDownloads = useCallback(async () => {
+    if (!isStandalone) return;
+    try {
+      if (window.aether?.getOfflineDownloads) {
+        const res = await window.aether.getOfflineDownloads();
+        if (res?.success && Array.isArray(res.downloads)) {
+          setOfflineDownloads(res.downloads);
+          return;
+        }
+      }
+
+      setOfflineDownloads((downloadedTracks || []).map((id) => ({
+        id,
+        fileName: `${id}.m4a`,
+        filePath: '',
+        bytes: 0,
+        modifiedAt: 0,
+      })));
+    } catch (e) {
+      console.warn('[Aether/Storage] offline downloads fetch failed', e);
+    }
+  }, [downloadedTracks, isStandalone]);
 
 
 
@@ -2898,13 +3375,15 @@ function App() {
     if (!isStandalone) return;
     refreshStorageStats();
     refreshStorageEstimate();
-  }, [isStandalone, refreshStorageEstimate, refreshStorageStats]);
+    refreshOfflineDownloads();
+  }, [isStandalone, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats]);
 
   useEffect(() => {
     if (!isStandalone || !isDiagnosticsOpen) return;
     refreshStorageStats();
     refreshStorageEstimate();
-  }, [isStandalone, isDiagnosticsOpen, refreshStorageEstimate, refreshStorageStats]);
+    refreshOfflineDownloads();
+  }, [isStandalone, isDiagnosticsOpen, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats]);
 
   useEffect(() => {
     if (currentTrack?.title !== currentTrackTitle) {
@@ -2938,9 +3417,11 @@ function App() {
     const canonicalUrl = youtubeId ? `https://www.youtube.com/watch?v=${youtubeId}` : baseUrl;
     const stableId = youtubeId || track.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const thumbnail = track.thumbnail || (youtubeId ? `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg` : '');
+    const queueNonce = String(track.queueNonce || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
     return {
       ...track,
       id: stableId,
+      queueNonce,
       youtubeId,
       thumbnail,
       actualUrl: canonicalUrl,
@@ -3032,6 +3513,98 @@ function App() {
     }
   };
 
+  const resolveWarmupTrackId = useCallback((track) => {
+    if (!track) return null;
+    const derivedYoutubeId = track.youtubeId || extractYouTubeId(track.actualUrl || track.url || track.id);
+    const idFromTrack = /^[A-Za-z0-9_-]{11}$/.test(String(track.id || '')) ? String(track.id) : null;
+    return derivedYoutubeId || idFromTrack || track.id || null;
+  }, []);
+
+  const downloadLabelById = useMemo(() => {
+    const map = new Map();
+    const addTrack = (track) => {
+      const id = resolveWarmupTrackId(track);
+      if (!id || map.has(id)) return;
+      map.set(id, {
+        title: track?.title || id,
+        author: track?.author || 'Unknown',
+      });
+    };
+
+    queue.forEach(addTrack);
+    Object.values(playlists || {}).forEach((tracks) => {
+      (Array.isArray(tracks) ? tracks : []).forEach(addTrack);
+    });
+
+    return map;
+  }, [playlists, queue, resolveWarmupTrackId]);
+
+  const removeDownloadedById = useCallback(async (resolvedId, label = '') => {
+    if (!isStandalone || !window.aether?.removeOfflineTrack || !resolvedId || isOfflineRemovalBusy) return;
+
+    setIsOfflineRemovalBusy(true);
+    setWarmingTrackIds(prev => {
+      const next = new Set(prev);
+      next.delete(resolvedId);
+      return next;
+    });
+
+    try {
+      const response = await window.aether.removeOfflineTrack(resolvedId);
+      if (!response?.success) {
+        throw new Error(response?.error || response?.result?.error || 'Failed to remove downloaded track');
+      }
+
+      const downloaded = Array.isArray(response?.downloaded) ? response.downloaded : [];
+      setDownloadedTracks(downloaded);
+      warmupRetryRef.current.delete(resolvedId);
+
+      await refreshOfflineDownloads();
+      await refreshStorageStats();
+      await refreshStorageEstimate();
+
+      setLastAdded(`Removed download • ${label || resolvedId}`);
+      setTimeout(() => setLastAdded(null), 2200);
+    } catch (err) {
+      console.error('[Aether/Storage] Failed to remove downloaded track', err);
+      setLastAdded(`Remove failed${err?.message ? `: ${String(err.message).slice(0, 42)}` : ''}`);
+      setTimeout(() => setLastAdded(null), 2600);
+    } finally {
+      setIsOfflineRemovalBusy(false);
+    }
+  }, [isOfflineRemovalBusy, isStandalone, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats]);
+
+  const clearAllDownloadedTracks = useCallback(async () => {
+    if (!isStandalone || !window.aether?.clearOfflineDownloads || isOfflineRemovalBusy) return;
+    setIsOfflineRemovalBusy(true);
+    setIsOfflineDownloadsBusy(true);
+    try {
+      const response = await window.aether.clearOfflineDownloads();
+      if (!response?.success) {
+        throw new Error(response?.error || response?.result?.error || 'Failed to clear downloads');
+      }
+
+      const downloaded = Array.isArray(response?.downloaded) ? response.downloaded : [];
+      setDownloadedTracks(downloaded);
+      setWarmingTrackIds(new Set());
+      warmupRetryRef.current.clear();
+
+      await refreshOfflineDownloads();
+      await refreshStorageStats();
+      await refreshStorageEstimate();
+
+      setLastAdded('Cleared all downloaded tracks');
+      setTimeout(() => setLastAdded(null), 2300);
+    } catch (err) {
+      console.error('[Aether/Storage] Failed to clear all downloaded tracks', err);
+      setLastAdded(`Clear failed${err?.message ? `: ${String(err.message).slice(0, 42)}` : ''}`);
+      setTimeout(() => setLastAdded(null), 2800);
+    } finally {
+      setIsOfflineDownloadsBusy(false);
+      setIsOfflineRemovalBusy(false);
+    }
+  }, [isOfflineRemovalBusy, isStandalone, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats]);
+
   const handleAdd = async (track) => {
     if (isStandalone) {
         const addStartTime = Date.now();
@@ -3055,7 +3628,7 @@ function App() {
 
         warmupTrack({ ...newTrack, id: stableId, actualUrl: url, url, title: track.title });
 
-        // --- AETHER: NEURAL METADATA SYNC (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN ---
+        // --- AETHER: NEURAL METADATA SYNC (NOVA ---
         window.aether.getMetadata(newTrack.actualUrl || newTrack.url).then(fullTrack => {
             if (fullTrack) {
                 setQueue(current => current.map(item => 
@@ -3091,19 +3664,22 @@ function App() {
       setIsAutoplaySeeking(false);
     }
   };
-  const handleSleepTimerToggle = () => {
-      const cycles = [0, 15, 30, 60, 120];
-      const nextIdx = (cycles.indexOf(sleepTimerValue) + 1) % cycles.length;
-      const nextVal = cycles[nextIdx];
+    const handleSetSleepTimer = useCallback((minutes) => {
+      const nextVal = Number(minutes) || 0;
       setSleepTimerValue(nextVal);
-      if (nextVal === 0) {
-          setSleepDeadline(null);
-          setSleepRemainingStr('');
-          if (localAudioRef.current) localAudioRef.current.volume = volume;
+      if (nextVal <= 0) {
+        setSleepDeadline(null);
+        setSleepRemainingStr('');
+        if (localAudioRef.current) localAudioRef.current.volume = volume;
+        setLastAdded('Sleep timer disabled');
       } else {
-          setSleepDeadline(Date.now() + nextVal * 60 * 1000);
+        setSleepDeadline(Date.now() + nextVal * 60 * 1000);
+        setSleepRemainingStr(`${nextVal}:00`);
+        setLastAdded(`Sleep timer set • ${nextVal}m`);
       }
-  };
+      setTimeout(() => setLastAdded(null), 1800);
+      setIsSleepTimerMenuOpen(false);
+    }, [volume]);
 
   useEffect(() => {
       if (!sleepDeadline) return;
@@ -3360,19 +3936,31 @@ function App() {
     try {
         await axios.post(`${API_BASE}/api/control/${guildId}`, { action: 'seek', time });
     } catch (e) {}
-    
-    // Remote discord bots support absolute timing updates natively.
-    // Natively piping a chunked generic HTTP stream into an <audio> tag does not magically support arbitrary byte manipulation (HTTP 206).
-    // Mutating currentTime will forcefully close the stream connection, triggering a fresh 0:00 buffer reload.
+
+    const audio = localAudioRef.current;
+    const seekSeconds = Math.max(0, time / 1000);
+
+    // Seek the existing audio element in-place. Replacing src restarts playback,
+    // which is why the song jumped back to the beginning before this fix.
     if (!isStandalone) {
-        if (localAudioRef.current) localAudioRef.current.currentTime = time / 1000;
+        if (audio) {
+          try {
+            audio.currentTime = seekSeconds;
+          } catch {
+            setPendingResumeTime(time);
+          }
+        }
         setCurrentTime(time);
     } else {
-        if (localAudioRef.current && currentTrack) {
-            const timeSec = Math.floor(time / 1000);
-            const base = currentTrack.actualUrl || currentTrack.url;
-            localAudioRef.current.src = `http://localhost:${streamPort}/stream?url=${encodeURIComponent(base)}&time=${timeSec}`;
-            localAudioRef.current.play().catch(()=>{});
+        if (audio && currentTrack) {
+            try {
+              audio.currentTime = seekSeconds;
+              if (!isPlaying) {
+                audio.play().catch(() => {});
+              }
+            } catch {
+              setPendingResumeTime(time);
+            }
         }
         setCurrentTime(time);
     }
@@ -3470,63 +4058,75 @@ function App() {
     };
 
     const onShortcut = (e) => {
-      const lowerKey = e.key?.toLowerCase?.() || '';
-      const isAccelAlt = (e.metaKey || e.ctrlKey) && e.altKey;
-      if (isTypingTarget(document.activeElement) && !isAccelAlt) return;
-
-      if (isAccelAlt) {
-        if (e.code === 'Space') {
+      if (isTipsOverlayOpen) {
+        if (e.key === 'Escape') {
           e.preventDefault();
-          handleControl(isPlaying ? 'pause' : 'resume');
-          return;
+          closeTipsOverlay();
         }
-        if (e.key === 'ArrowLeft') {
-          e.preventDefault();
-          handleControl('previous');
-          return;
-        }
-        if (e.key === 'ArrowRight') {
-          e.preventDefault();
-          handleControl('skip');
-          return;
-        }
-        if (e.key === 'ArrowUp') {
-          e.preventDefault();
-          setVolume(prev => {
-            const next = Math.min(1, prev + 0.08);
-            if (localAudioRef.current) localAudioRef.current.volume = next;
-            window.aether?.store?.set('volume', next);
-            return next;
-          });
-          setVolumeToast(true);
-          setTimeout(() => setVolumeToast(false), 1200);
-          return;
-        }
-        if (e.key === 'ArrowDown') {
-          e.preventDefault();
-          setVolume(prev => {
-            const next = Math.max(0, prev - 0.08);
-            if (localAudioRef.current) localAudioRef.current.volume = next;
-            window.aether?.store?.set('volume', next);
-            return next;
-          });
-          setVolumeToast(true);
-          setTimeout(() => setVolumeToast(false), 1200);
-          return;
-        }
-        if (lowerKey === 'm') {
-          e.preventDefault();
-          handleControl('mute');
-        }
+        return;
       }
 
-      if (isStandalone && lowerKey === 'm' && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (isShortcutSettingsOpen) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          closeShortcutSettings();
+        }
+        return;
+      }
+
+      const hasControlMods = e.metaKey || e.ctrlKey || e.altKey;
+      if (isTypingTarget(document.activeElement) && !hasControlMods) return;
+
+      if (isShortcutEventMatch(e, shortcuts.playPause, isMacPlatform)) {
+        e.preventDefault();
+        handleControl(isPlaying ? 'pause' : 'resume');
+        return;
+      }
+      if (isShortcutEventMatch(e, shortcuts.previous, isMacPlatform)) {
+        e.preventDefault();
+        handleControl('previous');
+        return;
+      }
+      if (isShortcutEventMatch(e, shortcuts.next, isMacPlatform)) {
+        e.preventDefault();
+        handleControl('skip');
+        return;
+      }
+      if (isShortcutEventMatch(e, shortcuts.volumeUp, isMacPlatform)) {
+        e.preventDefault();
+        setVolume(prev => {
+          const next = Math.min(1, prev + 0.08);
+          if (localAudioRef.current) localAudioRef.current.volume = next;
+          window.aether?.store?.set('volume', next);
+          return next;
+        });
+        setVolumeToast(true);
+        setTimeout(() => setVolumeToast(false), 1200);
+        return;
+      }
+      if (isShortcutEventMatch(e, shortcuts.volumeDown, isMacPlatform)) {
+        e.preventDefault();
+        setVolume(prev => {
+          const next = Math.max(0, prev - 0.08);
+          if (localAudioRef.current) localAudioRef.current.volume = next;
+          window.aether?.store?.set('volume', next);
+          return next;
+        });
+        setVolumeToast(true);
+        setTimeout(() => setVolumeToast(false), 1200);
+        return;
+      }
+      if (isShortcutEventMatch(e, shortcuts.mute, isMacPlatform)) {
+        e.preventDefault();
+        handleControl('mute');
+        return;
+      }
+      if (isStandalone && isShortcutEventMatch(e, shortcuts.miniPlayer, isMacPlatform)) {
         e.preventDefault();
         toggleMiniPlayer();
         return;
       }
-
-      if (lowerKey === 'd' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (isShortcutEventMatch(e, shortcuts.diagnostics, isMacPlatform)) {
         e.preventDefault();
         toggleDiagnostics();
       }
@@ -3534,7 +4134,7 @@ function App() {
 
     window.addEventListener('keydown', onShortcut);
     return () => window.removeEventListener('keydown', onShortcut);
-  }, [isStandalone, isPlaying, toggleMiniPlayer, toggleDiagnostics, handleControl]);
+  }, [isStandalone, isPlaying, isTipsOverlayOpen, isShortcutSettingsOpen, shortcuts, isMacPlatform, toggleMiniPlayer, toggleDiagnostics, handleControl, closeTipsOverlay, closeShortcutSettings]);
 
   if (loading) return (
     <div className="h-screen w-full bg-[#0a0a0a] flex flex-col items-center justify-center gap-6 p-6 text-center">
@@ -3699,7 +4299,7 @@ function App() {
       {/* Background Mesh (Absolute to avoid flex interference) */}
       <div className="absolute inset-0 bg-mesh pointer-events-none z-[-1]" />
 
-      {/* Neural Dynamic Backdrop (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN */}
+      {/* Neural Dynamic Backdrop (NOVA */}
       <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
         <AnimatePresence mode="wait">
           {currentTrack?.thumbnail ? (
@@ -3852,12 +4452,62 @@ function App() {
           {/* MODES & SUITE */}
           <div className="flex items-center justify-end gap-3 min-w-fit order-3 no-drag">
                <button
+                 onClick={openShortcutSettings}
+                 className="w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50"
+                 title="Shortcut Settings"
+               >
+                 <Keyboard size={16} />
+               </button>
+
+               {!hideFirstRunTips && (
+                 <button
+                   onClick={openTipsOverlay}
+                   className="w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50"
+                   title="Tips & Shortcuts"
+                 >
+                   <AppWindow size={16} />
+                 </button>
+               )}
+
+               <button
                  onClick={toggleDiagnostics}
                  className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${isDiagnosticsOpen ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
                  title={isDiagnosticsOpen ? 'Hide Diagnostics' : 'Show Diagnostics'}
                >
                  <Monitor size={16} />
                </button>
+
+               <div className="relative">
+                 <button
+                   onClick={() => setIsSleepTimerMenuOpen(prev => !prev)}
+                   className={`h-10 px-3 rounded-2xl flex items-center gap-2 transition-all border no-drag ${sleepTimerValue > 0 ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
+                   title={sleepTimerValue > 0 ? `Sleep timer active • ${sleepRemainingStr || `${sleepTimerValue}m`}` : 'Sleep timer'}
+                 >
+                   <Clock size={14} />
+                   <span className="text-[10px] font-black uppercase tracking-widest">{sleepTimerValue > 0 ? (sleepRemainingStr || `${sleepTimerValue}m`) : 'Sleep'}</span>
+                 </button>
+
+                 {isSleepTimerMenuOpen && (
+                   <div className="absolute right-0 mt-2 z-[320] w-44 rounded-2xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-2 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
+                     {[15, 30, 60, 120].map((minutes) => (
+                       <button
+                         key={`sleep-${minutes}`}
+                         onClick={() => handleSetSleepTimer(minutes)}
+                         className={`w-full text-left px-3 py-2 rounded-xl text-sm transition-colors ${sleepTimerValue === minutes ? 'text-brand-accent bg-brand-accent/10' : 'text-white/75 hover:text-brand-accent hover:bg-white/5'}`}
+                       >
+                         Sleep in {minutes} min
+                       </button>
+                     ))}
+                     <div className="my-1 border-t border-white/10" />
+                     <button
+                       onClick={() => handleSetSleepTimer(0)}
+                       className="w-full text-left px-3 py-2 rounded-xl text-sm text-red-300 hover:bg-red-500/10 transition-colors"
+                     >
+                       Turn off
+                     </button>
+                   </div>
+                 )}
+               </div>
 
                {isStandalone && (
                  <button
@@ -3886,6 +4536,201 @@ function App() {
                </button>
           </div>
         </header>
+
+      <AnimatePresence>
+        {isShortcutSettingsOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[312] flex items-center justify-center p-4"
+            onClick={closeShortcutSettings}
+          >
+            <div className="absolute inset-0 bg-black/85 backdrop-blur-md" />
+            <motion.div
+              initial={{ scale: 0.96, y: 14 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, y: 10 }}
+              className="relative z-10 w-[min(94vw,860px)] max-h-[88vh] overflow-y-auto rounded-3xl border border-brand-accent/25 bg-[#090b0f]/95 p-5 md:p-7 shadow-[0_0_90px_rgba(0,255,191,0.15)]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/35">Settings</div>
+                  <div className="text-2xl md:text-3xl font-black text-brand-accent uppercase tracking-tight">Shortcut Settings</div>
+                  <div className="text-white/55 mt-2 text-sm">Use formats like <span className="text-brand-accent">Mod+Alt+Space</span>, <span className="text-brand-accent">Shift+M</span>, <span className="text-brand-accent">D</span>.</div>
+                </div>
+                <button onClick={closeShortcutSettings} className="w-10 h-10 rounded-xl border border-white/15 bg-white/[0.03] text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close shortcut settings">
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-3">
+                {SHORTCUT_FIELDS.map((field) => (
+                  <label key={field.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-white/75 text-sm">
+                    <div className="text-[11px] uppercase tracking-[0.2em] text-white/50 mb-2">{field.label}</div>
+                    <input
+                      value={shortcutDraft[field.id] || ''}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setShortcutSettingsError('');
+                        setShortcutDraft((prev) => ({ ...prev, [field.id]: value }));
+                      }}
+                      className="w-full rounded-xl border border-white/15 bg-black/30 px-3 py-2 text-white outline-none focus:border-brand-accent/50"
+                      placeholder="Mod+Alt+Space"
+                    />
+                    <div className="mt-1 text-[11px] text-white/40">Current: {toReadableShortcut(shortcuts[field.id], isMacPlatform)}</div>
+                  </label>
+                ))}
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <label className="flex items-start gap-3 text-sm text-white/75">
+                  <input
+                    type="checkbox"
+                    checked={globalMediaShortcutsEnabled}
+                    onChange={(e) => setGlobalMediaShortcutsEnabled(e.target.checked)}
+                    className="mt-0.5 w-4 h-4 accent-brand-accent"
+                  />
+                  <span>
+                    Enable global media shortcuts (play/pause, next, previous)
+                    <span className="block text-[11px] text-white/45 mt-1">This affects system-wide key capture and may conflict with OS/app controls. Restart app after change.</span>
+                  </span>
+                </label>
+              </div>
+
+              {shortcutSettingsError && (
+                <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                  {shortcutSettingsError}
+                </div>
+              )}
+
+              <div className="mt-5 flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    onClick={resetShortcutSettingsToDefaults}
+                    className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
+                  >
+                    Reset to Defaults
+                  </button>
+                  <button
+                    onClick={() => {
+                      closeShortcutSettings();
+                      setTimeout(() => openTipsOverlay(), 0);
+                    }}
+                    className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
+                  >
+                    Open Guide
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={closeShortcutSettings}
+                    className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={saveShortcutSettings}
+                    className="px-4 py-2 rounded-xl border border-brand-accent/35 bg-brand-accent/10 text-brand-accent hover:bg-brand-accent/20 transition-all"
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isTipsOverlayOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[310] flex items-center justify-center p-4"
+            onClick={closeTipsOverlay}
+          >
+            <div className="absolute inset-0 bg-black/85 backdrop-blur-md" />
+            <motion.div
+              initial={{ scale: 0.96, y: 14 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, y: 10 }}
+              className="relative z-10 w-[min(94vw,860px)] max-h-[88vh] overflow-y-auto rounded-3xl border border-brand-accent/25 bg-[#090b0f]/95 p-5 md:p-7 shadow-[0_0_90px_rgba(0,255,191,0.15)]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/35">First-run Guide</div>
+                  <div className="text-2xl md:text-3xl font-black text-brand-accent uppercase tracking-tight">Welcome to Aether</div>
+                  <div className="text-white/55 mt-2 text-sm">Quick controls and feature map so you can use everything in under a minute.</div>
+                </div>
+                <button onClick={closeTipsOverlay} className="w-10 h-10 rounded-xl border border-white/15 bg-white/[0.03] text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close tips">
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                  <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Command Shortcuts</div>
+                  <ul className="mt-3 space-y-2 text-white/75">
+                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.playPause, isMacPlatform)}</span> — Play / Pause</li>
+                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.previous, isMacPlatform)}</span> — Previous</li>
+                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.next, isMacPlatform)}</span> — Next</li>
+                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.volumeUp, isMacPlatform)}</span> — Volume up</li>
+                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.volumeDown, isMacPlatform)}</span> — Volume down</li>
+                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.mute, isMacPlatform)}</span> — Mute / Unmute</li>
+                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.miniPlayer, isMacPlatform)}</span> — Toggle mini player</li>
+                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.diagnostics, isMacPlatform)}</span> — Open diagnostics panel</li>
+                  </ul>
+                  <div className="mt-3 text-[11px] text-white/45">Tip: media keys may be managed by your OS. App shortcuts above always work while Aether is focused.</div>
+                </div>
+
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                  <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Main Buttons</div>
+                  <ul className="mt-3 space-y-2 text-white/75">
+                    <li><span className="text-brand-accent font-black">Search bar</span> — find songs quickly</li>
+                    <li><span className="text-brand-accent font-black">Vertical Stack</span> — switch layout view</li>
+                    <li><span className="text-brand-accent font-black">Diagnostics</span> — debug network/playback issues</li>
+                    <li><span className="text-brand-accent font-black">Vault overlay</span> — save/import/export playlists</li>
+                    <li><span className="text-brand-accent font-black">Smart Mix</span> — generate instant context playlist</li>
+                    <li><span className="text-brand-accent font-black">Sleep Timer</span> — auto-stop playback later</li>
+                  </ul>
+                </div>
+              </div>
+
+              <label className="mt-5 flex items-center gap-3 text-sm text-white/70 select-none cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={tipsDontShowAgain}
+                  onChange={(e) => setTipsDontShowAgain(e.target.checked)}
+                  className="w-4 h-4 accent-brand-accent"
+                />
+                Don’t show this again on app startup
+              </label>
+
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <button
+                  onClick={() => {
+                    closeTipsOverlay();
+                    openShortcutSettings();
+                  }}
+                  className="px-4 py-2 rounded-xl border border-brand-accent/35 bg-brand-accent/10 text-brand-accent hover:bg-brand-accent/20 transition-all"
+                >
+                  Customize Shortcuts
+                </button>
+                <button
+                  onClick={closeTipsOverlay}
+                  className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
+                >
+                  Got it
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {isDiagnosticsOpen && (
@@ -4042,6 +4887,54 @@ function App() {
                       >
                         Refresh
                       </button>
+                    </div>
+
+                    <div className="mt-2 rounded-xl border border-white/10 bg-black/20 p-2">
+                      <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+                        <div className="text-white/55 uppercase text-[11px]">Downloaded Tracks ({offlineDownloads.length})</div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            disabled={isOfflineRemovalBusy || isOfflineDownloadsBusy}
+                            onClick={refreshOfflineDownloads}
+                            className="px-2 py-1 rounded-lg border border-white/15 text-white/70 bg-white/[0.03] disabled:opacity-50"
+                          >
+                            Refresh List
+                          </button>
+                          <button
+                            disabled={offlineDownloads.length === 0 || isOfflineRemovalBusy || isOfflineDownloadsBusy}
+                            onClick={clearAllDownloadedTracks}
+                            className="px-2 py-1 rounded-lg border border-red-500/35 text-red-300 bg-red-500/10 disabled:opacity-50"
+                          >
+                            Clear All Downloads
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="max-h-52 overflow-y-auto pr-1 space-y-1">
+                        {offlineDownloads.length === 0 ? (
+                          <div className="text-white/35 text-xs">No downloaded tracks stored.</div>
+                        ) : offlineDownloads.map((item) => {
+                          const meta = downloadLabelById.get(item.id);
+                          const title = meta?.title || item.id;
+                          const author = meta?.author || 'Unknown';
+                          return (
+                            <div key={`download-${item.id}`} className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-2 py-1.5">
+                              <div className="min-w-0 flex-1">
+                                <div className="text-[11px] text-white/85 font-black truncate">{title}</div>
+                                <div className="text-[10px] text-white/45 truncate">{author} • {formatBytes(item.bytes || 0)}{item.modifiedAt ? ` • ${new Date(item.modifiedAt).toLocaleString()}` : ''}</div>
+                              </div>
+                              <button
+                                disabled={isOfflineRemovalBusy || isOfflineDownloadsBusy}
+                                onClick={() => removeDownloadedById(item.id, title)}
+                                className="px-2 py-1 rounded-md border border-red-500/35 text-red-300 bg-red-500/10 disabled:opacity-50"
+                                title="Delete downloaded file"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   </div>
                 </>
@@ -4377,21 +5270,57 @@ function App() {
                  >
                     <Shuffle size={10} />
                  </button>
-                 <button 
-                   onClick={() => setIsAutoplayEnabled(!isAutoplayEnabled)}
-                   className={`p-1.5 rounded-lg transition-all flex items-center gap-2 ${isAutoplayEnabled ? 'bg-brand-accent/20 text-brand-accent border border-brand-accent/30 shadow-neon' : 'bg-white/5 text-white/30 border border-white/10 opacity-50'}`}
-                   title="Neural Autoplay"
-                 >
-                   <Zap size={10} className={isAutoplayEnabled ? 'animate-pulse' : ''} />
-                   <span className="text-[8px] font-black uppercase tracking-tighter">{isAutoplayEnabled ? 'AUTO_ON' : 'AUTO_OFF'}</span>
-                 </button>
+                 <div className="relative">
+                   <button 
+                     onClick={(e) => {
+                       e.stopPropagation();
+                       setIsAutoplayMenuOpen(prev => !prev);
+                     }}
+                     className={`p-1.5 rounded-lg transition-all flex items-center gap-2 ${isAutoplayEnabled ? 'bg-brand-accent/20 text-brand-accent border border-brand-accent/30 shadow-neon' : 'bg-white/5 text-white/30 border border-white/10 opacity-70'}`}
+                     title="Neural Autoplay Mode"
+                   >
+                     <Zap size={10} className={isAutoplayEnabled ? 'animate-pulse' : ''} />
+                     <span className="text-[8px] font-black uppercase tracking-tighter">{isAutoplayEnabled ? 'AUTO_ON' : 'AUTO_OFF'}</span>
+                     <span className="text-[8px] font-black uppercase tracking-tighter opacity-80">{autoplayMoodMode}</span>
+                   </button>
+
+                   {isAutoplayMenuOpen && (
+                     <div className="absolute right-0 top-full mt-2 z-[320] w-48 rounded-xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-2 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
+                       <button
+                         onClick={() => {
+                           setIsAutoplayEnabled(prev => !prev);
+                           setIsAutoplayMenuOpen(false);
+                         }}
+                         className={`w-full text-left px-3 py-2 rounded-lg text-[11px] font-black uppercase tracking-widest transition-colors ${isAutoplayEnabled ? 'text-brand-accent bg-brand-accent/10' : 'text-white/70 hover:text-brand-accent hover:bg-white/5'}`}
+                       >
+                         {isAutoplayEnabled ? 'Disable Autoplay' : 'Enable Autoplay'}
+                       </button>
+                       <div className="my-1 border-t border-white/10" />
+                       {AUTOPLAY_MOOD_MODES.map((mode) => (
+                         <button
+                           key={`autoplay-mode-${mode.id}`}
+                           onClick={() => {
+                             setAutoplayMoodMode(mode.id);
+                             setIsAutoplayMenuOpen(false);
+                             setLastAdded(`Autoplay mood • ${mode.label}`);
+                             setTimeout(() => setLastAdded(null), 1500);
+                           }}
+                           className={`w-full text-left px-3 py-2 rounded-lg text-[11px] font-black uppercase tracking-widest transition-colors ${autoplayMoodMode === mode.id ? 'text-brand-accent bg-brand-accent/10' : 'text-white/70 hover:text-brand-accent hover:bg-white/5'}`}
+                         >
+                           {mode.label}
+                         </button>
+                       ))}
+                     </div>
+                   )}
+                 </div>
                  <span className="text-[10px] font-mono font-black text-brand-accent bg-brand-accent/10 px-2 py-0.5 rounded-full">{Math.max(0, queue.length - 1)}</span>
                </div>
             </div>
             <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3 pb-6">
               <AnimatePresence mode="popLayout">
                 {queue.length > 1 ? queue.slice(1).map((track, idx) => {
-                   const isDownloaded = downloadedTracks.includes(track.id);
+                   const warmupId = resolveWarmupTrackId(track);
+                   const isDownloaded = warmupId ? downloadedTracks.includes(warmupId) : downloadedTracks.includes(track.id);
                    if (isDownloaded) console.log(`[Aether] Track ${track.id} is downloaded`);
                    return (
                    <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} key={`${track.id}-${idx}`} className={`group glass-card p-3 flex items-center gap-4 hover:border-brand-accent/30 transition-all border-white/5 ${isDownloaded ? 'bg-red-500/15 border-red-500/30 shadow-[0_0_20px_rgba(255,0,0,0.35)]' : 'bg-white/[0.01]'}`}>
@@ -4428,7 +5357,16 @@ function App() {
                 <Globe size={18} className="text-brand-accent" />
                 <span className="label-caps mb-0 text-[10px]">Neural Discovery</span>
               </div>
-              {searchResults.length > 0 && <button onClick={() => setSearchResults([])} className="p-2 px-4 glass-card text-[9px] font-black text-red-500 hover:bg-red-500/10 active:scale-95 transition-all border-red-500/20">FLUSH</button>}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setIsViewingFullDiscovery(true)}
+                  className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-brand-accent/20 hover:text-brand-accent"
+                  title="View Full Discovery"
+                >
+                  <Maximize2 size={10} />
+                </button>
+                {searchResults.length > 0 && <button onClick={() => setSearchResults([])} className="p-2 px-4 glass-card text-[9px] font-black text-red-500 hover:bg-red-500/10 active:scale-95 transition-all border-red-500/20">FLUSH</button>}
+              </div>
             </div>
             <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 pb-6">
               <AnimatePresence>
@@ -5278,7 +6216,7 @@ function App() {
       </AnimatePresence>
 
       
-      {/* VOLUME HUD - V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN */}
+      {/* VOLUME HUD - NOVA */}
       <AnimatePresence>
         {volumeToast && (
           <motion.div 
@@ -5368,7 +6306,81 @@ function App() {
         )}
       </AnimatePresence>
     
-      {/* GLOBAL BACKGROUND ELEMENTS (V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN */}
+      {/* GLOBAL BACKGROUND ELEMENTS (NOVA */}
+            {/* FULL DISCOVERY OVERLAY */}
+            <AnimatePresence>
+              {isViewingFullDiscovery && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="fixed inset-0 z-[250] flex items-center justify-center p-4"
+                >
+                  <div className="absolute inset-0 bg-brand-dark/90 backdrop-blur-[20px]" onClick={() => setIsViewingFullDiscovery(false)} />
+                  <motion.div
+                    initial={{ scale: 0.95, y: 20 }}
+                    animate={{ scale: 1, y: 0 }}
+                    exit={{ scale: 0.95, y: 20 }}
+                    className="w-full max-w-2xl max-h-[80vh] glass-card bg-brand-dark/60 border-brand-accent/20 rounded-3xl flex flex-col overflow-hidden relative z-10"
+                  >
+                    <div className="flex items-center justify-between p-6 border-b border-brand-accent/10">
+                      <div className="flex items-center gap-3">
+                        <Globe size={20} className="text-brand-accent" />
+                        <div>
+                          <h2 className="text-lg font-black uppercase tracking-tighter text-white">Neural Discovery</h2>
+                          <p className="text-brand-accent text-xs font-bold tracking-widest uppercase opacity-60">{searchResults.length} RESULT{searchResults.length !== 1 ? 'S' : ''}</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setIsViewingFullDiscovery(false)}
+                        className="p-2 rounded-lg bg-white/5 hover:bg-red-500/20 text-white/50 hover:text-red-500 transition-all"
+                      >
+                        <X size={18} />
+                      </button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
+                      <div className="flex flex-col gap-2">
+                        {searchResults.length > 0 ? searchResults.map((track, idx) => (
+                          <motion.div
+                            key={`discovery-full-${track.id}-${idx}`}
+                            className="group glass-card p-4 flex items-center gap-4 rounded-xl transition-all bg-white/5 border border-white/10 hover:border-brand-accent/30 hover:bg-brand-accent/5"
+                          >
+                            <div className="text-brand-accent font-black text-sm w-6">{idx + 1}</div>
+                            <img src={getProxyUrl(track.thumbnail)} className="w-10 h-10 rounded-lg object-cover" alt="" />
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[12px] font-black truncate uppercase tracking-widest">{track.title}</div>
+                              <div className="text-[10px] font-bold text-white/40 truncate uppercase mt-1">{track.author}</div>
+                            </div>
+                            <button
+                              onClick={() => handleAdd(track)}
+                              className="opacity-0 group-hover:opacity-100 p-2 rounded-lg bg-brand-accent/20 hover:bg-brand-accent/40 text-brand-accent transition-all"
+                              title="Add to Queue"
+                            >
+                              <Plus size={14} />
+                            </button>
+                            <button
+                              onClick={() => {
+                                setLibraryActionTarget({ type: 'track', items: [track] });
+                                setIsLibraryOverlayOpen(true);
+                              }}
+                              className="opacity-0 group-hover:opacity-100 p-2 rounded-lg bg-white/5 hover:bg-brand-accent/20 hover:text-brand-accent text-white/45 transition-all"
+                              title="Save to Vault"
+                            >
+                              <HardDrive size={14} />
+                            </button>
+                          </motion.div>
+                        )) : (
+                          <div className="h-40 flex items-center justify-center text-[10px] font-black uppercase tracking-[0.28em] text-white/25">
+                            Discovery Empty
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </motion.div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {/* FULL QUEUE OVERLAY */}
             <AnimatePresence>
               {isViewingFullQueue && (
@@ -5402,7 +6414,10 @@ function App() {
                     </div>
                     <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
                       <div className="flex flex-col gap-2">
-                        {queue.map((track, idx) => (
+                        {queue.map((track, idx) => {
+                          const warmupId = resolveWarmupTrackId(track);
+                          const isDownloaded = warmupId ? downloadedTracks.includes(warmupId) : downloadedTracks.includes(track.id);
+                          return (
                           <motion.div 
                             key={`${track.id}-${idx}`}
                             draggable
@@ -5429,7 +6444,7 @@ function App() {
                               <div className="text-[12px] font-black truncate uppercase tracking-widest">{track.title}</div>
                               <div className="text-[10px] font-bold text-white/40 truncate uppercase mt-1">{track.author}</div>
                             </div>
-                            {downloadedTracks.includes(track.id) && (
+                            {isDownloaded && (
                               <span className="text-[8px] font-black uppercase tracking-widest text-red-500 border border-red-500/50 px-2 py-0.5 rounded-full">READY</span>
                             )}
                             {idx !== 0 && (
@@ -5470,7 +6485,8 @@ function App() {
                               </button>
                             )}
                           </motion.div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   </motion.div>
@@ -5548,7 +6564,7 @@ function App() {
          {/* Baseline Neural Glow (Optimized) */}
          <div className="absolute inset-0 bg-brand-accent/5 backdrop-blur-[60px] animate-pulse" />
          
-         {/* Global Neural Aura (Pulse) - V12.11.1-SOVEREIGN-SOVEREIGN-SOVEREIGN Optimized */}
+         {/* Global Neural Aura (Pulse) - NOVA Optimized */}
          <div className="absolute inset-0 flex items-center justify-center scale-150 transform-gpu will-change-transform">
             <canvas 
                ref={pulseCanvasRef} 

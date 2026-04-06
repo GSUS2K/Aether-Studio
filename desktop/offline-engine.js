@@ -8,6 +8,7 @@ class OfflineEngine {
     constructor(baseDir) {
         this.downloadDir = path.join(baseDir, 'downloads');
         this.inProgressDownloads = new Map();
+        this.activeDownloadProcesses = new Map();
         if (!fs.existsSync(this.downloadDir)) {
             fs.mkdirSync(this.downloadDir, { recursive: true });
         }
@@ -66,10 +67,12 @@ class OfflineEngine {
             // Ensure no partial file rename concurrency issues
             args.push('--no-part', '--no-continue', '--no-check-certificates', '--no-warnings', '--quiet');
             const proc = spawn(ytdlpPath, args);
+            this.activeDownloadProcesses.set(trackId, proc);
 
             proc.on('close', (code) => {
                 const duration = Date.now() - startTime;
                 this.inProgressDownloads.delete(trackId);
+                this.activeDownloadProcesses.delete(trackId);
 
                 const outputInfo = {
                     code,
@@ -121,6 +124,7 @@ class OfflineEngine {
             proc.on('error', (err) => {
                 const duration = Date.now() - startTime;
                 this.inProgressDownloads.delete(trackId);
+                this.activeDownloadProcesses.delete(trackId);
                 console.error(`[OfflineEngine] Spawn error for ${trackId} after ${duration}ms:`, err);
                 reject(err);
             });
@@ -157,6 +161,146 @@ class OfflineEngine {
             .map(f => f.replace('.m4a', ''));
         console.log(`[OfflineEngine] Found ${tracks.length} downloaded tracks:`, tracks);
         return tracks;
+    }
+
+    async getDownloadedTrackDetails() {
+        const files = fs.readdirSync(this.downloadDir);
+        const tracks = files
+            .filter((f) => f.endsWith('.m4a'))
+            .map((f) => {
+                const id = f.replace('.m4a', '');
+                const fullPath = path.join(this.downloadDir, f);
+                try {
+                    const stat = fs.statSync(fullPath);
+                    if ((stat.size || 0) < MIN_VALID_AUDIO_BYTES) return null;
+                    return {
+                        id,
+                        fileName: f,
+                        filePath: fullPath,
+                        bytes: stat.size || 0,
+                        modifiedAt: stat.mtimeMs || stat.ctimeMs || Date.now(),
+                    };
+                } catch {
+                    return null;
+                }
+            })
+            .filter(Boolean)
+            .sort((a, b) => (b.modifiedAt || 0) - (a.modifiedAt || 0));
+
+        return tracks;
+    }
+
+    async removeDownload(trackId, options = {}) {
+        const id = String(trackId || '').trim();
+        if (!id) return { success: false, error: 'Missing trackId', removedFiles: 0, removedBytes: 0, canceledInProgress: false };
+
+        const {
+            cancelInProgress = true,
+            removeSidecars = true,
+        } = options || {};
+
+        let removedFiles = 0;
+        let removedBytes = 0;
+        let canceledInProgress = false;
+
+        if (cancelInProgress) {
+            const proc = this.activeDownloadProcesses.get(id);
+            if (proc) {
+                try {
+                    proc.kill('SIGKILL');
+                    canceledInProgress = true;
+                } catch (e) {
+                    console.warn(`[OfflineEngine] Failed to stop in-progress download for ${id}: ${e.message}`);
+                } finally {
+                    this.activeDownloadProcesses.delete(id);
+                    this.inProgressDownloads.delete(id);
+                }
+            }
+        }
+
+        try {
+            const filePath = path.join(this.downloadDir, `${id}.m4a`);
+            if (fs.existsSync(filePath)) {
+                const stat = fs.statSync(filePath);
+                fs.unlinkSync(filePath);
+                removedFiles += 1;
+                removedBytes += stat.size || 0;
+            }
+
+            if (removeSidecars) {
+                const files = fs.readdirSync(this.downloadDir);
+                const sidecarExt = new Set(['.lrc', '.webm', '.mp4', '.mkv', '.part', '.tmp', '.ytdl', '.orig']);
+                for (const file of files) {
+                    if (!file.startsWith(`${id}.`)) continue;
+                    const ext = path.extname(file).toLowerCase();
+                    if (!sidecarExt.has(ext)) continue;
+                    const fullPath = path.join(this.downloadDir, file);
+                    try {
+                        const stat = fs.statSync(fullPath);
+                        fs.unlinkSync(fullPath);
+                        removedFiles += 1;
+                        removedBytes += stat.size || 0;
+                    } catch (e) {
+                        console.warn(`[OfflineEngine] Failed to remove sidecar ${file}: ${e.message}`);
+                    }
+                }
+            }
+
+            return {
+                success: true,
+                trackId: id,
+                removedFiles,
+                removedBytes,
+                canceledInProgress,
+            };
+        } catch (e) {
+            return {
+                success: false,
+                trackId: id,
+                error: e.message,
+                removedFiles,
+                removedBytes,
+                canceledInProgress,
+            };
+        }
+    }
+
+    async clearAllDownloads(options = {}) {
+        const downloaded = await this.getDownloadedTracks();
+        const inProgressIds = Array.from(this.activeDownloadProcesses.keys());
+        const allIds = Array.from(new Set([...(downloaded || []), ...inProgressIds]));
+        let removedTracks = 0;
+        let removedFiles = 0;
+        let removedBytes = 0;
+        let canceledInProgress = 0;
+        const failures = [];
+
+        for (const id of allIds) {
+            try {
+                const result = await this.removeDownload(id, options);
+                if (result?.success) {
+                    removedTracks += 1;
+                    removedFiles += Number(result.removedFiles || 0);
+                    removedBytes += Number(result.removedBytes || 0);
+                    canceledInProgress += result.canceledInProgress ? 1 : 0;
+                } else {
+                    failures.push({ id, error: result?.error || 'Unknown failure' });
+                }
+            } catch (e) {
+                failures.push({ id, error: e?.message || 'Unknown failure' });
+            }
+        }
+
+        const remaining = await this.getDownloadedTracks();
+        return {
+            success: failures.length === 0,
+            removedTracks,
+            removedFiles,
+            removedBytes,
+            canceledInProgress,
+            failures,
+            remaining,
+        };
     }
 }
 
