@@ -20,10 +20,11 @@ jobs:
         include:
         - os: macos-latest
           label: macos
-          build_cmd: npx electron-builder --mac dmg --x64 --arm64 --publish=never
+          build_cmd: npx electron-builder --mac dmg zip --x64 --arm64 --publish=never
           artifact_glob: |
             dist/*.dmg
             dist/*.dmg.blockmap
+            dist/*.zip
             dist/latest-mac.yml
         - os: windows-latest
           label: windows
