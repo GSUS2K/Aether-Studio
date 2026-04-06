@@ -1,6 +1,6 @@
 {
-  "name": "utario",
-  "productName": "Utario",
+  "name": "aether",
+  "productName": "Aether",
   "version": "2026.4.6",
   "description": "Standalone Aether Desktop Application",
   "main": "desktop/main.js",
@@ -46,7 +46,7 @@
   },
   "build": {
     "appId": "com.GSUS_2K.aether-studio",
-    "productName": "Utario",
+    "productName": "Aether",
     "npmRebuild": false,
     "directories": {
       "output": "dist"
