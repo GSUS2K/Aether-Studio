@@ -1,4 +1,6 @@
 const { app, BrowserWindow, ipcMain, globalShortcut, Menu, dialog, systemPreferences } = require('electron');
+app.setName('Aether');
+app.name = 'Aether';
 const ffmpeg = require('ffmpeg-static');
 const Store = require('electron-store');
 const store = new Store();
