@@ -354,6 +354,7 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [hasCompletedSearch, setHasCompletedSearch] = useState(false);
   const [addingIds, setAddingIds] = useState(new Set());
   const [isAutoScrollPaused, setIsAutoScrollPaused] = useState(false);
   const [lyricOffsetPresets, setLyricOffsetPresets] = useState({});
@@ -3540,6 +3541,7 @@ function App() {
     if (e) e.preventDefault();
     if (!searchQuery.trim()) return;
     setIsSearching(true);
+    setHasCompletedSearch(true);
     try {
       if (isStandalone) {
           const results = await window.aether.search(searchQuery);
@@ -4522,7 +4524,10 @@ function App() {
                 placeholder="Search music..." 
                 className={`w-full rounded-full pl-14 pr-24 h-11 text-sm outline-none transition-all ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/5 border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'}`}
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setHasCompletedSearch(false);
+                }}
               />
               <button
                 type="button"
@@ -5509,7 +5514,7 @@ function App() {
                     </motion.div>
                 ))}
               </AnimatePresence>
-              {!isSearching && searchResults.length === 0 && (
+                {!isSearching && searchResults.length === 0 && !hasCompletedSearch && (
                 <div className="h-full flex flex-col items-center justify-center gap-4 opacity-10 text-center py-4">
                    <div className="relative">
                       <Search size={32} strokeWidth={1} />
@@ -5519,6 +5524,19 @@ function App() {
                    {isDoodleMode && <img src={catDoodlePeek} alt="doodle" className="h-10 w-auto opacity-75 select-none pointer-events-none" draggable={false} />}
                 </div>
               )}
+                {!isSearching && searchResults.length === 0 && hasCompletedSearch && (
+                 <div className="h-full flex flex-col items-center justify-center gap-4 text-center py-4 opacity-40">
+                   <div className="relative text-brand-accent/70">
+                     <Search size={30} strokeWidth={1.4} />
+                   </div>
+                   <div>
+                     <p className="text-[9px] font-black uppercase tracking-[0.35em] text-white/60">No Results Found</p>
+                     <p className="mt-2 text-[8px] font-bold uppercase tracking-[0.25em] text-white/30 max-w-[220px] mx-auto">
+                      Try a different title, artist, or fewer words.
+                     </p>
+                   </div>
+                 </div>
+                )}
             </div>
           </div>
 

@@ -1077,9 +1077,12 @@ streamApp.get('/', (req, res) => {
 streamApp.get('/stream', async (req, res) => {
     const startTime = Date.now();
     const videoUrl = req.query.url;
-    const seekTime = req.query.time ? parseInt(req.query.time, 10) : 0;
-    
-    if (!videoUrl) return res.status(400).send('No URL provided');
+            const ready = await ensureYtDlpPathWithTimeout(12000);
+            if (!ready) {
+                logDebug('search proceeding without confirmed yt-dlp readiness', { query: String(query || '').slice(0, 60) });
+            }
+            const searchPath = ytdlpPath || resolveYtDlpPath() || resolveSystemYtDlp();
+            const results = await search(query, searchPath);
 
     // Extract track ID only from YouTube share links (youtube.com?v=XXXXX)
     const trackIdMatch = videoUrl.match(/(?:youtube\.com|youtu\.be).*[?&]v=([A-Za-z0-9_-]{11})/);
@@ -1438,7 +1441,12 @@ streamApp.get('/api/queue/:id', (req, res) => {
 // 2. SEARCH
 streamApp.get('/api/search', async (req, res) => {
     try {
-        const results = await search(req.query.q, ytdlpPath);
+        const ready = await ensureYtDlpPathWithTimeout(12000);
+        if (!ready) {
+            console.log('[Aether/API] /api/search proceeding without confirmed yt-dlp readiness');
+        }
+        const searchPath = ytdlpPath || resolveYtDlpPath() || resolveSystemYtDlp();
+        const results = await search(req.query.q, searchPath);
         res.json(results);
     } catch (e) { res.json([]); }
 });

@@ -1,8 +1,81 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 const MIN_VALID_AUDIO_BYTES = 64 * 1024;
+const SEARCH_TIMEOUT_MS = 15000;
+
+const runYtDlpSearch = (query, ytdlpPath, extraArgs = []) => new Promise((resolve) => {
+    const cookiesPath = path.join(__dirname, '../cookies.txt');
+    const args = [
+        query,
+        '--dump-json',
+        '--flat-playlist',
+        '--no-check-certificates',
+        '--retries', '3',
+        '--fragment-retries', '3',
+        '--socket-timeout', '10',
+        ...extraArgs,
+    ];
+    if (fs.existsSync(cookiesPath) && fs.statSync(cookiesPath).size > 0) args.push('--cookies', cookiesPath);
+
+    const proc = spawn(ytdlpPath || 'yt-dlp', args);
+    let output = '';
+    let errorOutput = '';
+    let settled = false;
+
+    const finish = (results) => {
+        if (settled) return;
+        settled = true;
+        resolve(results);
+    };
+
+    const timeout = setTimeout(() => {
+        try { proc.kill('SIGKILL'); } catch {}
+        finish([]);
+    }, SEARCH_TIMEOUT_MS);
+
+    proc.stdout.on('data', (data) => { output += data.toString(); });
+    proc.stderr.on('data', (data) => { errorOutput += data.toString(); });
+    proc.on('close', (code) => {
+        clearTimeout(timeout);
+        if (code !== 0) {
+            try {
+                fs.appendFileSync(path.join(os.homedir(), 'Desktop', 'AetherDebug.log'), `\n[Search Fault]\ncode: ${code}\nstderr: ${errorOutput}\n`);
+            } catch(e){}
+            return finish([]);
+        }
+
+        try {
+            const results = output.split('\n').filter(l => l.trim()).map(line => {
+                const data = JSON.parse(line);
+                return {
+                    id: data.id,
+                    title: data.title,
+                    author: data.uploader || 'Unknown',
+                    duration: data.duration * 1000,
+                    url: data.url || `https://www.youtube.com/watch?v=${data.id}`,
+                    thumbnail: data.thumbnail || (data.thumbnails && data.thumbnails[0]?.url)
+                };
+            }).filter(r => r.id && r.title);
+            finish(results);
+        } catch (e) {
+            try {
+                fs.appendFileSync(path.join(os.homedir(), 'Desktop', 'AetherDebug.log'), `\n[Search Parse Fault]\nError: ${e.message}\nOutput: ${output.slice(0,200)}\n`);
+            } catch(err){}
+            finish([]);
+        }
+    });
+
+    proc.on('error', (err) => {
+        clearTimeout(timeout);
+        try {
+            fs.appendFileSync(path.join(os.homedir(), 'Desktop', 'AetherDebug.log'), `\n[Search Spawn Fault]\nError: ${err.message}\n`);
+        } catch(e){}
+        finish([]);
+    });
+});
 
 class OfflineEngine {
     constructor(baseDir) {
@@ -306,56 +379,27 @@ class OfflineEngine {
 
 // --- NEURAL ENGINE HELPERS (V6.6.4) ---
 const search = async (query, ytdlpPath) => {
-    return new Promise((resolve, reject) => {
-        const cookiesPath = path.join(__dirname, '../cookies.txt');
-        const args = [
-            'ytsearch10:' + query,
-            '--dump-json',
-            '--flat-playlist',
-            '--no-check-certificates'
-        ];
-        if (fs.existsSync(cookiesPath) && fs.statSync(cookiesPath).size > 0) args.push('--cookies', cookiesPath);
+    const cleanQuery = String(query || '').trim();
+    if (!cleanQuery) return [];
 
-        const proc = spawn(ytdlpPath || 'yt-dlp', args);
+    const primary = await runYtDlpSearch(`ytsearch10:${cleanQuery}`, ytdlpPath);
+    if (Array.isArray(primary) && primary.length > 0) return primary;
 
-        let output = '';
-        let errorOutput = '';
-        proc.stdout.on('data', (data) => { output += data.toString(); });
-        proc.stderr.on('data', (data) => { errorOutput += data.toString(); });
-        proc.on('close', (code) => {
-            if (code !== 0) {
-                const fs = require('fs');
-                const os = require('os');
-                try { fs.appendFileSync(path.join(os.homedir(), 'Desktop', 'AetherDebug.log'), `\n[Search Fault]\ncode: ${code}\nstderr: ${errorOutput}\n`); } catch(e){}
-                return resolve([]);
-            }
-            try {
-                const results = output.split('\n').filter(l => l.trim()).map(line => {
-                    const data = JSON.parse(line);
-                    return {
-                        id: data.id,
-                        title: data.title,
-                        author: data.uploader || 'Unknown',
-                        duration: data.duration * 1000,
-                        url: data.url || `https://www.youtube.com/watch?v=${data.id}`,
-                        thumbnail: data.thumbnail || (data.thumbnails && data.thumbnails[0]?.url)
-                    };
-                });
-                resolve(results);
-            } catch (e) {
-                const fs = require('fs');
-                const os = require('os');
-                try { fs.appendFileSync(path.join(os.homedir(), 'Desktop', 'AetherDebug.log'), `\n[Search Parse Fault]\nError: ${e.message}\nOutput: ${output.slice(0,200)}\n`); } catch(err){}
-                resolve([]); 
-            }
-        });
-        proc.on('error', (err) => {
-            const fs = require('fs');
-            const os = require('os');
-            try { fs.appendFileSync(path.join(os.homedir(), 'Desktop', 'AetherDebug.log'), `\n[Search Spawn Fault]\nError: ${err.message}\n`); } catch(e){}
-            resolve([]);
-        });
-    });
+    const fallbackTerms = cleanQuery
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 6)
+        .join(' ');
+
+    if (fallbackTerms && fallbackTerms.toLowerCase() !== cleanQuery.toLowerCase()) {
+        const secondary = await runYtDlpSearch(`ytsearch10:${fallbackTerms}`, ytdlpPath);
+        if (Array.isArray(secondary) && secondary.length > 0) return secondary;
+    }
+
+    const related = await getRecommendations({ title: cleanQuery, author: '' }, ytdlpPath);
+    if (Array.isArray(related) && related.length > 0) return related;
+
+    return [];
 };
 
 const getMetadata = async (url, ytdlpPath) => {
