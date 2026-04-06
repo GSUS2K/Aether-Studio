@@ -540,6 +540,9 @@ function App() {
         return;
       }
       if (updateInfo.available) {
+        setUpdateToast('Downloading update…');
+        if (updateToastTimeoutRef.current) clearTimeout(updateToastTimeoutRef.current);
+        updateToastTimeoutRef.current = setTimeout(() => setUpdateToast(''), 2400);
         const res = await window.aether.downloadUpdate();
         if (!res?.success) {
           setLastAdded(`Update download failed${res?.error ? `: ${String(res.error).slice(0, 46)}` : ''}`);
@@ -547,6 +550,9 @@ function App() {
         }
         return;
       }
+      setUpdateToast('Checking for updates…');
+      if (updateToastTimeoutRef.current) clearTimeout(updateToastTimeoutRef.current);
+      updateToastTimeoutRef.current = setTimeout(() => setUpdateToast(''), 2400);
       const res = await window.aether.checkForUpdates();
       if (!res?.success && res?.error) {
         setLastAdded(`Update check failed: ${String(res.error).slice(0, 42)}`);
@@ -568,8 +574,13 @@ function App() {
     prevUpdateStatusRef.current = nextStatus;
 
     let toast = '';
+    if (nextStatus === 'checking') {
+      toast = 'Checking for updates…';
+    } else 
     if (nextStatus === 'available') {
       toast = `Update available${updateInfo?.version ? ` • v${updateInfo.version}` : ''}`;
+    } else if (nextStatus === 'up-to-date') {
+      toast = 'You are on the latest version';
     } else if (nextStatus === 'downloaded') {
       toast = `Update ready${updateInfo?.version ? ` • v${updateInfo.version}` : ''} • restart to install`;
     } else if (nextStatus === 'error') {
@@ -579,7 +590,7 @@ function App() {
     if (!toast) return;
     setUpdateToast(toast);
     if (updateToastTimeoutRef.current) clearTimeout(updateToastTimeoutRef.current);
-    updateToastTimeoutRef.current = setTimeout(() => setUpdateToast(''), nextStatus === 'downloaded' ? 5200 : 3600);
+    updateToastTimeoutRef.current = setTimeout(() => setUpdateToast(''), nextStatus === 'downloaded' ? 5200 : nextStatus === 'checking' ? 2000 : 3600);
 
     return () => {
       if (updateToastTimeoutRef.current) {
@@ -4573,18 +4584,6 @@ function App() {
                  <Monitor size={16} />
                </button>
 
-               {canUseUpdater && updateInfo?.enabled && (
-                 <button
-                   onClick={handleUpdateAction}
-                   disabled={isUpdateBusy || updateInfo?.status === 'checking' || updateInfo?.status === 'downloading'}
-                   className={`h-10 px-3 rounded-2xl flex items-center gap-2 transition-all border no-drag disabled:opacity-60 disabled:cursor-not-allowed ${updateInfo?.downloaded ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : updateInfo?.available ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
-                   title={updateInfo?.message || 'Check for updates'}
-                 >
-                   <RefreshCw size={14} className={`${updateInfo?.status === 'checking' || updateInfo?.status === 'downloading' ? 'animate-spin' : ''}`} />
-                   <span className="text-[10px] font-black uppercase tracking-widest">{updateActionLabel}</span>
-                 </button>
-               )}
-
                <div className="relative">
                  <button
                    onClick={() => setIsSleepTimerMenuOpen(prev => !prev)}
@@ -4868,6 +4867,19 @@ function App() {
               >
                 Clear Skip Log
               </button>
+              {canUseUpdater && updateInfo?.enabled && (
+                <button
+                  onClick={handleUpdateAction}
+                  disabled={isUpdateBusy || updateInfo?.status === 'checking' || updateInfo?.status === 'downloading'}
+                  className={`px-3 py-1.5 rounded-xl border text-[10px] font-black uppercase tracking-[0.16em] transition-all disabled:opacity-60 disabled:cursor-not-allowed ${updateInfo?.downloaded ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : updateInfo?.available ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent hover:bg-brand-accent/20' : 'border-white/15 bg-white/[0.03] text-white/70 hover:border-white/30'}`}
+                  title={updateInfo?.message || 'Check for updates'}
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    <RefreshCw size={11} className={`${updateInfo?.status === 'checking' || updateInfo?.status === 'downloading' ? 'animate-spin' : ''}`} />
+                    {updateActionLabel}
+                  </span>
+                </button>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-2 text-[10px] font-mono">
