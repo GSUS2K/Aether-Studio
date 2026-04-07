@@ -2090,8 +2090,11 @@ function App() {
   // Audio Visualizer Loop (NOVA
   useEffect(() => {
     if (!isStandalone || !localAudioRef.current) return;
+    let cancelled = false;
+    let startTimer = null;
 
     const setupAudioAnalysis = () => {
+      if (cancelled) return;
       try {
         if (!audioCtxRef.current) {
           audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
@@ -2115,12 +2118,14 @@ function App() {
     };
 
     const runVisualizer = () => {
+      if (cancelled) return;
       if (!analyserRef.current || !auraEnergyRef.current) return;
       const bufferLength = analyserRef.current.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
       
       const draw = () => {
         try {
+          if (cancelled) return;
           animationFrameRef.current = requestAnimationFrame(draw);
           
           const canvas = visualizerCanvasRef.current;
@@ -2335,10 +2340,15 @@ function App() {
       animationFrameRef.current = requestAnimationFrame(draw);
     };
 
-    setupAudioAnalysis();
-    runVisualizer();
+    startTimer = window.setTimeout(() => {
+      if (cancelled) return;
+      setupAudioAnalysis();
+      runVisualizer();
+    }, 50);
 
     return () => {
+      cancelled = true;
+      if (startTimer) window.clearTimeout(startTimer);
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
   }, [isStandalone, isPlaying, currentTrack, currentTime, visualizerMode, themeColor, isMixtapeVaultOpen]);

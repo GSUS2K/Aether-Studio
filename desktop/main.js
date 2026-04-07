@@ -2507,9 +2507,12 @@ app.whenReady().then(async () => {
     ipcMain.handle('aether:search', async (event, query) => {
         const started = Date.now();
         try {
-            const ready = await ensureYtDlpPathWithTimeout(7000);
-            if (!ready) return [];
-            const results = await search(query, ytdlpPath);
+            const ready = await ensureYtDlpPathWithTimeout(12000);
+            if (!ready) {
+                logDebug('search proceeding without confirmed yt-dlp readiness', { query: String(query || '').slice(0, 60) });
+            }
+            const searchPath = ytdlpPath || resolveYtDlpPath() || resolveSystemYtDlp();
+            const results = await search(query, searchPath);
             logDebug('search completed', { query: String(query || '').slice(0, 60), count: Array.isArray(results) ? results.length : 0, ms: Date.now() - started });
             return results;
         } catch (err) {
