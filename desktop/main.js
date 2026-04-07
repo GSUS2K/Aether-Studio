@@ -1315,10 +1315,16 @@ streamApp.get('/api/search', async (req, res) => {
     try {
         console.log('[Aether/API] GET /api/search', { q: req.query.q });
         const results = await search(req.query.q, ytdlpPath);
-        console.log('[Aether/API] GET /api/search result', { q: req.query.q, count: results?.length || 0 });
+        const count = results?.length || 0;
+        console.log('[Aether/API] GET /api/search result', { q: req.query.q, count });
+        logDebug('api search completed', { query: String(req.query.q || '').slice(0, 60), count, searchPath: ytdlpPath || 'unresolved' });
+        if (count === 0) {
+            logDebug('api search returned no results', { query: String(req.query.q || '').slice(0, 60), searchPath: ytdlpPath || 'unresolved' });
+        }
         res.json(results);
     } catch (e) {
         console.error('[Aether/API] GET /api/search failed', e.message);
+        logDebug('api search failed', { query: String(req.query.q || '').slice(0, 60), error: e?.message || String(e) });
         res.json([]);
     }
 });
@@ -2513,7 +2519,11 @@ app.whenReady().then(async () => {
             }
             const searchPath = ytdlpPath || resolveYtDlpPath() || resolveSystemYtDlp();
             const results = await search(query, searchPath);
-            logDebug('search completed', { query: String(query || '').slice(0, 60), count: Array.isArray(results) ? results.length : 0, ms: Date.now() - started });
+            const count = Array.isArray(results) ? results.length : 0;
+            logDebug('search completed', { query: String(query || '').slice(0, 60), count, ms: Date.now() - started, searchPath: searchPath || 'unresolved' });
+            if (count === 0) {
+                logDebug('search returned no results', { query: String(query || '').slice(0, 60), ms: Date.now() - started, searchPath: searchPath || 'unresolved' });
+            }
             return results;
         } catch (err) {
             logDebug('search failed', { error: err?.message || String(err), ms: Date.now() - started });
