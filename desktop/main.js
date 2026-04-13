@@ -1592,25 +1592,24 @@ async function setRPCActivity(details) {
 
     // RPC Silent
     try {
-        const cleanUrl = details.url?.split('&')[0] || 'https://github.com/GSUS2K'; // Strip tracking
-        const finalUrl = cleanUrl.length > 511 ? cleanUrl.slice(0, 511) : cleanUrl;
+        const title = String(details.title || '').trim();
+        const artist = String(details.artist || '').trim();
+        const isPlaying = details.isPlaying !== false;
 
         const activity = {
-            details: details.title?.slice(0, 127) || 'Exploring Aether',
-            state: details.isPlaying === false ? `(Paused) ${details.artist}`.slice(0, 127) : (details.artist?.slice(0, 127) || 'Aura Sync'),
+            type: isPlaying ? 2 : 0,
+            details: (title || 'Music Lobby').slice(0, 127),
+            state: isPlaying
+                ? (artist ? `by ${artist}`.slice(0, 127) : 'Listening on Aether')
+                : (artist ? `Paused • ${artist}`.slice(0, 127) : 'Paused'),
             largeImageKey: details.thumbnail || 'cover',
-            largeImageText: details.title?.slice(0, 127) || 'Aether Studio',
+            largeImageText: (title || 'Aether').slice(0, 127),
             smallImageKey: 'icon',
-            smallImageText: `V${app.getVersion()} // Aether`,
-            instance: false,
-            buttons: [
-                { label: '🎧 Listen on Source', url: finalUrl },
-                { label: '🧿 Open Aether', url: 'https://github.com/GSUS2K' }
-            ]
+            smallImageText: 'Aether',
+            instance: false
         };
 
-        // Note: Removing party/secrets as they conflict with buttons in IPC RPC
-        if (details.isPlaying !== false) {
+        if (isPlaying) {
             activity.startTimestamp = details.startTime;
             activity.endTimestamp = details.endTime;
         }
@@ -1621,10 +1620,7 @@ async function setRPCActivity(details) {
             await rpcClient.setActivity(activity);
         } catch (err) {
             console.error(`[Aether] setActivity FAULT: ${err.message}`);
-            if (err.message.includes('buttons') || err.message.includes('FIELD_INVALID')) {
-                delete activity.buttons;
-                await rpcClient.setActivity(activity);
-            }
+            if (err.message.includes('FIELD_INVALID')) await rpcClient.setActivity(activity);
         }
     } catch (e) {
         console.error(`[Aether] Neural Presence Trace Log: ${e.message}`);

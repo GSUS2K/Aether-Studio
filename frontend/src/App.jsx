@@ -466,6 +466,9 @@ function App() {
   const idleStartTimeRef = useRef(null);
   const idlePhraseRef = useRef(null);
   const lastRPCTrackIdRef = useRef(null);
+  const lastRPCPlayingRef = useRef(null);
+  const lastRPCStartRef = useRef(null);
+  const lastRPCEndRef = useRef(null);
   const sessionReadyRef = useRef(false);
   const pendingResumeTimeRef = useRef(null);
 
@@ -1696,6 +1699,10 @@ function App() {
     console.log("[Aether/Audio] Queue effect fired", { queueLength: queue?.length, currentTrack: queue?.[0]?.title, isPlaying, isStandalone });
     if (!isStandalone || !queue || queue.length === 0) return;
     const track = queue[0];
+    if (!track || typeof track !== 'object') {
+      setQueue(prev => (Array.isArray(prev) ? prev.filter(item => item && typeof item === 'object') : []));
+      return;
+    }
     const loadStartTime = Date.now();
     const trackUrl = track.actualUrl || track.url;
     const baseTrackLoadKey = track.queueNonce || track.id || track.youtubeId || `${track.title || ''}|${track.author || ''}|${trackUrl || ''}`;
@@ -2009,12 +2016,24 @@ function App() {
 
     const updateRPC = () => {
         const track = queue?.[0];
+      const hasValidTrack = !!(track && typeof track === 'object');
         
-        if (track) {
-            // Only update if it's a new track to avoid resetting the "Elapsed" timer
-            if (lastRPCTrackIdRef.current === track.id) return;
-            
-            lastRPCTrackIdRef.current = track.id;
+      if (hasValidTrack) {
+            const rpcTrackId = String(track.id || track.youtubeId || `${track.title || ''}|${track.author || ''}`);
+            const sameTrack = lastRPCTrackIdRef.current === rpcTrackId;
+            const samePlayState = lastRPCPlayingRef.current === isPlaying;
+            if (sameTrack && samePlayState) return;
+
+            if (!sameTrack) {
+              lastRPCStartRef.current = Date.now() - currentTime;
+              lastRPCEndRef.current = Date.now() + (track.totalDurationMs || track.duration || 0) - currentTime;
+            } else if (!lastRPCStartRef.current || !lastRPCEndRef.current) {
+              lastRPCStartRef.current = Date.now() - currentTime;
+              lastRPCEndRef.current = Date.now() + (track.totalDurationMs || track.duration || 0) - currentTime;
+            }
+
+            lastRPCTrackIdRef.current = rpcTrackId;
+            lastRPCPlayingRef.current = isPlaying;
             idleStartTimeRef.current = null;
             idlePhraseRef.current = null;
             
@@ -2023,13 +2042,16 @@ function App() {
                 artist: track.author,
                 thumbnail: track.thumbnail,
                 isPlaying: isPlaying,
-                url: track.actualUrl || track.url,
-                startTime: Date.now() - currentTime,
-                endTime: Date.now() + (track.totalDurationMs || track.duration || 0) - currentTime
+              url: track.actualUrl || track.url || '',
+                startTime: lastRPCStartRef.current,
+                endTime: lastRPCEndRef.current
             });
         } else {
             // Idle Lobby State
             lastRPCTrackIdRef.current = null;
+            lastRPCPlayingRef.current = null;
+            lastRPCStartRef.current = null;
+            lastRPCEndRef.current = null;
             if (!idleStartTimeRef.current) {
                 idleStartTimeRef.current = Date.now();
                 idlePhraseRef.current = IDLE_PHRASES[Math.floor(Math.random() * IDLE_PHRASES.length)];
@@ -3929,10 +3951,12 @@ function App() {
           console.log("[Aether/Control] Skip triggered");
           noteSkipReason('manual_skip', { source: 'transport', title: queue?.[0]?.title });
             setQueue(prev => {
-                const next = prev.slice(1);
+                const normalized = Array.isArray(prev) ? prev.filter(item => item && typeof item === 'object') : [];
+                const removed = normalized[0] || null;
+                const next = normalized.slice(1);
                 if (next.length === 0) {
                     setIsPlaying(false);
-              if (isAutoplayEnabled) setTimeout(() => triggerAutoplay(prev[0]), 0);
+              if (isAutoplayEnabled && removed) setTimeout(() => triggerAutoplay(removed), 0);
                 }
                 return next;
             });
