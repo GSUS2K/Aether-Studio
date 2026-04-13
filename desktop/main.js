@@ -162,6 +162,7 @@ let isAppQuitting = false;
 let quitCleanupInProgress = false;
 let quitCleanupCompleted = false;
 let finalTeardownCompleted = false;
+let quitFallbackTimer = null;
 const activeStreamProcesses = new Set();
 const getLockRecord = () => store.get(APP_LOCK_STORE_KEY) || null;
 const canPromptTouchId = () => {
@@ -1533,98 +1534,95 @@ startServer(SERVER_PORT);
 // --- DISCORD RPC (V6.6.2) ---
 const clientId = process.env.VITE_DISCORD_CLIENT_ID || '1486690205346824342';
 let rpcClient;
+let rpcLoginInFlight = false;
+let rpcRetryTimer = null;
+let rpcLastDetails = null;
+
+const scheduleRPCReconnect = (delayMs = 12000) => {
+    if (rpcRetryTimer) return;
+    rpcRetryTimer = setTimeout(async () => {
+        rpcRetryTimer = null;
+        await initRPC();
+    }, Math.max(2000, delayMs));
+};
+
+const buildRPCActivity = (details = {}) => {
+    const title = String(details.title || '').trim();
+    const artist = String(details.artist || '').trim();
+    const isPlaying = details.isPlaying !== false;
+    const activity = {
+        type: isPlaying ? 2 : 0,
+        details: (title || 'Music Lobby').slice(0, 127),
+        state: isPlaying
+            ? (artist ? `by ${artist}`.slice(0, 127) : 'Listening on Aether')
+            : (artist ? `Paused • ${artist}`.slice(0, 127) : 'Paused'),
+        largeImageKey: details.thumbnail || 'cover',
+        largeImageText: (title || 'Aether').slice(0, 127),
+        smallImageKey: 'icon',
+        smallImageText: 'Aether',
+        instance: false
+    };
+    if (isPlaying) {
+        activity.startTimestamp = details.startTime;
+        activity.endTimestamp = details.endTime;
+    }
+    return activity;
+};
+
+const pushRPCActivity = async (details = {}) => {
+    if (!rpcClient || !rpcClient.user) return false;
+    const activity = buildRPCActivity(details);
+    try {
+        await rpcClient.setActivity(activity);
+        return true;
+    } catch (err) {
+        console.error(`[Aether] setActivity FAULT: ${err.message}`);
+        return false;
+    }
+};
 
 async function initRPC() {
-  if (rpcClient && rpcClient.user) return; // Already connected
-  
-  // RPC Silence
-  if (!rpcClient) rpcClient = new DiscordRPC.Client({ transport: 'ipc' });
-  
-  rpcClient.on('ready', () => {
-    // Discord Silence
-    // Initial status on connect
-    const IDLE_PHRASES = [
-      "Exploring the Neural Vault",
-      "Calibrating Sonic Synapses",
-      "Organizing the Vibe Buffer",
-      "Hunting for Rare Nodes",
-      "Defragmenting the Studio",
-      "Awaiting the Next Drop",
-      "Lost in the Music Nexus",
-      "Optimizing Aura Sync",
-      "Neural Network Standby",
-      "Refining Studio Echoes",
-      "Calculating Bass Velocity",
-      "Feeding the Rhythm Hamsters",
-      "Searching for Perfect Snares",
-      "Overclocking the Speakers",
-      "Untangling Virtual Cables",
-      "Wait, where did the kick go?",
-      "Stealing hearts, one beat at a time",
-      "Looking hot in the studio spotlight",
-      "Is it hot in here or just the bass?",
-      "Aether's got a crush on your vibe",
-      "Neural connection... established? 😉",
-      "Synchronizing heartbeats...",
-      "Midnight studio sessions > Anything",
-      "Caught in your sonic orbit"
-    ];
-    const initialPhrase = IDLE_PHRASES[Math.floor(Math.random() * IDLE_PHRASES.length)];
+    if (rpcClient && rpcClient.user) return true;
+    if (rpcLoginInFlight) return false;
 
-    setRPCActivity({
-        title: "Music Lobby",
-        artist: initialPhrase,
-        startTime: Date.now()
-    });
-  });
+    if (!rpcClient) {
+        rpcClient = new DiscordRPC.Client({ transport: 'ipc' });
+        rpcClient.on('ready', async () => {
+            if (rpcLastDetails) {
+                await pushRPCActivity(rpcLastDetails);
+            } else {
+                await pushRPCActivity({ title: 'Music Lobby', artist: 'Organizing the Vibe Buffer', isPlaying: false, startTime: Date.now() });
+            }
+        });
+        rpcClient.on('disconnected', () => {
+            rpcClient = null;
+            scheduleRPCReconnect(10000);
+        });
+        rpcClient.on('error', () => {
+            rpcClient = null;
+            scheduleRPCReconnect(10000);
+        });
+    }
 
-  try {
-    await rpcClient.login({ clientId });
-  } catch (e) {
-    console.warn('[Aether] Discord RPC: Discord client not detected. Social status disabled.');
-    rpcClient = null; // Reset to allow retry on next track
-  }
+    rpcLoginInFlight = true;
+    try {
+        await rpcClient.login({ clientId });
+        return true;
+    } catch (e) {
+        rpcClient = null;
+        scheduleRPCReconnect(12000);
+        return false;
+    } finally {
+        rpcLoginInFlight = false;
+    }
 }
 
 async function setRPCActivity(details) {
-    if (!rpcClient) await initRPC();
-    if (!rpcClient) return;
-
-    // RPC Silent
-    try {
-        const title = String(details.title || '').trim();
-        const artist = String(details.artist || '').trim();
-        const isPlaying = details.isPlaying !== false;
-
-        const activity = {
-            type: isPlaying ? 2 : 0,
-            details: (title || 'Music Lobby').slice(0, 127),
-            state: isPlaying
-                ? (artist ? `by ${artist}`.slice(0, 127) : 'Listening on Aether')
-                : (artist ? `Paused • ${artist}`.slice(0, 127) : 'Paused'),
-            largeImageKey: details.thumbnail || 'cover',
-            largeImageText: (title || 'Aether').slice(0, 127),
-            smallImageKey: 'icon',
-            smallImageText: 'Aether',
-            instance: false
-        };
-
-        if (isPlaying) {
-            activity.startTimestamp = details.startTime;
-            activity.endTimestamp = details.endTime;
-        }
-        
-        // Presence Silent
-        
-        try {
-            await rpcClient.setActivity(activity);
-        } catch (err) {
-            console.error(`[Aether] setActivity FAULT: ${err.message}`);
-            if (err.message.includes('FIELD_INVALID')) await rpcClient.setActivity(activity);
-        }
-    } catch (e) {
-        console.error(`[Aether] Neural Presence Trace Log: ${e.message}`);
-    }
+        rpcLastDetails = details || null;
+        const connected = await initRPC();
+        if (!connected) return;
+        const ok = await pushRPCActivity(rpcLastDetails || {});
+        if (!ok) scheduleRPCReconnect(8000);
 }
 
 // --- ELECTRON LIFECYCLE ---
@@ -2663,10 +2661,29 @@ app.on('before-quit', (event) => {
     }
 
     event.preventDefault();
-    if (quitCleanupInProgress) return;
+    if (quitCleanupInProgress) {
+        // User pressed Cmd+Q again while async cleanup is still running.
+        // Finalize immediately instead of waiting for another lifecycle round-trip.
+        runFinalTeardown();
+        if (quitFallbackTimer) {
+            clearTimeout(quitFallbackTimer);
+            quitFallbackTimer = null;
+        }
+        app.exit(0);
+        return;
+    }
 
     quitCleanupInProgress = true;
     isAppQuitting = true;
+
+    // Safety fallback: don't leave the app hanging in the dock if cleanup stalls.
+    if (quitFallbackTimer) clearTimeout(quitFallbackTimer);
+    quitFallbackTimer = setTimeout(() => {
+        try {
+            runFinalTeardown();
+        } catch {}
+        app.exit(0);
+    }, 4500);
 
     (async () => {
         const summary = await cleanupWarmupDownloadsOnQuit();
@@ -2676,13 +2693,21 @@ app.on('before-quit', (event) => {
 
         quitCleanupCompleted = true;
         quitCleanupInProgress = false;
-        app.quit();
+        if (quitFallbackTimer) {
+            clearTimeout(quitFallbackTimer);
+            quitFallbackTimer = null;
+        }
+        app.exit(0);
     })().catch((e) => {
         console.warn('[Aether/Storage] Quit cleanup fatal error', e?.message || e);
         runFinalTeardown();
         quitCleanupCompleted = true;
         quitCleanupInProgress = false;
-        app.quit();
+        if (quitFallbackTimer) {
+            clearTimeout(quitFallbackTimer);
+            quitFallbackTimer = null;
+        }
+        app.exit(0);
     });
 });
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, Component } from 'react';
-import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, Cpu, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard } from 'lucide-react';
+import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, Cpu, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { setupDiscordSdk } from './discord';
 import axios from 'axios';
@@ -32,6 +32,7 @@ const SESSION_UI_STORAGE_KEY = 'aether.sessionUi.v1';
 const SESSION_PLAYBACK_STORAGE_KEY = 'aether.sessionPlayback.v1';
 const PLAYLIST_ORDER_STORAGE_KEY = 'aether.playlistOrder.v1';
 const SKIP_EVENTS_STORAGE_KEY = 'aether.skipEvents.v1';
+const MANUAL_LYRICS_STORAGE_KEY = 'aether.manualLyrics.v1';
 const LOCK_PREFS_STORAGE_KEY = 'aether.lockPrefs.v1';
 const SHORTCUTS_STORAGE_KEY = 'aether.shortcuts.v1';
 const GLOBAL_SHORTCUTS_ENABLED_STORAGE_KEY = 'aether.globalMediaShortcuts.enabled';
@@ -114,6 +115,72 @@ const formatBytes = (bytes) => {
   const power = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024)));
   const scaled = value / (1024 ** power);
   return `${scaled >= 100 ? scaled.toFixed(0) : scaled.toFixed(1)} ${units[power]}`;
+};
+
+const normalizeManualLyricsLine = (line) => ({
+  time: Number.isFinite(Number(line?.time)) ? Math.max(0, Math.trunc(Number(line.time))) : 0,
+  text: String(line?.text || '').replace(/\r/g, '').trim(),
+});
+
+const sortManualLyricsLines = (lines = []) => (Array.isArray(lines) ? lines : [])
+  .map(normalizeManualLyricsLine)
+  .filter((line) => line.text.length > 0 || line.time >= 0)
+  .sort((left, right) => left.time - right.time);
+
+const formatManualLyricsTimestamp = (ms = 0) => {
+  const safeMs = Math.max(0, Math.trunc(Number(ms) || 0));
+  const totalCentiseconds = Math.round(safeMs / 10);
+  const minutes = Math.floor(totalCentiseconds / 6000);
+  const seconds = Math.floor((totalCentiseconds % 6000) / 100);
+  const centiseconds = totalCentiseconds % 100;
+  return `[${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(centiseconds).padStart(2, '0')}]`;
+};
+
+const parseManualLyricsTimestamp = (value) => {
+  const raw = String(value ?? '').trim().replace(/^\[|\]$/g, '');
+  const match = raw.match(/^(\d+):(\d{1,2})(?:[.:](\d{1,3}))?$/);
+  if (!match) return null;
+  const minutes = Number(match[1]);
+  const seconds = Number(match[2]);
+  const fraction = match[3] ? Number(String(match[3]).padEnd(3, '0').slice(0, 3)) : 0;
+  if (!Number.isFinite(minutes) || !Number.isFinite(seconds) || !Number.isFinite(fraction)) return null;
+  return ((minutes * 60) + seconds) * 1000 + fraction;
+};
+
+const manualLyricsLinesToLrc = (lines = []) => sortManualLyricsLines(lines)
+  .map((line) => `${formatManualLyricsTimestamp(line.time)}${line.text}`)
+  .join('\n');
+
+const parseManualLyricsLrcText = (input = '') => {
+  const lines = String(input || '')
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const parsed = [];
+  for (const rawLine of lines) {
+    const timestampMatches = [...rawLine.matchAll(/\[(\d{1,2}:\d{2}(?:[.:]\d{1,3})?)\]/g)];
+    const lyricText = rawLine.replace(/\[(\d{1,2}:\d{2}(?:[.:]\d{1,3})?)\]/g, '').trim();
+    if (!lyricText || timestampMatches.length === 0) continue;
+    for (const match of timestampMatches) {
+      const parsedTime = parseManualLyricsTimestamp(match[1]);
+      if (Number.isFinite(parsedTime)) {
+        parsed.push({
+          time: parsedTime,
+          text: lyricText,
+          timestamp: formatManualLyricsTimestamp(parsedTime).slice(1, -1),
+        });
+      }
+    }
+  }
+
+  return sortManualLyricsLines(parsed).map((line) => ({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    time: line.time,
+    timestamp: formatManualLyricsTimestamp(line.time).slice(1, -1),
+    text: line.text,
+  }));
 };
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
@@ -344,6 +411,16 @@ function App() {
   const [lyrics, setLyrics] = useState([]);
   const [isLyricsLoading, setIsLyricsLoading] = useState(false);
   const [activeLyricIndex, setActiveLyricIndex] = useState(-1);
+  const [manualLyricsStore, setManualLyricsStore] = useState({});
+  const manualLyricsStoreRef = useRef({});
+  const [isManualLyricsEditorOpen, setIsManualLyricsEditorOpen] = useState(false);
+  const [manualLyricsDraft, setManualLyricsDraft] = useState([]);
+  const [manualLyricsDraftError, setManualLyricsDraftError] = useState('');
+  const [isManualLyricsSaving, setIsManualLyricsSaving] = useState(false);
+  const [manualLyricsRawText, setManualLyricsRawText] = useState('');
+  const [isManualLyricsRawEditorOpen, setIsManualLyricsRawEditorOpen] = useState(false);
+  const [isManualLyricsTapMode, setIsManualLyricsTapMode] = useState(false);
+  const [manualLyricsSavedNotice, setManualLyricsSavedNotice] = useState('');
   const [systemStats, setSystemStats] = useState(null);
   const visualizerCanvasRef = useRef(null);
   const pulseCanvasRef = useRef(null);
@@ -375,6 +452,9 @@ function App() {
     lastLyricsFetchMs: null,
     lastLyricsFetchAt: null,
     lastLyricsError: null,
+    transportGuardHits: 0,
+    lastTransportGuardAt: null,
+    lastTransportGuardAction: null,
   });
   const [lastAdded, setLastAdded] = useState(null);
   const [currentTrackTitle, setCurrentTrackTitle] = useState("");
@@ -496,6 +576,7 @@ function App() {
   const libraryOverlayCreateInputRef = useRef(null);
   const lastWindowModeChangeRef = useRef(0);
   const prematureEndGuardRef = useRef({ trackId: null, retried: false });
+  const manualTransportAdvanceRef = useRef({ trackKey: '', at: 0, action: '' });
   const warmupRetryRef = useRef(new Map());
   const isStandalone = !!window.aether;
   const [history, setHistory] = useState([]);
@@ -1097,6 +1178,13 @@ function App() {
     currentTrack?.author,
   ]);
 
+  const currentManualLyricsEntry = useMemo(() => {
+    if (!currentTrackPresetKey) return null;
+    return manualLyricsStore[currentTrackPresetKey] || null;
+  }, [currentTrackPresetKey, manualLyricsStore]);
+
+  const currentManualLyricsLines = useMemo(() => sortManualLyricsLines(currentManualLyricsEntry?.lines || []), [currentManualLyricsEntry]);
+
   const persistLyricPresets = useCallback(async (nextPresets) => {
     try {
       if (isStandalone && window.aether?.store?.set) {
@@ -1108,6 +1196,223 @@ function App() {
       console.warn('[Aether/Lyrics] Failed to persist lyric presets', e);
     }
   }, [isStandalone]);
+
+  const persistManualLyricsStore = useCallback(async (nextStore) => {
+    try {
+      if (isStandalone && window.aether?.store?.set) {
+        await window.aether.store.set(MANUAL_LYRICS_STORAGE_KEY, nextStore);
+      } else {
+        localStorage.setItem(MANUAL_LYRICS_STORAGE_KEY, JSON.stringify(nextStore));
+      }
+    } catch (e) {
+      console.warn('[Aether/Lyrics] Failed to persist manual lyrics', e);
+    }
+  }, [isStandalone]);
+
+  const openManualLyricsEditor = useCallback(() => {
+    const sourceLines = currentManualLyricsLines.length > 0
+      ? currentManualLyricsLines
+      : (Array.isArray(lyrics) ? sortManualLyricsLines(lyrics) : []);
+    const draftLines = sourceLines.length > 0
+      ? sourceLines.map((line, index) => ({
+          id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+          time: Number.isFinite(Number(line?.time)) ? Math.max(0, Math.trunc(Number(line.time))) : 0,
+          timestamp: formatManualLyricsTimestamp(Number.isFinite(Number(line?.time)) ? Math.max(0, Math.trunc(Number(line.time))) : 0).slice(1, -1),
+          text: String(line?.text || ''),
+        }))
+      : [{
+          id: `${Date.now()}-0-${Math.random().toString(36).slice(2, 8)}`,
+          time: Math.max(0, Math.trunc(Number(currentTime) || 0)),
+          timestamp: formatManualLyricsTimestamp(Math.max(0, Math.trunc(Number(currentTime) || 0))).slice(1, -1),
+          text: '',
+        }];
+
+    setManualLyricsDraft(draftLines);
+    setManualLyricsRawText(manualLyricsLinesToLrc(draftLines));
+    setManualLyricsDraftError('');
+    setIsManualLyricsRawEditorOpen(false);
+    setIsManualLyricsTapMode(false);
+    setIsManualLyricsEditorOpen(true);
+  }, [currentManualLyricsLines, currentTime, lyrics]);
+
+  const updateManualLyricsDraftLine = useCallback((index, patch) => {
+    setManualLyricsDraft((prev) => {
+      const next = prev.map((line, lineIndex) => (
+        lineIndex === index ? { ...line, ...patch } : line
+      ));
+      return next;
+    });
+  }, []);
+
+  const appendManualLyricsDraftLine = useCallback((timestamp = currentTime) => {
+    setManualLyricsDraft((prev) => {
+      const nextTimestamp = Math.max(0, Math.trunc(Number(timestamp) || 0));
+      const next = [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          time: nextTimestamp,
+          timestamp: formatManualLyricsTimestamp(nextTimestamp).slice(1, -1),
+          text: '',
+        },
+      ];
+      return next;
+    });
+  }, [currentTime]);
+
+  useEffect(() => {
+    if (!isManualLyricsEditorOpen) return;
+    if (isManualLyricsRawEditorOpen) return;
+    setManualLyricsRawText(manualLyricsLinesToLrc(manualLyricsDraft));
+  }, [isManualLyricsEditorOpen, isManualLyricsRawEditorOpen, manualLyricsDraft]);
+
+  const setManualLyricsDraftAndSync = useCallback((updater) => {
+    setManualLyricsDraft((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      return next;
+    });
+  }, []);
+
+  const loadManualLyricsFromRawText = useCallback(() => {
+    const parsed = parseManualLyricsLrcText(manualLyricsRawText);
+    if (parsed.length === 0) {
+      setManualLyricsDraftError('Paste valid LRC lines before importing.');
+      return;
+    }
+    setManualLyricsDraftAndSync(parsed);
+    setManualLyricsDraftError('');
+    setIsManualLyricsRawEditorOpen(false);
+  }, [manualLyricsRawText, setManualLyricsDraftAndSync]);
+
+  const copyManualLyricsToClipboard = useCallback(async () => {
+    const payload = manualLyricsLinesToLrc(manualLyricsDraft);
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(payload);
+        setManualLyricsSavedNotice('LRC copied to clipboard');
+        setTimeout(() => setManualLyricsSavedNotice(''), 1800);
+      }
+    } catch (error) {
+      console.warn('[Aether/Lyrics] Clipboard copy failed', error);
+      setManualLyricsDraftError('Could not copy lyrics to clipboard.');
+    }
+  }, [manualLyricsDraft]);
+
+  const pasteCurrentLyricsIntoRawEditor = useCallback(async () => {
+    try {
+      const clipboardText = await navigator.clipboard.readText();
+      setManualLyricsRawText(clipboardText || '');
+      setIsManualLyricsRawEditorOpen(true);
+      setManualLyricsDraftError('');
+    } catch (error) {
+      console.warn('[Aether/Lyrics] Clipboard paste failed', error);
+      setManualLyricsDraftError('Could not read clipboard text.');
+    }
+  }, []);
+
+  const appendStampedManualLyricsLine = useCallback(() => {
+    const nextTimestamp = Math.max(0, Math.trunc(Number(currentTime) || 0));
+    setManualLyricsDraftAndSync((prev) => ([
+      ...prev,
+      {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        time: nextTimestamp,
+        timestamp: formatManualLyricsTimestamp(nextTimestamp).slice(1, -1),
+        text: '',
+      },
+    ]));
+    setIsManualLyricsTapMode(true);
+  }, [currentTime, setManualLyricsDraftAndSync]);
+
+  const appendAndStampCurrentLine = useCallback((index) => {
+    const nextTimestamp = Math.max(0, Math.trunc(Number(currentTime) || 0));
+    setManualLyricsDraftAndSync((prev) => prev.map((line, lineIndex) => (
+      lineIndex === index
+        ? {
+            ...line,
+            time: nextTimestamp,
+            timestamp: formatManualLyricsTimestamp(nextTimestamp).slice(1, -1),
+          }
+        : line
+    )));
+  }, [currentTime, setManualLyricsDraftAndSync]);
+
+  const removeManualLyricsDraftLine = useCallback((index) => {
+    setManualLyricsDraft((prev) => prev.filter((_, lineIndex) => lineIndex !== index));
+  }, []);
+
+  const stampManualLyricsDraftLine = useCallback((index) => {
+    setManualLyricsDraft((prev) => {
+      const nextTimestamp = Math.max(0, Math.trunc(Number(currentTime) || 0));
+      return prev.map((line, lineIndex) => (
+        lineIndex === index
+          ? {
+              ...line,
+              time: nextTimestamp,
+              timestamp: formatManualLyricsTimestamp(nextTimestamp).slice(1, -1),
+            }
+          : line
+      ));
+    });
+  }, [currentTime]);
+
+  const handleSaveManualLyrics = useCallback(async () => {
+    if (!currentTrackPresetKey) {
+      setManualLyricsDraftError('No track key is available for these lyrics yet.');
+      return;
+    }
+
+    const normalizedLines = sortManualLyricsLines(manualLyricsDraft.map((line) => {
+      const parsedTimestamp = parseManualLyricsTimestamp(line?.timestamp);
+      return {
+        ...line,
+        time: Number.isFinite(parsedTimestamp) ? parsedTimestamp : Math.max(0, Math.trunc(Number(line?.time) || 0)),
+        text: String(line?.text || '').trim(),
+      };
+    })).filter((line) => String(line.text || '').trim().length > 0);
+
+    if (normalizedLines.length === 0) {
+      setManualLyricsDraftError('Add at least one timestamped lyric line before saving.');
+      return;
+    }
+
+    const nextStore = {
+      ...(manualLyricsStoreRef.current || {}),
+      [currentTrackPresetKey]: {
+        trackKey: currentTrackPresetKey,
+        title: currentTrack?.title || currentTrackTitle || '',
+        author: currentTrack?.author || '',
+        duration: currentTrack?.totalDurationMs || currentTrack?.duration || null,
+        createdAt: currentManualLyricsEntry?.createdAt || Date.now(),
+        updatedAt: Date.now(),
+        lines: normalizedLines,
+        lrc: manualLyricsLinesToLrc(normalizedLines),
+      },
+    };
+
+    setIsManualLyricsSaving(true);
+    try {
+      manualLyricsStoreRef.current = nextStore;
+      setManualLyricsStore(nextStore);
+      setLyrics(normalizedLines);
+      setDiagnostics((prev) => ({
+        ...prev,
+        lastLyricsSource: 'manual',
+        lastLyricsFetchMs: null,
+        lastLyricsFetchAt: Date.now(),
+        lastLyricsError: null,
+      }));
+      await persistManualLyricsStore(nextStore);
+      setIsManualLyricsEditorOpen(false);
+      setManualLyricsDraft([]);
+      setManualLyricsDraftError('');
+    } catch (error) {
+      console.error('[Aether/Lyrics] Failed to save manual lyrics', error);
+      setManualLyricsDraftError(error?.message || 'Failed to save manual lyrics.');
+    } finally {
+      setIsManualLyricsSaving(false);
+    }
+  }, [currentManualLyricsEntry?.createdAt, currentTrack?.author, currentTrack?.duration, currentTrack?.title, currentTrack?.totalDurationMs, currentTrackPresetKey, currentTrackTitle, manualLyricsDraft, persistManualLyricsStore]);
 
   const handleSaveLyricPreset = useCallback(async () => {
     if (!currentTrackPresetKey) return;
@@ -1138,6 +1443,16 @@ function App() {
     if (!track) return '';
     if (track.youtubeId) return `yt:${track.youtubeId}`;
     if (track.id) return `id:${track.id}`;
+    const title = String(track.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const author = String(track.author || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    return `meta:${title}|${author}`;
+  }, []);
+
+  const getTrackActionKey = useCallback((track) => {
+    if (!track || typeof track !== 'object') return '';
+    if (track.queueNonce) return `nonce:${String(track.queueNonce)}`;
+    if (track.youtubeId) return `yt:${String(track.youtubeId)}`;
+    if (track.id) return `id:${String(track.id)}`;
     const title = String(track.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
     const author = String(track.author || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
     return `meta:${title}|${author}`;
@@ -1249,6 +1564,41 @@ function App() {
       }
     };
     loadLyricPresets();
+  }, [isStandalone]);
+
+  useEffect(() => {
+    manualLyricsStoreRef.current = manualLyricsStore || {};
+  }, [manualLyricsStore]);
+
+  useEffect(() => {
+    const loadManualLyrics = async () => {
+      try {
+        let loaded = {};
+        if (isStandalone && window.aether?.store?.get) {
+          loaded = await window.aether.store.get(MANUAL_LYRICS_STORAGE_KEY);
+        } else {
+          const raw = localStorage.getItem(MANUAL_LYRICS_STORAGE_KEY);
+          loaded = raw ? JSON.parse(raw) : {};
+        }
+        if (loaded && typeof loaded === 'object' && !Array.isArray(loaded)) {
+          const normalizedStore = Object.fromEntries(
+            Object.entries(loaded).map(([trackKey, entry]) => [
+              trackKey,
+              {
+                ...(entry && typeof entry === 'object' ? entry : {}),
+                trackKey,
+                lines: sortManualLyricsLines(entry?.lines || []),
+              },
+            ])
+          );
+          manualLyricsStoreRef.current = normalizedStore;
+          setManualLyricsStore(normalizedStore);
+        }
+      } catch (error) {
+        console.warn('[Aether/Lyrics] Failed to load manual lyrics', error);
+      }
+    };
+    loadManualLyrics();
   }, [isStandalone]);
 
   useEffect(() => {
@@ -1822,6 +2172,26 @@ function App() {
         };
         localAudioRef.current.onended = () => {
             const advanceQueue = (reason) => {
+              const endedTrackKey = getTrackActionKey(track);
+              const transportGuard = manualTransportAdvanceRef.current;
+              if (
+                reason === 'natural_end' &&
+                transportGuard?.action &&
+                transportGuard.trackKey === endedTrackKey &&
+                (Date.now() - Number(transportGuard.at || 0)) < 1500
+              ) {
+                console.log('[Aether/Queue] Ignoring ended event after manual transport action', {
+                  action: transportGuard.action,
+                  title: track?.title,
+                });
+                setDiagnostics((prev) => ({
+                  ...prev,
+                  transportGuardHits: Number(prev.transportGuardHits || 0) + 1,
+                  lastTransportGuardAt: Date.now(),
+                  lastTransportGuardAction: transportGuard.action || 'transport',
+                }));
+                return;
+              }
               noteSkipReason(reason, { trackId: track.id, title: track.title });
               setQueue(prev => {
                 const next = prev.slice(1);
@@ -1944,7 +2314,7 @@ function App() {
           return orig?.(...args);
         })(localAudioRef.current.onended);
     }
-  }, [queue?.[0]?.title, queue?.[0]?.id, isPlaying, isStandalone, downloadedTracks, warmingTrackIds, streamPort, API_BASE, noteSkipReason]);
+  }, [queue?.[0]?.title, queue?.[0]?.id, isPlaying, isStandalone, downloadedTracks, warmingTrackIds, streamPort, API_BASE, noteSkipReason, getTrackActionKey]);
 
   useEffect(() => {
     if (!isStandalone || !isPlaying || !isAudioBuffering || !currentTrack || !localAudioRef.current) return;
@@ -2024,12 +2394,19 @@ function App() {
             const samePlayState = lastRPCPlayingRef.current === isPlaying;
             if (sameTrack && samePlayState) return;
 
-            if (!sameTrack) {
+            const durationMs = Number(track.totalDurationMs || track.duration || 0);
+            const shouldRecalculateClock =
+              !sameTrack ||
+              (sameTrack && !samePlayState && isPlaying) ||
+              !lastRPCStartRef.current ||
+              !lastRPCEndRef.current;
+
+            if (shouldRecalculateClock) {
               lastRPCStartRef.current = Date.now() - currentTime;
-              lastRPCEndRef.current = Date.now() + (track.totalDurationMs || track.duration || 0) - currentTime;
-            } else if (!lastRPCStartRef.current || !lastRPCEndRef.current) {
-              lastRPCStartRef.current = Date.now() - currentTime;
-              lastRPCEndRef.current = Date.now() + (track.totalDurationMs || track.duration || 0) - currentTime;
+              const computedEnd = Date.now() + Math.max(0, durationMs - currentTime);
+              lastRPCEndRef.current = Number.isFinite(durationMs) && durationMs > currentTime + 1000
+                ? computedEnd
+                : null;
             }
 
             lastRPCTrackIdRef.current = rpcTrackId;
@@ -3427,8 +3804,13 @@ function App() {
     setLyrics(result);
   };
 
-  const fetchLyrics = async (trackTitle, trackAuthor, trackDuration, trackUrl) => {
+  const fetchLyrics = async (trackTitle, trackAuthor, trackDuration, trackUrl, trackKey = '') => {
     if (!trackTitle) return;
+    const manualKey = trackKey || currentTrackPresetKey;
+    if (manualKey && (manualLyricsStoreRef.current?.[manualKey]?.lines || []).length > 0) {
+      setIsLyricsLoading(false);
+      return;
+    }
     const startedAt = performance.now();
     setIsLyricsLoading(true);
     try {
@@ -3451,6 +3833,10 @@ function App() {
           const results = await window.aether.getLyrics(trackTitle, trackAuthor, trackDuration, trackTitle, trackUrl);
           // Backend returns { lyrics: Array<{time, text}>, source: string } OR Array directly
           const lyricsArray = Array.isArray(results) ? results : (results?.lyrics || []);
+          if (manualKey && (manualLyricsStoreRef.current?.[manualKey]?.lines || []).length > 0) {
+            setIsLyricsLoading(false);
+            return;
+          }
           console.log("[Aether/Lyrics] Standalone result", {
             count: lyricsArray.length,
             source: results?.source,
@@ -3469,6 +3855,10 @@ function App() {
       const query = `${normalizedTitle || trackTitle} ${trackAuthor || ''}`.trim();
       const resp = await fetch(`${API_BASE}/api/lyrics?track=${encodeURIComponent(normalizedTitle || trackTitle)}&artist=${encodeURIComponent(trackAuthor || '')}&duration=${(trackDuration || 0)/1000}&url=${encodeURIComponent(trackUrl || '')}&query=${encodeURIComponent(query)}&format=json`);
       const data = await resp.json();
+      if (manualKey && (manualLyricsStoreRef.current?.[manualKey]?.lines || []).length > 0) {
+        setIsLyricsLoading(false);
+        return;
+      }
       console.log("[Aether/Lyrics] Web result", {
         ok: resp.ok,
         status: resp.status,
@@ -3506,10 +3896,11 @@ function App() {
   useEffect(() => {
     const onKeyDown = (e) => {
       if (e.key === 'Escape' && isDiagnosticsOpen) setIsDiagnosticsOpen(false);
+      if (e.key === 'Escape' && isManualLyricsEditorOpen) setIsManualLyricsEditorOpen(false);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isDiagnosticsOpen]);
+  }, [isDiagnosticsOpen, isManualLyricsEditorOpen]);
 
   useEffect(() => {
     if (!isStandalone) return;
@@ -3526,18 +3917,36 @@ function App() {
   }, [isStandalone, isDiagnosticsOpen, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats]);
 
   useEffect(() => {
-    if (currentTrack?.title !== currentTrackTitle) {
-      if (currentTrackTitle && prevTrackRef.current) {
+    const currentKey = getTrackActionKey(currentTrack);
+    const previousKey = getTrackActionKey(prevTrackRef.current);
+    if (currentKey !== previousKey) {
+      if (prevTrackRef.current) {
          setHistory(prev => [prevTrackRef.current, ...prev].slice(0, 20)); // Keep last 20
       }
       setCurrentTime(0);
       setCurrentTrackTitle(currentTrack?.title || "");
-      prevTrackRef.current = currentTrack;
+      prevTrackRef.current = currentTrack || null;
     }
-    if (currentTrack?.syncedLyrics) setLyrics(currentTrack.syncedLyrics.lyrics || []);
-    else if (currentTrack?.title) fetchLyrics(currentTrack.title, currentTrack.author, currentTrack.totalDurationMs || currentTrack.duration, currentTrack.actualUrl || currentTrack.url);
-    else setLyrics([]);
-  }, [currentTrack?.title]);
+    const manualEntry = currentTrackPresetKey ? manualLyricsStoreRef.current?.[currentTrackPresetKey] : null;
+    const manualLines = sortManualLyricsLines(manualEntry?.lines || []);
+    if (manualLines.length > 0) {
+      setIsLyricsLoading(false);
+      setLyrics(manualLines);
+      setDiagnostics((prev) => ({
+        ...prev,
+        lastLyricsSource: 'manual',
+        lastLyricsFetchMs: null,
+        lastLyricsFetchAt: manualEntry?.updatedAt || Date.now(),
+        lastLyricsError: null,
+      }));
+    } else if (currentTrack?.syncedLyrics) {
+      setLyrics(currentTrack.syncedLyrics.lyrics || []);
+    } else if (currentTrack?.title) {
+      fetchLyrics(currentTrack.title, currentTrack.author, currentTrack.totalDurationMs || currentTrack.duration, currentTrack.actualUrl || currentTrack.url, currentTrackPresetKey);
+    } else {
+      setLyrics([]);
+    }
+  }, [currentTrack?.title, currentTrack?.id, currentTrack?.youtubeId, currentTrack?.queueNonce, currentTrackPresetKey, currentManualLyricsLines, currentTrack?.syncedLyrics?.lyrics?.length, getTrackActionKey]);
 
   const extractYouTubeId = (url) => {
     if (!url) return null;
@@ -3934,8 +4343,23 @@ function App() {
                 // Go to actual previous track
                 const prev = history[0];
                 console.log("[Aether/Control] Restoring previous track:", prev?.title);
+                manualTransportAdvanceRef.current = {
+                  trackKey: getTrackActionKey(queue?.[0]),
+                  at: Date.now(),
+                  action: 'previous',
+                };
                 setHistory(h => h.slice(1));
-                setQueue(q => [prev, ...q]);
+                setQueue((q) => {
+                  const normalized = Array.isArray(q) ? q.filter(item => item && typeof item === 'object') : [];
+                  const prevKey = getTrackActionKey(prev);
+                  if (!prevKey) return normalized;
+                  const currentHeadKey = getTrackActionKey(normalized[0]);
+                  if (currentHeadKey && currentHeadKey === prevKey) {
+                    return normalized;
+                  }
+                  const deduped = normalized.filter((item) => getTrackActionKey(item) !== prevKey);
+                  return [prev, ...deduped];
+                });
                 setCurrentTime(0);
                 setIsPlaying(true);
             } else {
@@ -3950,10 +4374,19 @@ function App() {
         if (action === 'skip') {
           console.log("[Aether/Control] Skip triggered");
           noteSkipReason('manual_skip', { source: 'transport', title: queue?.[0]?.title });
+            manualTransportAdvanceRef.current = {
+              trackKey: getTrackActionKey(queue?.[0]),
+              at: Date.now(),
+              action: 'skip',
+            };
             setQueue(prev => {
                 const normalized = Array.isArray(prev) ? prev.filter(item => item && typeof item === 'object') : [];
                 const removed = normalized[0] || null;
-                const next = normalized.slice(1);
+                const removedKey = getTrackActionKey(removed);
+                let next = normalized.slice(1);
+                while (next.length > 0 && removedKey && getTrackActionKey(next[0]) === removedKey) {
+                  next = next.slice(1);
+                }
                 if (next.length === 0) {
                     setIsPlaying(false);
               if (isAutoplayEnabled && removed) setTimeout(() => triggerAutoplay(removed), 0);
@@ -4020,7 +4453,7 @@ function App() {
         guildId: getEffectiveGuildId(),
       });
     }
-  }, [isStandalone, API_BASE, history, isAutoplayEnabled, getEffectiveGuildId, noteSkipReason, queue]);
+  }, [isStandalone, API_BASE, history, isAutoplayEnabled, getEffectiveGuildId, noteSkipReason, queue, currentTime, getTrackActionKey]);
 
   const [uiPulse, setUiPulse] = useState(1);
   const [accentColor, setAccentColor] = useState('#00ffbf');
@@ -4964,6 +5397,14 @@ function App() {
                 <div className="font-black text-white/80">offset {lyricOffsetMs}ms • line {activeLyricIndex >= 0 ? activeLyricIndex + 1 : 0} • {isAutoScrollPaused ? 'manual' : 'auto'}</div>
               </div>
               <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                <div className="text-white/40 uppercase mb-1">Transport Guard</div>
+                <div className="font-black text-white/80">
+                  hits {diagnostics.transportGuardHits ?? 0}
+                  {diagnostics.lastTransportGuardAction ? ` • last ${diagnostics.lastTransportGuardAction}` : ''}
+                  {diagnostics.lastTransportGuardAt ? ` • ${formatDiagTime(diagnostics.lastTransportGuardAt)}` : ''}
+                </div>
+              </div>
+              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
                 <div className="text-white/40 uppercase mb-1">API Base</div>
                 <div className="font-black text-white/70 truncate">{diagnosticsApiBase}</div>
               </div>
@@ -5277,42 +5718,67 @@ function App() {
             className={`glass-card overflow-hidden flex flex-col transition-all duration-300 min-h-0 ${panelGlassClass} ${panelInteractiveClass} ${isVerticalStack ? 'h-[400px] flex-none' : 'flex-1'}`}
             style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
           >
-            <div className={`border-b border-white/5 flex items-center justify-between ${panelHeaderClass} ${isVerticalStack ? 'px-3 py-2' : 'px-5 py-4'}`}>
-              <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
-                <BookOpen size={16} className="text-brand-accent flex-none" />
-                <span className="label-caps mb-0 text-[9px] tracking-[0.1em] uppercase truncate shrink">Subtitles // {isPlaying ? (lyrics.length > 0 ? 'SYNCED' : 'DECODING') : 'IDLE'}</span>
-              </div>
-              <div className="flex items-center gap-1.5 no-drag flex-none shrink-0 ml-2">
+            <div className={`border-b border-white/5 ${panelHeaderClass} ${isVerticalStack ? 'px-3 py-2' : 'px-5 py-4'}`}>
+              <div className="flex items-start justify-between gap-3 min-w-0">
+                <div className="flex items-start gap-3 min-w-0 flex-1 overflow-hidden">
+                  <div className="w-9 h-9 rounded-2xl bg-brand-accent/10 border border-brand-accent/20 flex items-center justify-center text-brand-accent flex-none shadow-[0_0_18px_rgba(0,255,191,0.15)]">
+                    <BookOpen size={16} />
+                  </div>
+                  <div className="min-w-0 flex-1 overflow-hidden">
+                    <div className="flex items-center gap-2 flex-wrap min-w-0">
+                      <span className="label-caps mb-0 text-[9px] tracking-[0.1em] uppercase truncate shrink">Subtitles</span>
+                      <span className={`px-2 py-1 rounded-full text-[8px] font-black uppercase tracking-[0.18em] border ${currentManualLyricsLines.length > 0 ? 'bg-brand-accent/15 border-brand-accent/30 text-brand-accent' : isLyricsLoading ? 'bg-white/5 border-white/10 text-white/50' : isPlaying ? (lyrics.length > 0 ? 'bg-white/5 border-white/10 text-white/65' : 'bg-white/5 border-white/10 text-white/45') : 'bg-white/5 border-white/10 text-white/45'}`}>
+                        {currentManualLyricsLines.length > 0 ? 'Manual' : isLyricsLoading ? 'Fetching' : isPlaying ? (lyrics.length > 0 ? 'Synced' : 'Decoding') : lyrics.length > 0 ? 'Ready' : 'Idle'}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-[10px] uppercase tracking-[0.22em] text-white/35 truncate">
+                      {currentManualLyricsLines.length > 0
+                        ? `${currentManualLyricsLines.length} saved line${currentManualLyricsLines.length === 1 ? '' : 's'} for ${currentTrack?.title || currentTrackTitle || 'this track'}`
+                        : currentTrack?.title
+                          ? currentTrack.title
+                          : 'No track selected'}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 no-drag flex-none shrink-0 ml-2 flex-wrap justify-end">
                   <div className="flex items-center bg-white/5 rounded-xl border border-white/10 p-1 group/sync relative overflow-hidden">
-                    <button onClick={() => handleSync(-500)} className="p-2 hover:text-brand-accent"><ChevronLeft size={18} /></button>
+                    <button onClick={() => handleSync(-500)} className="p-2 hover:text-brand-accent" title="Shift lyrics backward 500ms"><ChevronLeft size={18} /></button>
                     <span className="text-[10px] font-mono text-brand-accent font-black w-14 text-center">{lyricOffsetMs}ms</span>
-                    <button onClick={() => handleSync(500)} className="p-2 hover:text-brand-accent"><ChevronRight size={18} /></button>
-                 </div>
-                 <button
-                   onClick={handleSaveLyricPreset}
-                   className={`hidden md:flex items-center gap-1 px-3 py-2 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all ${isLyricPresetSaved ? 'bg-brand-accent/15 border-brand-accent/40 text-brand-accent' : 'bg-white/5 border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/40'}`}
-                   title="Save current sync offset for this track"
-                 >
-                   <Save size={10} /> {isLyricPresetSaved ? 'Saved' : 'Save'}
-                 </button>
-                 <button
-                   onClick={handleResetLyricPreset}
-                   className="hidden md:flex items-center gap-1 px-3 py-2 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all bg-white/5 border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/40"
-                   title="Reset sync for this track"
-                 >
-                   <RotateCcw size={10} /> Reset
-                 </button>
+                    <button onClick={() => handleSync(500)} className="p-2 hover:text-brand-accent" title="Shift lyrics forward 500ms"><ChevronRight size={18} /></button>
+                  </div>
+                  <button
+                    onClick={openManualLyricsEditor}
+                    className={`flex items-center gap-1 px-3 py-2 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all ${currentManualLyricsLines.length > 0 ? 'bg-brand-accent/15 border-brand-accent/40 text-brand-accent' : 'bg-white/5 border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/40'}`}
+                    title={currentManualLyricsLines.length > 0 ? 'Edit saved manual lyrics' : 'Add manual lyrics for this track'}
+                  >
+                    <Edit3 size={10} /> {currentManualLyricsLines.length > 0 ? 'Edit' : 'Add'}
+                  </button>
+                  <button
+                    onClick={handleSaveLyricPreset}
+                    className={`hidden md:flex items-center gap-1 px-3 py-2 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all ${isLyricPresetSaved ? 'bg-brand-accent/15 border-brand-accent/40 text-brand-accent' : 'bg-white/5 border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/40'}`}
+                    title="Save current sync offset for this track"
+                  >
+                    <Save size={10} /> {isLyricPresetSaved ? 'Saved' : 'Save'}
+                  </button>
+                  <button
+                    onClick={handleResetLyricPreset}
+                    className="hidden md:flex items-center gap-1 px-3 py-2 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all bg-white/5 border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/40"
+                    title="Reset sync for this track"
+                  >
+                    <RotateCcw size={10} /> Reset
+                  </button>
                   {!isStandalone && <button onClick={() => {
                     const guildId = getEffectiveGuildId();
                     axios.post(`${API_BASE}/api/source/${guildId}`).catch(e => console.error('Rotate error:', e));
                   }} className="hidden md:flex px-5 py-2.5 glass-card text-[10px] font-black hover:border-brand-accent transition-all uppercase tracking-widest active:scale-95 border-white/10">Rotate</button>}
-                <button 
-                  onClick={() => setIsLyricsExpanded(!isLyricsExpanded)}
-                  className="flex items-center justify-center p-2 w-8 h-8 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 hover:border-brand-accent transition-all text-brand-accent group active:scale-90 flex-none"
-                  title="Immersive Output"
-                >
-                  <Maximize2 size={16} />
-                </button>
+                  <button 
+                    onClick={() => setIsLyricsExpanded(!isLyricsExpanded)}
+                    className="flex items-center justify-center p-2 w-8 h-8 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 hover:border-brand-accent transition-all text-brand-accent group active:scale-90 flex-none"
+                    title="Immersive Output"
+                  >
+                    <Maximize2 size={16} />
+                  </button>
+                </div>
               </div>
             </div>
             
@@ -5647,6 +6113,222 @@ function App() {
         </div>
       )}
       </motion.main>
+
+      <AnimatePresence>
+        {isManualLyricsEditorOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[230] flex items-center justify-center bg-black/80 backdrop-blur-md p-4"
+          >
+            <div
+              className="absolute inset-0"
+              onClick={() => {
+                if (!isManualLyricsSaving) setIsManualLyricsEditorOpen(false);
+              }}
+            />
+            <motion.div
+              initial={{ opacity: 0, y: 12, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.98 }}
+              className="relative z-10 w-full max-w-5xl max-h-[88vh] overflow-hidden rounded-[2rem] border border-white/10 bg-[#07090c]/96 shadow-[0_24px_80px_rgba(0,0,0,0.6)] backdrop-blur-2xl flex flex-col"
+            >
+              <div className="flex items-start justify-between gap-4 p-4 md:p-5 border-b border-white/10 bg-black/20">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="w-10 h-10 rounded-2xl bg-brand-accent/10 border border-brand-accent/20 flex items-center justify-center text-brand-accent">
+                      <Edit3 size={16} />
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-black uppercase tracking-[0.32em] text-brand-accent">Manual Lyrics Editor</div>
+                      <div className="mt-1 text-sm md:text-base font-black text-white/90 truncate">
+                        {currentTrack?.title || currentTrackTitle || 'Current track'}
+                      </div>
+                      <div className="mt-1 text-[10px] uppercase tracking-[0.24em] text-white/35 truncate">
+                        Saved in LRC format • future plays will use this version automatically
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={() => setIsManualLyricsRawEditorOpen(prev => !prev)}
+                      className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${isManualLyricsRawEditorOpen ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/[0.04] border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                    >
+                      Raw LRC
+                    </button>
+                    <button
+                      onClick={pasteCurrentLyricsIntoRawEditor}
+                      className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/60 hover:text-brand-accent hover:border-brand-accent/35 transition-all"
+                    >
+                      Paste from clipboard
+                    </button>
+                    <button
+                      onClick={copyManualLyricsToClipboard}
+                      className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/60 hover:text-brand-accent hover:border-brand-accent/35 transition-all"
+                    >
+                      Export LRC
+                    </button>
+                    <button
+                      onClick={appendStampedManualLyricsLine}
+                      className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${isManualLyricsTapMode ? 'bg-brand-accent text-black border-brand-accent shadow-neon' : 'bg-white/[0.04] border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                    >
+                      {isManualLyricsTapMode ? 'Tap mode on' : 'Tap to stamp'}
+                    </button>
+                    {manualLyricsSavedNotice && (
+                      <span className="text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent/80">{manualLyricsSavedNotice}</span>
+                    )}
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    if (!isManualLyricsSaving) setIsManualLyricsEditorOpen(false);
+                  }}
+                  className="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center"
+                  title="Close editor"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 md:p-5 space-y-3 custom-scrollbar">
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                  <div className="text-[10px] font-black uppercase tracking-[0.24em] text-white/55">
+                    Enter one line per row. Use <span className="text-brand-accent">mm:ss.xx</span> timestamps and keep the order sorted before saving.
+                  </div>
+                  <button
+                    onClick={() => appendManualLyricsDraftLine(currentTime)}
+                    className="flex items-center gap-1.5 rounded-xl border border-brand-accent/30 bg-brand-accent/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent hover:bg-brand-accent/20 transition-all"
+                  >
+                    <PlusCircle size={12} /> Add line
+                  </button>
+                </div>
+
+                {isManualLyricsRawEditorOpen && (
+                  <div className="rounded-[1.5rem] border border-brand-accent/25 bg-brand-accent/5 p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Raw LRC import</div>
+                        <div className="mt-1 text-[9px] uppercase tracking-[0.18em] text-white/40">Paste timestamped lines, then apply them to the editor below.</div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                          onClick={loadManualLyricsFromRawText}
+                          className="rounded-xl border border-brand-accent/30 bg-brand-accent px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-black transition-all hover:scale-[1.01]"
+                        >
+                          Apply LRC
+                        </button>
+                        <button
+                          onClick={() => setIsManualLyricsRawEditorOpen(false)}
+                          className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/60 hover:text-brand-accent hover:border-brand-accent/35 transition-all"
+                        >
+                          Hide raw
+                        </button>
+                      </div>
+                    </div>
+                    <textarea
+                      value={manualLyricsRawText}
+                      onChange={(event) => setManualLyricsRawText(event.target.value)}
+                      placeholder="[00:00.00] Intro\n[00:12.30] First line"
+                      className="w-full min-h-[180px] rounded-[1.25rem] border border-white/10 bg-black/35 px-4 py-3 text-[12px] font-mono text-white outline-none transition-colors placeholder:text-white/20 focus:border-brand-accent/40"
+                    />
+                  </div>
+                )}
+
+                {manualLyricsDraft.length === 0 ? (
+                  <div className="rounded-[1.5rem] border border-dashed border-white/10 bg-white/[0.02] p-10 text-center text-white/35">
+                    <Sparkles size={26} className="mx-auto text-brand-accent/70" />
+                    <div className="mt-3 text-[10px] font-black uppercase tracking-[0.32em]">No lines yet</div>
+                    <div className="mt-2 text-[10px] uppercase tracking-[0.18em] opacity-70">Add a timestamped lyric row to start building the track.</div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {manualLyricsDraft.map((line, index) => (
+                      <div key={line.id} className="grid gap-3 rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-4 md:grid-cols-[180px_minmax(0,1fr)_auto] md:items-start">
+                        <div className="space-y-2">
+                          <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">Timestamp</div>
+                          <input
+                            value={line.timestamp || ''}
+                            onChange={(event) => updateManualLyricsDraftLine(index, { timestamp: event.target.value })}
+                            placeholder="00:00.00"
+                            className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-[12px] font-mono text-white outline-none transition-colors placeholder:text-white/20 focus:border-brand-accent/40"
+                          />
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => stampManualLyricsDraftLine(index)}
+                              className="rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[9px] font-black uppercase tracking-[0.16em] text-white/55 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
+                            >
+                              Use current time
+                            </button>
+                            <div className="text-[9px] font-mono text-white/30 truncate">
+                              {formatManualLyricsTimestamp(parseManualLyricsTimestamp(line.timestamp) ?? line.time)}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2 min-w-0">
+                          <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">Lyric line</div>
+                          <input
+                            value={line.text}
+                            onChange={(event) => updateManualLyricsDraftLine(index, { text: event.target.value })}
+                            placeholder="Write the lyric line here"
+                            className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-[12px] text-white outline-none transition-colors placeholder:text-white/20 focus:border-brand-accent/40"
+                          />
+                        </div>
+
+                        <div className="flex items-start justify-end md:pt-6">
+                          <button
+                            onClick={() => removeManualLyricsDraftLine(index)}
+                            className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-white/50 hover:border-red-500/40 hover:text-red-400 transition-all"
+                            title="Remove line"
+                          >
+                            <MinusCircle size={12} /> Remove
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="border-t border-white/10 bg-black/25 p-4 md:p-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div className="min-w-0">
+                  <div className="text-[10px] font-black uppercase tracking-[0.24em] text-white/50">
+                    Saved as LRC for this track
+                  </div>
+                  <div className={`mt-1 text-[10px] font-bold uppercase tracking-[0.18em] ${manualLyricsDraftError ? 'text-red-400' : 'text-white/30'}`}>
+                    {manualLyricsDraftError || 'The app will prefer these saved lyrics the next time this song plays.'}
+                  </div>
+                </div>
+                <div className="flex items-center justify-end gap-2 flex-wrap">
+                  <button
+                    onClick={appendStampedManualLyricsLine}
+                    className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/65 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
+                  >
+                    Stamp + Row
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (!isManualLyricsSaving) setIsManualLyricsEditorOpen(false);
+                    }}
+                    className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/65 hover:border-white/25 hover:text-white transition-all disabled:opacity-50"
+                    disabled={isManualLyricsSaving}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSaveManualLyrics}
+                    disabled={isManualLyricsSaving}
+                    className="rounded-xl border border-brand-accent/30 bg-brand-accent px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-black shadow-neon transition-all hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isManualLyricsSaving ? 'Saving…' : 'Save Lyrics'}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Global Toast Overlay */}
       <AnimatePresence>
