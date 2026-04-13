@@ -61,6 +61,16 @@ const AUTOPLAY_MOOD_MODES = Object.freeze([
   { id: 'safe', label: 'Safe' },
   { id: 'explore', label: 'Explore' },
 ]);
+const AURA_PRESETS = Object.freeze([
+  { id: 'calm', label: 'Calm', fieldBoost: 0.72, fieldFlare: 0.62, hueShift: 0.65, kickGlow: 0.62, ringCooldownMs: 380, ringThreshold: 0.82, ringScale: 0.72, ringDurationMs: 460 },
+  { id: 'balanced', label: 'Balanced', fieldBoost: 1, fieldFlare: 1, hueShift: 1, kickGlow: 1, ringCooldownMs: 300, ringThreshold: 0.78, ringScale: 0.6, ringDurationMs: 420 },
+  { id: 'cinematic', label: 'Cinematic', fieldBoost: 1.26, fieldFlare: 1.2, hueShift: 1.2, kickGlow: 1.15, ringCooldownMs: 260, ringThreshold: 0.74, ringScale: 0.66, ringDurationMs: 380 },
+]);
+const DOODLE_PRESETS = Object.freeze([
+  { id: 'subtle', label: 'Cozy', badge: 'CZ' },
+  { id: 'medium', label: 'Floaty', badge: 'FL' },
+  { id: 'dreamy', label: 'Playful', badge: 'PL' },
+]);
 const IDLE_PHRASES = [
   "Exploring the Neural Vault",
   "Calibrating Sonic Synapses",
@@ -428,6 +438,7 @@ function App() {
   const [themeColor, setThemeColor] = useState('#00ffbf');
   const lyricsContainerRef = useRef(null);
   const activeLyricRef = useRef(null);
+  const lyricsFetchRequestRef = useRef(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -461,6 +472,8 @@ function App() {
   const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
   const [isDoodleMode, setIsDoodleMode] = useState(true);
   const [doodleIntensity, setDoodleIntensity] = useState('medium');
+  const [auraPreset, setAuraPreset] = useState('balanced');
+  const [isLooksPanelOpen, setIsLooksPanelOpen] = useState(false);
   const [uptime, setUptime] = useState("00:00:00");
   const [isLyricsExpanded, setIsLyricsExpanded] = useState(false);
   const [isStatsExpanded, setIsStatsExpanded] = useState(false);
@@ -487,6 +500,7 @@ function App() {
   const [shortcutDraft, setShortcutDraft] = useState(DEFAULT_SHORTCUTS);
   const [globalMediaShortcutsEnabled, setGlobalMediaShortcutsEnabled] = useState(false);
   const [isTipsOverlayOpen, setIsTipsOverlayOpen] = useState(false);
+  const looksPanelRef = useRef(null);
   const [hideFirstRunTips, setHideFirstRunTips] = useState(false);
   const [tipsDontShowAgain, setTipsDontShowAgain] = useState(false);
   const [draggedPlaylistName, setDraggedPlaylistName] = useState(null);
@@ -504,6 +518,7 @@ function App() {
   const [isSleepTimerMenuOpen, setIsSleepTimerMenuOpen] = useState(false);
   const [localIp, setLocalIp] = useState('');
   const [isMiniPlayer, setIsMiniPlayer] = useState(false);
+  const [isMiniOverlayOpen, setIsMiniOverlayOpen] = useState(false);
   const [isSpotifyImportOpen, setIsSpotifyImportOpen] = useState(false);
   const [spotifyImportUrl, setSpotifyImportUrl] = useState('');
   const [spotifyImportProgress, setSpotifyImportProgress] = useState({ stage: 'idle', progress: 0, message: '' });
@@ -1720,6 +1735,7 @@ function App() {
     if (!sessionReadyRef.current) return;
     const uiPrefs = {
       visualizerMode,
+      auraPreset,
       isVerticalStack,
       isFocusedMode,
       isAutoplayEnabled,
@@ -1739,7 +1755,7 @@ function App() {
     } catch (e) {
       console.warn('[Aether/Session] Failed to persist UI prefs', e);
     }
-  }, [isStandalone, visualizerMode, isVerticalStack, isFocusedMode, isAutoplayEnabled, autoplayMoodMode, isDoodleMode, doodleIntensity, hideFirstRunTips]);
+  }, [isStandalone, visualizerMode, auraPreset, isVerticalStack, isFocusedMode, isAutoplayEnabled, autoplayMoodMode, isDoodleMode, doodleIntensity, hideFirstRunTips]);
 
   useEffect(() => {
     if (!sessionReadyRef.current) return;
@@ -1785,6 +1801,9 @@ function App() {
         const savedUiPrefs = await window.aether?.store?.get(SESSION_UI_STORAGE_KEY);
         if (savedUiPrefs && typeof savedUiPrefs === 'object') {
           if (typeof savedUiPrefs.visualizerMode === 'string') setVisualizerMode(savedUiPrefs.visualizerMode);
+          if (typeof savedUiPrefs.auraPreset === 'string' && AURA_PRESETS.some((preset) => preset.id === savedUiPrefs.auraPreset)) {
+            setAuraPreset(savedUiPrefs.auraPreset);
+          }
           if (typeof savedUiPrefs.isVerticalStack === 'boolean') setIsVerticalStack(savedUiPrefs.isVerticalStack);
           if (typeof savedUiPrefs.isFocusedMode === 'boolean') setIsFocusedMode(savedUiPrefs.isFocusedMode);
           if (typeof savedUiPrefs.isAutoplayEnabled === 'boolean') setIsAutoplayEnabled(savedUiPrefs.isAutoplayEnabled);
@@ -1912,6 +1931,9 @@ function App() {
         const savedUiPrefs = rawUiPrefs ? JSON.parse(rawUiPrefs) : null;
         if (savedUiPrefs && typeof savedUiPrefs === 'object') {
           if (typeof savedUiPrefs.visualizerMode === 'string') setVisualizerMode(savedUiPrefs.visualizerMode);
+          if (typeof savedUiPrefs.auraPreset === 'string' && AURA_PRESETS.some((preset) => preset.id === savedUiPrefs.auraPreset)) {
+            setAuraPreset(savedUiPrefs.auraPreset);
+          }
           if (typeof savedUiPrefs.isVerticalStack === 'boolean') setIsVerticalStack(savedUiPrefs.isVerticalStack);
           if (typeof savedUiPrefs.isFocusedMode === 'boolean') setIsFocusedMode(savedUiPrefs.isFocusedMode);
           if (typeof savedUiPrefs.isAutoplayEnabled === 'boolean') setIsAutoplayEnabled(savedUiPrefs.isAutoplayEnabled);
@@ -2577,28 +2599,37 @@ function App() {
 
         // AURA MODE: Propagate beat energy to transport & lyric underline
         if (isAuraMode && document.documentElement) {
+          const selectedAuraPreset = AURA_PRESETS.find((preset) => preset.id === auraPreset) || AURA_PRESETS[1];
+          const kickTransient = clamp01(Math.max(0, (bassRaw - bass) * 3.8) + Math.max(0, (bass - 0.66) * 1.9));
+          const auraShiftDeg = ((kickTransient * 13.5) + (energy * 1.8)) * selectedAuraPreset.hueShift;
           document.documentElement.style.setProperty('--aura-beat-pulse', String(bass * 0.8 + energy * 0.3));
           document.documentElement.style.setProperty('--aura-edge-glow', String(bass * 0.6 + mids * 0.4));
+          document.documentElement.style.setProperty('--aura-kick-shift', `${auraShiftDeg.toFixed(2)}deg`);
+          document.documentElement.style.setProperty('--aura-kick-glow', String(clamp01((0.22 + kickTransient * 0.78) * selectedAuraPreset.kickGlow)));
 
           // AURA MODE: Trigger beat rings on kick peaks (bass spikes)
-          if (lastBeatRingTimeRef.current !== undefined && bass > 0.7 && performance.now() - lastBeatRingTimeRef.current > 150) {
+          if (lastBeatRingTimeRef.current !== undefined && bass > selectedAuraPreset.ringThreshold && performance.now() - lastBeatRingTimeRef.current > selectedAuraPreset.ringCooldownMs) {
             lastBeatRingTimeRef.current = performance.now();
             if (beatRingsRef.current) {
+              const ringScale = selectedAuraPreset.ringScale;
+              const ringDuration = selectedAuraPreset.ringDurationMs;
               const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-              svg.setAttribute('viewBox', '0 0 120 120');
-              svg.setAttribute('width', '120');
-              svg.setAttribute('height', '120');
+              svg.setAttribute('viewBox', '0 0 100 100');
+              svg.setAttribute('width', '100');
+              svg.setAttribute('height', '100');
               svg.setAttribute('class', 'beat-ring');
               svg.style.position = 'absolute';
               svg.style.pointerEvents = 'none';
               svg.style.top = '50%';
               svg.style.left = '50%';
               svg.style.transform = 'translate(-50%, -50%)';
+              svg.style.opacity = '0.55';
 
               const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-              circle.setAttribute('cx', '60');
-              circle.setAttribute('cy', '60');
-              circle.setAttribute('r', '20');
+              circle.setAttribute('cx', '50');
+              circle.setAttribute('cy', '50');
+              circle.setAttribute('r', String(14 * ringScale));
+              circle.style.strokeWidth = '1.1';
               svg.appendChild(circle);
 
               beatRingsRef.current.appendChild(svg);
@@ -2607,9 +2638,9 @@ function App() {
               let startTime = performance.now();
               const animateBeat = (now) => {
                 const elapsed = now - startTime;
-                const progress = Math.min(elapsed / 600, 1);
-                const r = 20 + progress * 40;
-                const opacity = 0.8 * (1 - progress);
+                const progress = Math.min(elapsed / ringDuration, 1);
+                const r = (14 * ringScale) + progress * (22 * ringScale);
+                const opacity = 0.55 * (1 - progress);
                 
                 circle.setAttribute('r', String(r));
                 circle.style.opacity = String(opacity);
@@ -2623,6 +2654,9 @@ function App() {
               requestAnimationFrame(animateBeat);
             }
           }
+        } else if (document.documentElement) {
+          document.documentElement.style.setProperty('--aura-kick-shift', '0deg');
+          document.documentElement.style.setProperty('--aura-kick-glow', '0');
         }
 
         const now = performance.now();
@@ -2750,7 +2784,7 @@ function App() {
       if (startTimer) window.clearTimeout(startTimer);
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [isStandalone, isPlaying, currentTrack, currentTime, visualizerMode, themeColor, isMixtapeVaultOpen]);
+  }, [isStandalone, isPlaying, currentTrack, currentTime, visualizerMode, themeColor, isMixtapeVaultOpen, auraPreset]);
 
   const handleVolumeChange = (val) => {
     const v = parseFloat(val);
@@ -3326,69 +3360,163 @@ function App() {
 
   // --- AETHER: DYNAMIC THEME SYNC (NOVA ---
   useEffect(() => {
-    if (!currentTrack?.thumbnail) return;
-    const updateTheme = async () => {
-        const img = new Image();
-        img.crossOrigin = "Anonymous";
-        img.src = currentTrack.thumbnail;
-        img.onload = () => {
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            canvas.width = img.width; canvas.height = img.height;
-            ctx.drawImage(img, 0, 0);
-            const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-            let r = 0, g = 0, b = 0, count = 0;
-            for (let i = 0; i < data.length; i += 8000) { 
-                r += data[i]; g += data[i+1]; b += data[i+2]; count++;
-            }
-            const avgR = Math.floor(r / count);
-            const avgG = Math.floor(g / count);
-            const avgB = Math.floor(b / count);
-            const hex = `#${((1 << 24) + (avgR << 16) + (avgG << 8) + avgB).toString(16).slice(1)}`;
-            setThemeColor(hex);
-            
-            // Calculate High-Contrast Accent (Complementary HSL)
-            const rNorm = avgR / 255;
-            const gNorm = avgG / 255;
-            const bNorm = avgB / 255;
-            const max = Math.max(rNorm, gNorm, bNorm), min = Math.min(rNorm, gNorm, bNorm);
-            let h, s, l = (max + min) / 2;
-            if (max === min) h = s = 0;
-            else {
-                const d = max - min;
-                s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-                switch(max) {
-                    case rNorm: h = (gNorm - bNorm) / d + (gNorm < bNorm ? 6 : 0); break;
-                    case gNorm: h = (bNorm - rNorm) / d + 2; break;
-                    case bNorm: h = (rNorm - gNorm) / d + 4; break;
-                }
-                h /= 6;
-            }
-            // Rotate Hue by 180 degrees for maximum contrast
-            const contrastH = (h + 0.5) % 1;
-            const contrastHex = (function hslToHex(h, s, l) {
-                let r, g, b;
-                const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-                const p = 2 * l - q;
-                const hue2rgb = (p, q, t) => {
-                    if (t < 0) t += 1; if (t > 1) t -= 1;
-                    if (t < 1/6) return p + (q - p) * 6 * t;
-                    if (t < 1/2) return q;
-                    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
-                    return p;
-                };
-                r = hue2rgb(p, q, h + 1/3); g = hue2rgb(p, q, h); b = hue2rgb(p, q, h - 1/3);
-                const toHex = x => Math.round(x * 255).toString(16).padStart(2, '0');
-                return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
-            })(contrastH, 0.9, 0.6); // High saturation, medium light
+    if (!currentTrack) return;
 
-            document.documentElement.style.setProperty('--brand-accent', hex);
-            document.documentElement.style.setProperty('--brand-contrast', contrastHex);
-            document.documentElement.style.setProperty('--brand-glow', `${hex}33`);
-        };
+    const applyPalette = (palette) => {
+      setThemeColor(palette.accent);
+      document.documentElement.style.setProperty('--brand-accent', palette.accent);
+      document.documentElement.style.setProperty('--brand-contrast', palette.contrast);
+      document.documentElement.style.setProperty('--brand-glow', palette.glow);
+      document.documentElement.style.setProperty('--aura-accent-rgb', `${palette.accentRgb[0]}, ${palette.accentRgb[1]}, ${palette.accentRgb[2]}`);
+      document.documentElement.style.setProperty('--aura-contrast-rgb', `${palette.contrastRgb[0]}, ${palette.contrastRgb[1]}, ${palette.contrastRgb[2]}`);
     };
-    updateTheme();
-  }, [currentTrack?.thumbnail]);
+
+    const applyFallbackTheme = () => {
+      const palette = getTrackFallbackPalette(currentTrack);
+      applyPalette(palette);
+    };
+
+    if (!currentTrack?.thumbnail) {
+      applyFallbackTheme();
+      return;
+    }
+
+    const img = new Image();
+    img.crossOrigin = 'Anonymous';
+    img.src = currentTrack.thumbnail;
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx || !img.width || !img.height) {
+        applyFallbackTheme();
+        return;
+      }
+
+      canvas.width = img.width;
+      canvas.height = img.height;
+
+      try {
+        ctx.drawImage(img, 0, 0);
+        const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        let r = 0;
+        let g = 0;
+        let b = 0;
+        let count = 0;
+        for (let i = 0; i < data.length; i += 8000) {
+          r += data[i];
+          g += data[i + 1];
+          b += data[i + 2];
+          count += 1;
+        }
+
+        if (!count) {
+          applyFallbackTheme();
+          return;
+        }
+
+        const avgR = Math.floor(r / count);
+        const avgG = Math.floor(g / count);
+        const avgB = Math.floor(b / count);
+
+        let vibrantR = avgR;
+        let vibrantG = avgG;
+        let vibrantB = avgB;
+        let bestScore = -1;
+
+        for (let i = 0; i < data.length; i += 96) {
+          const pr = data[i];
+          const pg = data[i + 1];
+          const pb = data[i + 2];
+          const pMax = Math.max(pr, pg, pb);
+          const pMin = Math.min(pr, pg, pb);
+          const sat = pMax === 0 ? 0 : (pMax - pMin) / pMax;
+          const val = pMax / 255;
+          const midBand = 1 - Math.min(1, Math.abs(val - 0.58) / 0.58);
+          const score = sat * 0.72 + val * 0.16 + midBand * 0.22;
+          if (score > bestScore) {
+            bestScore = score;
+            vibrantR = pr;
+            vibrantG = pg;
+            vibrantB = pb;
+          }
+        }
+
+        const blend = 0.68;
+        const tunedR = Math.round(vibrantR * blend + avgR * (1 - blend));
+        const tunedG = Math.round(vibrantG * blend + avgG * (1 - blend));
+        const tunedB = Math.round(vibrantB * blend + avgB * (1 - blend));
+        const hex = `#${((1 << 24) + (tunedR << 16) + (tunedG << 8) + tunedB).toString(16).slice(1)}`;
+        setThemeColor(hex);
+
+        const rNorm = tunedR / 255;
+        const gNorm = tunedG / 255;
+        const bNorm = tunedB / 255;
+        const max = Math.max(rNorm, gNorm, bNorm);
+        const min = Math.min(rNorm, gNorm, bNorm);
+        let h = 0;
+        let s = 0;
+        const l = (max + min) / 2;
+        if (max !== min) {
+          const delta = max - min;
+          s = l > 0.5 ? delta / (2 - max - min) : delta / (max + min);
+          switch (max) {
+            case rNorm:
+              h = (gNorm - bNorm) / delta + (gNorm < bNorm ? 6 : 0);
+              break;
+            case gNorm:
+              h = (bNorm - rNorm) / delta + 2;
+              break;
+            default:
+              h = (rNorm - gNorm) / delta + 4;
+              break;
+          }
+          h /= 6;
+        }
+
+        const contrastH = (h + 0.5) % 1;
+        const contrastHex = (function hslToHex(inputH, inputS, inputL) {
+          let red;
+          let green;
+          let blue;
+          const q = inputL < 0.5 ? inputL * (1 + inputS) : inputL + inputS - inputL * inputS;
+          const p = 2 * inputL - q;
+          const hue2rgb = (pValue, qValue, tValue) => {
+            let next = tValue;
+            if (next < 0) next += 1;
+            if (next > 1) next -= 1;
+            if (next < 1 / 6) return pValue + (qValue - pValue) * 6 * next;
+            if (next < 1 / 2) return qValue;
+            if (next < 2 / 3) return pValue + (qValue - pValue) * (2 / 3 - next) * 6;
+            return pValue;
+          };
+          red = hue2rgb(p, q, inputH + 1 / 3);
+          green = hue2rgb(p, q, inputH);
+          blue = hue2rgb(p, q, inputH - 1 / 3);
+          const toHex = (value) => Math.round(value * 255).toString(16).padStart(2, '0');
+          return `#${toHex(red)}${toHex(green)}${toHex(blue)}`;
+        })(contrastH, 0.9, 0.6);
+
+        const contrastRgb = [
+          parseInt(contrastHex.slice(1, 3), 16),
+          parseInt(contrastHex.slice(3, 5), 16),
+          parseInt(contrastHex.slice(5, 7), 16),
+        ];
+
+        applyPalette({
+          accent: hex,
+          contrast: contrastHex,
+          glow: `${hex}33`,
+          accentRgb: [tunedR, tunedG, tunedB],
+          contrastRgb,
+        });
+      } catch (error) {
+        applyFallbackTheme();
+      }
+    };
+
+    img.onerror = applyFallbackTheme;
+    applyFallbackTheme();
+  }, [currentTrack]);
 
   // --- AETHER: HARDWARE MEDIA SESSION BRIDGE (NOVA ---
   useEffect(() => {
@@ -3804,9 +3932,58 @@ function App() {
     setLyrics(result);
   };
 
+  function getTrackFallbackPalette(track) {
+    const hslToRgb = (h, s, l) => {
+      const sat = s / 100;
+      const lig = l / 100;
+      const c = (1 - Math.abs(2 * lig - 1)) * sat;
+      const hp = h / 60;
+      const x = c * (1 - Math.abs((hp % 2) - 1));
+      let r1 = 0;
+      let g1 = 0;
+      let b1 = 0;
+      if (hp >= 0 && hp < 1) {
+        r1 = c; g1 = x; b1 = 0;
+      } else if (hp < 2) {
+        r1 = x; g1 = c; b1 = 0;
+      } else if (hp < 3) {
+        r1 = 0; g1 = c; b1 = x;
+      } else if (hp < 4) {
+        r1 = 0; g1 = x; b1 = c;
+      } else if (hp < 5) {
+        r1 = x; g1 = 0; b1 = c;
+      } else {
+        r1 = c; g1 = 0; b1 = x;
+      }
+      const m = lig - c / 2;
+      return [
+        Math.round((r1 + m) * 255),
+        Math.round((g1 + m) * 255),
+        Math.round((b1 + m) * 255),
+      ];
+    };
+
+    const seed = String(track?.thumbnail || track?.youtubeId || track?.actualUrl || track?.url || `${track?.title || ''}|${track?.author || ''}`).trim() || 'aether';
+    let hash = 0;
+    for (let index = 0; index < seed.length; index += 1) {
+      hash = ((hash << 5) - hash + seed.charCodeAt(index)) | 0;
+    }
+    const hue = Math.abs(hash) % 360;
+    const accentRgb = hslToRgb(hue, 100, 58);
+    const contrastRgb = hslToRgb((hue + 180) % 360, 90, 64);
+    return {
+      accent: `hsl(${hue} 100% 58%)`,
+      contrast: `hsl(${(hue + 180) % 360} 90% 64%)`,
+      glow: `hsla(${hue} 100% 58% / 0.28)`,
+      accentRgb,
+      contrastRgb,
+    };
+  }
+
   const fetchLyrics = async (trackTitle, trackAuthor, trackDuration, trackUrl, trackKey = '') => {
     if (!trackTitle) return;
     const manualKey = trackKey || currentTrackPresetKey;
+    const requestId = ++lyricsFetchRequestRef.current;
     if (manualKey && (manualLyricsStoreRef.current?.[manualKey]?.lines || []).length > 0) {
       setIsLyricsLoading(false);
       return;
@@ -3833,6 +4010,7 @@ function App() {
           const results = await window.aether.getLyrics(trackTitle, trackAuthor, trackDuration, trackTitle, trackUrl);
           // Backend returns { lyrics: Array<{time, text}>, source: string } OR Array directly
           const lyricsArray = Array.isArray(results) ? results : (results?.lyrics || []);
+          if (lyricsFetchRequestRef.current !== requestId) return;
           if (manualKey && (manualLyricsStoreRef.current?.[manualKey]?.lines || []).length > 0) {
             setIsLyricsLoading(false);
             return;
@@ -3855,6 +4033,7 @@ function App() {
       const query = `${normalizedTitle || trackTitle} ${trackAuthor || ''}`.trim();
       const resp = await fetch(`${API_BASE}/api/lyrics?track=${encodeURIComponent(normalizedTitle || trackTitle)}&artist=${encodeURIComponent(trackAuthor || '')}&duration=${(trackDuration || 0)/1000}&url=${encodeURIComponent(trackUrl || '')}&query=${encodeURIComponent(query)}&format=json`);
       const data = await resp.json();
+      if (lyricsFetchRequestRef.current !== requestId) return;
       if (manualKey && (manualLyricsStoreRef.current?.[manualKey]?.lines || []).length > 0) {
         setIsLyricsLoading(false);
         return;
@@ -3873,11 +4052,8 @@ function App() {
         lastLyricsFetchAt: Date.now(),
         lastLyricsError: null,
       }));
-      if (trackTitle !== currentTrackTitle) {
-        setCurrentTime(0);
-        setCurrentTrackTitle(trackTitle);
-      }
     } catch (err) {
+      if (lyricsFetchRequestRef.current !== requestId) return;
       console.error("[Aether/Lyrics] Fetch failed", err, {
         trackTitle,
         trackAuthor,
@@ -3890,17 +4066,34 @@ function App() {
         lastLyricsFetchAt: Date.now(),
         lastLyricsError: err?.message || 'lyrics fetch failed',
       }));
-    } finally { setIsLyricsLoading(false); }
+    } finally {
+      if (lyricsFetchRequestRef.current === requestId) {
+        setIsLyricsLoading(false);
+      }
+    }
   };
 
   useEffect(() => {
     const onKeyDown = (e) => {
       if (e.key === 'Escape' && isDiagnosticsOpen) setIsDiagnosticsOpen(false);
       if (e.key === 'Escape' && isManualLyricsEditorOpen) setIsManualLyricsEditorOpen(false);
+      if (e.key === 'Escape' && isLooksPanelOpen) setIsLooksPanelOpen(false);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isDiagnosticsOpen, isManualLyricsEditorOpen]);
+  }, [isDiagnosticsOpen, isManualLyricsEditorOpen, isLooksPanelOpen]);
+
+  useEffect(() => {
+    if (!isLooksPanelOpen) return;
+    const onPointerDown = (event) => {
+      if (!looksPanelRef.current) return;
+      if (!looksPanelRef.current.contains(event.target)) {
+        setIsLooksPanelOpen(false);
+      }
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    return () => window.removeEventListener('pointerdown', onPointerDown);
+  }, [isLooksPanelOpen]);
 
   useEffect(() => {
     if (!isStandalone) return;
@@ -3926,10 +4119,12 @@ function App() {
       setCurrentTime(0);
       setCurrentTrackTitle(currentTrack?.title || "");
       prevTrackRef.current = currentTrack || null;
+      lyricsFetchRequestRef.current += 1;
     }
     const manualEntry = currentTrackPresetKey ? manualLyricsStoreRef.current?.[currentTrackPresetKey] : null;
     const manualLines = sortManualLyricsLines(manualEntry?.lines || []);
     if (manualLines.length > 0) {
+      lyricsFetchRequestRef.current += 1;
       setIsLyricsLoading(false);
       setLyrics(manualLines);
       setDiagnostics((prev) => ({
@@ -3940,10 +4135,14 @@ function App() {
         lastLyricsError: null,
       }));
     } else if (currentTrack?.syncedLyrics) {
+      lyricsFetchRequestRef.current += 1;
+      setIsLyricsLoading(false);
       setLyrics(currentTrack.syncedLyrics.lyrics || []);
     } else if (currentTrack?.title) {
       fetchLyrics(currentTrack.title, currentTrack.author, currentTrack.totalDurationMs || currentTrack.duration, currentTrack.actualUrl || currentTrack.url, currentTrackPresetKey);
     } else {
+      lyricsFetchRequestRef.current += 1;
+      setIsLyricsLoading(false);
       setLyrics([]);
     }
   }, [currentTrack?.title, currentTrack?.id, currentTrack?.youtubeId, currentTrack?.queueNonce, currentTrackPresetKey, currentManualLyricsLines, currentTrack?.syncedLyrics?.lyrics?.length, getTrackActionKey]);
@@ -4568,13 +4767,15 @@ function App() {
   const toggleMiniPlayer = useCallback(async () => {
       if (!isStandalone || !window.aether?.resizeWindow) return;
       if (isMiniPlayer) {
-          await window.aether.resizeWindow(1100, 750, false);
+          await window.aether.resizeWindow(1160, 780, false);
           setIsMiniPlayer(false);
+          setIsMiniOverlayOpen(false);
       } else {
-        await window.aether.resizeWindow(420, 190, true);
+        await window.aether.resizeWindow(isMacPlatform ? 500 : 480, isMacPlatform ? 240 : 220, true);
           setIsMiniPlayer(true);
+          setIsMiniOverlayOpen(false);
       }
-  }, [isMiniPlayer, isStandalone]);
+  }, [isMiniPlayer, isStandalone, isMacPlatform]);
 
   const toggleDiagnostics = useCallback(() => {
     setIsDiagnosticsOpen(prev => !prev);
@@ -4772,65 +4973,115 @@ function App() {
   );
 
   if (isMiniPlayer) {
+    const miniDurationMs = currentTrack?.totalDurationMs || currentTrack?.duration || 0;
+    const miniProgressPct = miniDurationMs > 0 ? clamp01(currentTime / miniDurationMs) * 100 : 0;
+    const miniTitle = currentTrack?.title || '';
+    const miniArtist = currentTrack?.author || '';
+    const miniTitleMarquee = miniTitle.length > 40;
+
      return (
-        <div className="w-[100vw] h-[100vh] bg-[#050505] overflow-hidden drag relative p-3">
+        <div className={`w-[100vw] h-[100vh] bg-[#050505] overflow-hidden drag relative ${isMacPlatform ? 'pt-7 pl-16 pr-3 pb-3' : 'p-3'}`}>
           <div className="absolute inset-0 bg-gradient-to-br from-brand-accent/12 via-transparent to-transparent pointer-events-none" />
-          <div className="w-full h-full rounded-[22px] border border-white/10 bg-white/[0.03] backdrop-blur-2xl px-3 py-2.5 flex items-center gap-3 relative z-10 shadow-[0_12px_30px_rgba(0,0,0,0.45)] overflow-hidden">
+          <div className="w-full h-full rounded-[22px] border border-white/10 bg-white/[0.03] backdrop-blur-2xl p-3 relative z-10 shadow-[0_12px_30px_rgba(0,0,0,0.45)] overflow-hidden flex flex-col">
            {currentTrack ? (
             <>
-              <img src={getProxyUrl(currentTrack.thumbnail)} className="w-[78px] h-[78px] object-cover rounded-xl shadow-[0_8px_18px_rgba(0,0,0,0.55)] border border-white/10 flex-none" />
-              <div className="flex flex-col flex-1 min-w-0 h-full justify-center pr-1">
-                <div className="flex items-start justify-between gap-2 min-w-0">
-                  <div className="min-w-0 flex-1">
-                    <div className="overflow-hidden whitespace-nowrap">
-                      <div className="animate-marquee-loop flex w-max gap-8 items-center text-[13px] font-semibold text-white/95 leading-tight" style={{ textShadow: `0 0 10px ${themeColor}44` }}>
-                        <span>{currentTrack.title}</span>
-                        <span aria-hidden="true">{currentTrack.title}</span>
-                      </div>
-                    </div>
-                    <span className="block text-[10px] font-medium text-white/60 truncate leading-tight mt-0.5">{currentTrack.author}</span>
-                  </div>
-                  <span className="shrink-0 rounded-full border border-brand-accent/20 bg-brand-accent/8 px-2 py-0.5 text-[7px] font-black uppercase tracking-[0.18em] text-brand-accent/70">
-                    Mini
-                  </span>
+              <div className="flex items-center justify-between gap-2 no-drag">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`w-2 h-2 rounded-full ${isPlaying ? 'bg-brand-accent shadow-[0_0_10px_rgba(0,255,191,0.8)]' : 'bg-white/35'}`} />
+                  <span className="text-[8px] font-black uppercase tracking-[0.22em] text-brand-accent/80">Aether Mini</span>
+                  <span className="text-[8px] font-mono text-white/45">Q:{Math.max(0, queue.length - 1)}</span>
                 </div>
-
-                <div className="mt-1.25 min-h-[1.7em] border-l-2 border-brand-accent/30 pl-2.5 flex items-center">
-                  <div className="w-full text-[clamp(8px,1vw,9px)] font-medium italic text-white/68 leading-snug line-clamp-2">
-                    {compactLyric || 'Lyric sync loading…'}
-                  </div>
-                </div>
-
-                <div
-                  className="mt-2 h-1.5 w-full bg-white/10 rounded-full overflow-hidden relative no-drag cursor-pointer"
-                  onClick={(e) => {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    const pos = (e.clientX - rect.left) / rect.width;
-                    const total = currentTrack.totalDurationMs || currentTrack.duration || 0;
-                    handleSeek(pos * total);
-                  }}
-                >
-                  <div className="absolute inset-y-0 left-0 bg-brand-accent shadow-[0_0_10px_rgba(0,255,191,0.55)]" style={{ width: `${(currentTime / (currentTrack.totalDurationMs || currentTrack.duration || 1)) * 100}%` }} />
-                </div>
-
-                <div className="flex items-center justify-between mt-1 text-[clamp(7px,1vw,8px)] font-mono text-white/45 tracking-wide">
-                  <span>{formatTime(currentTime)}</span>
-                  <span>{formatTime(currentTrack.totalDurationMs || currentTrack.duration || 0)}</span>
-                </div>
-
-                <div className="flex items-center gap-4 mt-1.5 no-drag shrink-0 text-white/50">
-                  <button onClick={() => handleControl('previous')} className="hover:text-white transition-colors"><Rewind size={14} fill="currentColor" /></button>
-                  <button onClick={() => handleControl(isPlaying ? 'pause' : 'resume')} className="w-8 h-8 rounded-full bg-brand-accent hover:bg-white text-black flex items-center justify-center transition-all shadow-[0_0_14px_rgba(0,255,191,0.25)] hover:scale-105 active:scale-95 border border-brand-accent/40">
-                    {isPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" className="ml-0.5" />}
-                  </button>
-                  <button onClick={() => handleControl('skip')} className="hover:text-white transition-colors"><FastForward size={14} fill="currentColor" /></button>
+                <div className="flex items-center gap-1">
+                  <button onClick={() => setIsMiniOverlayOpen((prev) => !prev)} className="p-1.5 rounded-lg text-white/35 hover:text-brand-accent no-drag transition-colors active:scale-90 border border-white/10 bg-white/[0.03]" title="Quick actions"><Cpu size={12} /></button>
+                  <button onClick={toggleMiniPlayer} className="p-1.5 rounded-lg text-white/35 hover:text-brand-accent no-drag transition-colors active:scale-90 border border-white/10 bg-white/[0.03]" title="Expand"><AppWindow size={12} /></button>
                 </div>
               </div>
-              <button onClick={toggleMiniPlayer} className="absolute top-2 right-2 p-1.5 rounded-lg text-white/35 hover:text-brand-accent no-drag transition-colors active:scale-90" title="Expand"><AppWindow size={13} /></button>
+
+              {isMiniOverlayOpen && (
+                <div className="absolute right-3 top-10 z-30 no-drag w-40 rounded-xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-2 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
+                  <button onClick={() => { setLibraryActionTarget({ type: 'track', items: [currentTrack] }); setIsLibraryOverlayOpen(true); setIsMiniOverlayOpen(false); }} className="w-full text-left px-2.5 py-2 rounded-lg text-[10px] font-black uppercase tracking-[0.18em] text-white/70 hover:text-brand-accent hover:bg-white/5">Save to Library</button>
+                  <button onClick={() => { setIsPlayerOverlayOpen(true); setIsMiniOverlayOpen(false); }} className="w-full text-left px-2.5 py-2 rounded-lg text-[10px] font-black uppercase tracking-[0.18em] text-white/70 hover:text-brand-accent hover:bg-white/5">Player Overlay</button>
+                  <button onClick={() => { setIsLyricsExpanded(true); setIsMiniOverlayOpen(false); }} className="w-full text-left px-2.5 py-2 rounded-lg text-[10px] font-black uppercase tracking-[0.18em] text-white/70 hover:text-brand-accent hover:bg-white/5">Open Lyrics</button>
+                  <button onClick={() => { setIsDiagnosticsOpen(true); setIsMiniOverlayOpen(false); }} className="w-full text-left px-2.5 py-2 rounded-lg text-[10px] font-black uppercase tracking-[0.18em] text-white/70 hover:text-brand-accent hover:bg-white/5">Diagnostics</button>
+                </div>
+              )}
+
+              <div className="flex gap-3 flex-1 min-h-0 mt-2">
+                <img src={getProxyUrl(currentTrack.thumbnail)} className="w-[88px] h-[88px] object-cover rounded-2xl shadow-[0_10px_24px_rgba(0,0,0,0.55)] border border-white/10 flex-none" />
+
+                <div className="flex flex-col flex-1 min-w-0 justify-between">
+                  <div className="min-w-0">
+                    {miniTitleMarquee ? (
+                      <div className="overlay-marquee">
+                        <div className="overlay-marquee-track text-[13px] font-semibold text-white/95 leading-tight" style={{ textShadow: `0 0 10px ${themeColor}44` }}>
+                          <span>{miniTitle}</span>
+                          <span aria-hidden="true">{miniTitle}</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-[13px] font-semibold text-white/95 leading-tight truncate" style={{ textShadow: `0 0 10px ${themeColor}44` }}>{miniTitle}</div>
+                    )}
+
+                    <div className="text-[10px] font-medium text-white/60 truncate mt-0.5">{miniArtist}</div>
+                  </div>
+
+                  <div className="rounded-xl border border-white/10 bg-white/[0.03] px-2 py-1.5 mt-1 min-h-[2.2em] flex items-center">
+                    <div className="w-full text-[9px] font-medium italic text-white/72 leading-snug line-clamp-2">
+                      {compactLyric || 'Lyric sync loading…'}
+                    </div>
+                  </div>
+
+                  <div className="mt-1.5">
+                    <div
+                      className="h-1.5 w-full bg-white/10 rounded-full overflow-hidden relative no-drag cursor-pointer"
+                      onClick={(e) => {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const pos = (e.clientX - rect.left) / rect.width;
+                        handleSeek(pos * miniDurationMs);
+                      }}
+                    >
+                      <div className="absolute inset-y-0 left-0 bg-brand-accent shadow-[0_0_10px_rgba(0,255,191,0.55)]" style={{ width: `${miniProgressPct}%` }} />
+                    </div>
+                    <div className="flex items-center justify-between mt-1 text-[8px] font-mono text-white/45 tracking-wide">
+                      <span>{formatTime(currentTime)}</span>
+                      <span>{formatTime(miniDurationMs)}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between mt-1.5 no-drag">
+                    <div className="flex items-center gap-2.5 text-white/60">
+                      <button onClick={() => handleControl('previous')} className="w-7 h-7 rounded-full bg-white/[0.03] border border-white/10 hover:text-white hover:border-brand-accent/45 transition-colors active:scale-90 flex items-center justify-center"><Rewind size={13} fill="currentColor" /></button>
+                      <button onClick={() => handleControl(isPlaying ? 'pause' : 'resume')} className="w-9 h-9 rounded-full bg-brand-accent hover:bg-white text-black flex items-center justify-center transition-all shadow-[0_0_14px_rgba(0,255,191,0.25)] hover:scale-105 active:scale-95 border border-brand-accent/40">
+                        {isPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" className="ml-0.5" />}
+                      </button>
+                      <button onClick={() => handleControl('skip')} className="w-7 h-7 rounded-full bg-white/[0.03] border border-white/10 hover:text-white hover:border-brand-accent/45 transition-colors active:scale-90 flex items-center justify-center"><FastForward size={13} fill="currentColor" /></button>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-white/50">
+                      <button onClick={() => handleControl('mute')} className="hover:text-brand-accent transition-colors active:scale-90"><Volume2 size={12} /></button>
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        value={volume}
+                        onChange={(e) => {
+                          const next = parseFloat(e.target.value);
+                          setVolume(next);
+                          if (localAudioRef.current) localAudioRef.current.volume = next;
+                          if (isStandalone) window.aether?.store?.set('volume', next);
+                        }}
+                        className="w-20 h-1 no-drag"
+                        title="Volume"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
             </>
            ) : (
               <div className="w-full text-center text-xs font-medium text-white/50 tracking-wide flex flex-col items-center justify-center h-full relative z-10">
-                 <div className="absolute top-2 right-2 p-1.5 text-white/25 hover:text-brand-accent no-drag cursor-pointer transition-colors" onClick={toggleMiniPlayer}><AppWindow size={13} /></div>
+                 <button className="absolute top-1 right-1 p-1.5 text-white/25 hover:text-brand-accent no-drag cursor-pointer transition-colors" onClick={toggleMiniPlayer} title="Expand"><AppWindow size={13} /></button>
+                 <Music size={18} className="text-brand-accent/70 mb-2" />
                  <div>No signal detected</div>
               </div>
            )}
@@ -4863,14 +5114,21 @@ function App() {
     : undefined;
   const auraCardBorder = isAuraMode ? `rgba(130, 255, 221, ${0.16 + immersiveBeatIntensity * 0.20})` : undefined;
   const auraPanelBorder = isAuraMode ? `rgba(130, 255, 221, ${0.11 + immersiveBeatIntensity * 0.16})` : undefined;
+  const auraPresetConfig = AURA_PRESETS.find((preset) => preset.id === auraPreset) || AURA_PRESETS[1];
+  const doodlePresetConfig = DOODLE_PRESETS.find((preset) => preset.id === doodleIntensity) || DOODLE_PRESETS[1];
+  const auraFieldStyle = isAuraMode ? {
+    '--aura-field-boost': String(clamp01((0.22 + immersiveBeatIntensity * 0.78) * auraPresetConfig.fieldBoost)),
+    '--aura-field-flare': String(clamp01((0.18 + immersiveBeatIntensity * 0.46) * auraPresetConfig.fieldFlare)),
+    '--aura-field-drift': `${(8 + immersiveBeatIntensity * 18).toFixed(2)}px`,
+  } : undefined;
   const diagnosticsApiBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
   const queuePollDisplay = isStandalone ? 'local' : `${diagnostics.lastQueueFetchMs ?? '—'}ms`;
   const queuePollTime = isStandalone ? 'direct engine' : formatDiagTime(diagnostics.lastQueueFetchAt);
   const doodleIntensityScale = doodleIntensity === 'subtle' ? 0.75 : doodleIntensity === 'dreamy' ? 1.35 : 1;
-  const doodleIntensityBadge = doodleIntensity === 'subtle' ? 'S' : doodleIntensity === 'dreamy' ? 'D' : 'M';
+  const doodleIntensityBadge = doodlePresetConfig.badge;
 
   return (
-    <div className={`fixed inset-0 bg-transparent selection:bg-brand-accent selection:text-brand-dark flex flex-col h-screen overflow-hidden relative isolate ${isVerticalStack ? 'vertical-stack-mode' : ''} ${isDoodleMode ? 'doodle-mode-active' : ''} ${isAuraMode ? 'aura-mode-active' : ''}`}>
+    <div className={`fixed inset-0 bg-transparent selection:bg-brand-accent selection:text-brand-dark flex flex-col h-screen overflow-hidden relative isolate ${isVerticalStack ? 'vertical-stack-mode' : ''} ${isDoodleMode ? `doodle-mode-active doodle-preset-${doodleIntensity}` : ''} ${isAuraMode ? `aura-mode-active aura-preset-${auraPreset}` : ''}`} style={auraFieldStyle}>
       <div className="fixed inset-0 bg-[#050505] z-[-2]" />
       {/* Background Mesh (Absolute to avoid flex interference) */}
       <div className="absolute inset-0 bg-mesh pointer-events-none z-[-1]" />
@@ -4909,6 +5167,9 @@ function App() {
 
       {isDoodleMode && (
         <div className="fixed inset-0 pointer-events-none overflow-hidden z-[-1] doodle-cloud-layer doodle-bg-layer">
+          <div className="doodle-soft-blob doodle-soft-blob-a" />
+          <div className="doodle-soft-blob doodle-soft-blob-b" />
+          <div className="doodle-soft-blob doodle-soft-blob-c" />
           <img src={catDoodlePeek} alt="doodle" className="absolute top-[10%] left-[-16vw] w-[70px] doodle-fly doodle-glide-a" style={{ opacity: Math.min(0.38, 0.2 * doodleIntensityScale), animationDelay: '-7s' }} draggable={false} />
           <img src={catDoodlePeek} alt="doodle" className="absolute top-[26%] left-[-16vw] w-[58px] doodle-fly doodle-glide-b" style={{ opacity: Math.min(0.34, 0.18 * doodleIntensityScale), animationDelay: '-13s', transform: 'scaleX(-1)' }} draggable={false} />
           <img src={catDoodlePeek} alt="doodle" className="absolute top-[42%] left-[-16vw] w-[64px] doodle-fly doodle-glide-c" style={{ opacity: Math.min(0.36, 0.19 * doodleIntensityScale), animationDelay: '-3s' }} draggable={false} />
@@ -4918,12 +5179,47 @@ function App() {
         </div>
       )}
 
-      {/* AURA MODE: Side-channel edge bars (mids/highs) */}
+      {/* AURA MODE: Full-screen aura field */}
       {isAuraMode && (
-        <>
-          <div className="aura-side-channel aura-side-channel-left" style={{ opacity: `var(--aura-edge-glow, 0)` }} />
-          <div className="aura-side-channel aura-side-channel-right" style={{ opacity: `var(--aura-edge-glow, 0)` }} />
-        </>
+        <div className="aura-field fixed inset-0 pointer-events-none overflow-hidden z-[-1]">
+          <div className="aura-field-tone aura-field-tone-left" style={{ opacity: 'calc(var(--aura-field-flare, 0) * 0.52)' }} />
+          <div className="aura-field-tone aura-field-tone-right" style={{ opacity: 'calc(var(--aura-field-flare, 0) * 0.48)' }} />
+          <div className="aura-field-core aura-field-core-a" style={{ opacity: 'var(--aura-field-boost, 0)' }} />
+          <div className="aura-field-core aura-field-core-b" style={{ opacity: 'calc(var(--aura-field-boost, 0) * 0.82)' }} />
+          <div className="aura-field-ribbon aura-field-ribbon-a" style={{ opacity: 'var(--aura-field-flare, 0)' }} />
+          <div className="aura-field-ribbon aura-field-ribbon-b" style={{ opacity: 'calc(var(--aura-field-flare, 0) * 0.92)' }} />
+          <div className="aura-field-orbits">
+            {[
+              ['18%', '12%', '7s', '1.2s', '16px'],
+              ['72%', '16%', '9s', '3.4s', '12px'],
+              ['48%', '78%', '11s', '0s', '22px'],
+              ['12%', '68%', '13s', '2.2s', '10px'],
+              ['86%', '58%', '10s', '4.1s', '14px'],
+            ].map(([left, top, duration, delay, size], index) => (
+              <span
+                key={`aura-orbit-${index}`}
+                className="aura-field-orbit"
+                style={{ left, top, width: size, height: size, animationDuration: duration, animationDelay: delay }}
+              />
+            ))}
+          </div>
+          <div className="aura-field-particles">
+            {[
+              ['9%', '18%', '12s', '0s'],
+              ['24%', '72%', '14s', '2.5s'],
+              ['41%', '24%', '11s', '1.1s'],
+              ['58%', '66%', '16s', '4s'],
+              ['77%', '32%', '13s', '3.1s'],
+              ['91%', '78%', '18s', '0.7s'],
+            ].map(([left, top, duration, delay], index) => (
+              <span
+                key={`aura-particle-${index}`}
+                className="aura-field-particle"
+                style={{ left, top, animationDuration: duration, animationDelay: delay }}
+              />
+            ))}
+          </div>
+        </div>
       )}
 
       {/* APP HEADER */}
@@ -4989,42 +5285,14 @@ function App() {
               <input 
                 type="text" 
                 placeholder="Search music..." 
-                className={`w-full rounded-full pl-14 pr-24 h-11 text-sm outline-none transition-all ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/5 border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'}`}
+                className={`w-full rounded-full pl-14 pr-12 h-11 text-sm outline-none transition-all ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/5 border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'}`}
                 value={searchQuery}
                 onChange={(e) => {
                   setSearchQuery(e.target.value);
                   setHasCompletedSearch(false);
                 }}
               />
-              <button
-                type="button"
-                onClick={() => {
-                  const order = ['subtle', 'medium', 'dreamy'];
-                  const idx = order.indexOf(doodleIntensity);
-                  const next = order[(idx + 1) % order.length];
-                  setDoodleIntensity(next);
-                  setLastAdded(`Doodle intensity • ${next}`);
-                  setTimeout(() => setLastAdded(null), 1400);
-                }}
-                className={`absolute right-12 top-1/2 -translate-y-1/2 min-w-[24px] h-6 px-1 rounded-full border transition-all flex items-center justify-center text-[8px] font-black tracking-widest ${isDoodleMode ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/5 border-white/15 text-white/35'}`}
-                title={`Doodle intensity: ${doodleIntensity}`}
-              >
-                {doodleIntensityBadge}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const next = !isDoodleMode;
-                  setIsDoodleMode(next);
-                  setLastAdded(next ? 'Doodle mode enabled ✨' : 'Doodle mode disabled');
-                  setTimeout(() => setLastAdded(null), 1800);
-                }}
-                className={`absolute right-5 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full border transition-all flex items-center justify-center text-[11px] ${isDoodleMode ? 'cat-paw-wiggle bg-brand-accent/15 border-brand-accent/35 text-brand-accent shadow-[0_0_12px_rgba(0,255,191,0.25)]' : 'bg-white/5 border-white/15 text-white/45 hover:text-brand-accent hover:border-brand-accent/40'}`}
-                title={isDoodleMode ? 'Disable doodle mode' : 'Enable doodle mode'}
-              >
-                🐾
-              </button>
-              {isSearching && <div className="absolute right-20 top-1/2 -translate-y-1/2"><Loader2 className="animate-spin text-brand-accent" size={16} /></div>}
+              {isSearching && <div className="absolute right-5 top-1/2 -translate-y-1/2"><Loader2 className="animate-spin text-brand-accent" size={16} /></div>}
             </form>
           </div>
 
@@ -5055,6 +5323,67 @@ function App() {
                >
                  <Monitor size={16} />
                </button>
+
+               <div className="relative" ref={looksPanelRef}>
+                 <button
+                   onClick={() => setIsLooksPanelOpen((prev) => !prev)}
+                   className={`h-10 px-3 rounded-2xl flex items-center gap-2 transition-all border no-drag ${isLooksPanelOpen ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
+                   title="Visual presets"
+                 >
+                   <Sparkles size={14} />
+                   <span className="text-[10px] font-black uppercase tracking-widest">Looks</span>
+                 </button>
+
+                 {isLooksPanelOpen && (
+                   <div className="absolute right-0 mt-2 z-[320] w-64 rounded-2xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-3 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
+                     <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Aura Preset</div>
+                     <div className="grid grid-cols-3 gap-1.5 mb-3">
+                       {AURA_PRESETS.map((preset) => (
+                         <button
+                           key={preset.id}
+                           onClick={() => {
+                             setAuraPreset(preset.id);
+                             setLastAdded(`Aura preset • ${preset.label}`);
+                             setTimeout(() => setLastAdded(null), 1500);
+                           }}
+                           className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${auraPreset === preset.id ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                         >
+                           {preset.label}
+                         </button>
+                       ))}
+                     </div>
+
+                     <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Doodle Preset</div>
+                     <div className="grid grid-cols-3 gap-1.5 mb-3">
+                       {DOODLE_PRESETS.map((preset) => (
+                         <button
+                           key={preset.id}
+                           onClick={() => {
+                             setDoodleIntensity(preset.id);
+                             setLastAdded(`Doodle preset • ${preset.label}`);
+                             setTimeout(() => setLastAdded(null), 1500);
+                           }}
+                           className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${doodleIntensity === preset.id ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                         >
+                           {preset.badge}
+                         </button>
+                       ))}
+                     </div>
+
+                     <button
+                       onClick={() => {
+                         const next = !isDoodleMode;
+                         setIsDoodleMode(next);
+                         setLastAdded(next ? 'Doodle mode enabled ✨' : 'Doodle mode disabled');
+                         setTimeout(() => setLastAdded(null), 1600);
+                       }}
+                       className={`w-full px-3 py-2 rounded-xl border text-[10px] font-black uppercase tracking-[0.14em] transition-colors ${isDoodleMode ? 'bg-brand-accent/15 border-brand-accent/40 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                     >
+                       {isDoodleMode ? `Doodle ON • ${doodleIntensityBadge}` : 'Enable Doodle'}
+                     </button>
+                   </div>
+                 )}
+               </div>
 
                <div className="relative">
                  <button
@@ -5692,7 +6021,7 @@ function App() {
                               <button 
                                 ref={playButtonRef}
                                 onClick={() => handleControl(isPlaying ? 'pause' : 'resume')} 
-                                className={`w-16 h-16 bg-brand-accent text-black rounded-2xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all relative ${isAuraMode ? 'shadow-[0_0_30px_rgba(0,255,191,0.4)] hover:shadow-[0_0_40px_rgba(0,255,191,0.6)]' : 'shadow-xl shadow-brand-accent/20'}`}
+                                className={`w-16 h-16 bg-brand-accent text-black rounded-2xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all relative overflow-hidden ${isAuraMode ? 'shadow-[0_0_30px_rgba(0,255,191,0.4)] hover:shadow-[0_0_40px_rgba(0,255,191,0.6)]' : 'shadow-xl shadow-brand-accent/20'}`}
                               >
                                 {isAuraMode && <div ref={beatRingsRef} className="absolute inset-0" />}
                                 {isPlaying ? <Pause size={28} fill="currentColor" /> : <Play size={28} fill="currentColor" className="ml-1" />}

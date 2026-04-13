@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, globalShortcut, Menu, dialog, systemPreferences } = require('electron');
+const { app, BrowserWindow, ipcMain, globalShortcut, Menu, dialog, systemPreferences, screen } = require('electron');
 app.setName('Aether');
 app.name = 'Aether';
 const ffmpeg = require('ffmpeg-static');
@@ -1959,6 +1959,11 @@ app.whenReady().then(async () => {
     ipcMain.handle('aether:window-resize', (event, { width, height, alwaysOnTop }) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
             const miniMode = !!alwaysOnTop;
+            const workArea = screen?.getDisplayMatching?.(mainWindow.getBounds())?.workAreaSize || screen?.getPrimaryDisplay?.()?.workAreaSize || { width: 1440, height: 900 };
+            const maxW = Math.max(900, Number(workArea.width || 1440));
+            const maxH = Math.max(620, Number(workArea.height || 900));
+            const normalMinW = Math.min(1000, Math.max(760, maxW - 120));
+            const normalMinH = Math.min(700, Math.max(560, maxH - 120));
 
             // Normalize window state before changing size constraints.
             // This avoids stale maximize/fullscreen state causing disabled native controls.
@@ -1973,19 +1978,44 @@ app.whenReady().then(async () => {
                 mainWindow.setResizable(false);
                 if (typeof mainWindow.setMaximizable === 'function') mainWindow.setMaximizable(false);
                 if (typeof mainWindow.setFullScreenable === 'function') mainWindow.setFullScreenable(false);
+                if (typeof mainWindow.setMinimizable === 'function') mainWindow.setMinimizable(true);
+                if (process.platform === 'darwin' && typeof mainWindow.setWindowButtonVisibility === 'function') {
+                    // Keep controls visible in mini mode but with maximize disabled.
+                    mainWindow.setWindowButtonVisibility(true);
+                }
                 mainWindow.setMinimumSize(width || 420, height || 190);
                 mainWindow.setMaximumSize(width || 420, height || 190);
             } else {
                 mainWindow.setResizable(true);
                 if (typeof mainWindow.setMaximizable === 'function') mainWindow.setMaximizable(true);
                 if (typeof mainWindow.setFullScreenable === 'function') mainWindow.setFullScreenable(true);
-                mainWindow.setMinimumSize(1000, 700);
-                // Use a large cap to effectively remove the fixed-size lock from mini mode.
-                mainWindow.setMaximumSize(10000, 10000);
+                if (typeof mainWindow.setMinimizable === 'function') mainWindow.setMinimizable(true);
+                if (process.platform === 'darwin' && typeof mainWindow.setWindowButtonVisibility === 'function') {
+                    mainWindow.setWindowButtonVisibility(true);
+                }
+                mainWindow.setMinimumSize(normalMinW, normalMinH);
+                // Keep cap bounded to active display to avoid non-maximizable edge cases.
+                mainWindow.setMaximumSize(maxW, maxH);
             }
-            mainWindow.setSize(width || 1280, height || 800, true);
+            const targetW = Math.max(miniMode ? 300 : normalMinW, Math.min(Number(width || 1280), maxW));
+            const targetH = Math.max(miniMode ? 160 : normalMinH, Math.min(Number(height || 800), maxH));
+            mainWindow.setSize(targetW, targetH, true);
             mainWindow.center();
             mainWindow.setAlwaysOnTop(miniMode);
+
+            // macOS sometimes keeps stale disabled traffic lights after constraint flips.
+            // Re-apply window capabilities on next tick to ensure green maximize returns.
+            if (!miniMode && process.platform === 'darwin') {
+                setTimeout(() => {
+                    try {
+                        if (!mainWindow || mainWindow.isDestroyed()) return;
+                        mainWindow.setResizable(true);
+                        if (typeof mainWindow.setMaximizable === 'function') mainWindow.setMaximizable(true);
+                        if (typeof mainWindow.setFullScreenable === 'function') mainWindow.setFullScreenable(true);
+                        if (typeof mainWindow.setWindowButtonVisibility === 'function') mainWindow.setWindowButtonVisibility(true);
+                    } catch {}
+                }, 40);
+            }
         }
     });
 

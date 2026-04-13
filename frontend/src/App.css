@@ -1,5 +1,12 @@
 /* Essential animations and utility classes that are easier to define in CSS than pure Tailwind */
 
+:root {
+  --aura-accent-rgb: 0, 255, 191;
+  --aura-contrast-rgb: 92, 202, 255;
+  --aura-kick-shift: 0deg;
+  --aura-kick-glow: 0;
+}
+
 @keyframes pulse-glow {
   0%, 100% { opacity: 0.15; transform: scale(1); }
   50% { opacity: 0.25; transform: scale(1.05); }
@@ -9,26 +16,163 @@
   animation: pulse-glow 8s ease-in-out infinite;
 }
 
-/* AURA MODE: Side-channel edge bars (mids/highs) */
-.aura-side-channel {
-  position: fixed;
-  z-index: 24;
+/* AURA MODE: Full-screen aura field */
+@keyframes aura-field-breathe {
+  0%, 100% { transform: scale(0.96) translate3d(0, 0, 0); opacity: 0.36; }
+  50% { transform: scale(1.04) translate3d(0, -8px, 0); opacity: 0.62; }
+}
+
+@keyframes aura-ribbon-sweep {
+  0% { transform: translate3d(-12%, -4%, 0) rotate(-8deg) scale(0.98); }
+  50% { transform: translate3d(10%, 2%, 0) rotate(7deg) scale(1.04); }
+  100% { transform: translate3d(18%, -2%, 0) rotate(-8deg) scale(0.98); }
+}
+
+@keyframes aura-orbit-float {
+  0% { transform: translate3d(0, 0, 0) scale(0.82); opacity: 0.18; }
+  35% { transform: translate3d(0, -14px, 0) scale(1); opacity: 0.95; }
+  100% { transform: translate3d(0, 18px, 0) scale(0.86); opacity: 0.22; }
+}
+
+@keyframes aura-particle-drift {
+  0% { transform: translate3d(0, 0, 0) scale(0.72); opacity: 0; }
+  15% { opacity: 0.75; }
+  50% { transform: translate3d(0, -20px, 0) scale(1); opacity: 1; }
+  100% { transform: translate3d(0, 30px, 0) scale(0.76); opacity: 0; }
+}
+
+.aura-field {
+  mix-blend-mode: screen;
+  filter: hue-rotate(var(--aura-kick-shift)) saturate(calc(1 + var(--aura-kick-glow) * 0.12));
+  transition: filter 140ms linear;
+}
+
+.aura-field-core,
+.aura-field-ribbon,
+.aura-field-orbit,
+.aura-field-particle,
+.aura-field-tone {
+  position: absolute;
   pointer-events: none;
-  top: 0;
-  bottom: 0;
+}
+
+.aura-field-tone {
+  top: -8%;
+  bottom: -8%;
+  width: 54%;
+  filter: blur(80px);
+}
+
+.aura-field-tone-left {
+  left: -16%;
+  background: radial-gradient(circle at 34% 50%, rgba(var(--aura-accent-rgb), 0.44), rgba(var(--aura-accent-rgb), 0.16) 38%, rgba(var(--aura-accent-rgb), 0) 74%);
+}
+
+.aura-field-tone-right {
+  right: -16%;
+  background: radial-gradient(circle at 66% 50%, rgba(var(--aura-contrast-rgb), 0.42), rgba(var(--aura-contrast-rgb), 0.14) 40%, rgba(var(--aura-contrast-rgb), 0) 74%);
+}
+
+.aura-field-core {
+  inset: -14%;
+  border-radius: 50%;
+  filter: blur(110px);
+  animation: aura-field-breathe 8.5s ease-in-out infinite;
+}
+
+.aura-field-core-a {
+  background:
+    radial-gradient(circle at 50% 40%, rgba(var(--aura-accent-rgb), 0.48), rgba(var(--aura-accent-rgb), 0.16) 34%, rgba(0, 0, 0, 0) 64%),
+    radial-gradient(circle at 20% 24%, rgba(var(--aura-contrast-rgb), 0.16), rgba(0, 0, 0, 0) 56%),
+    radial-gradient(circle at 82% 74%, rgba(var(--aura-accent-rgb), 0.14), rgba(0, 0, 0, 0) 56%);
+}
+
+.aura-field-core-b {
+  background:
+    radial-gradient(circle at 50% 48%, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0) 46%),
+    radial-gradient(circle at 50% 44%, rgba(var(--aura-accent-rgb), 0.24), rgba(0, 0, 0, 0) 60%);
+  animation-delay: -2.8s;
+}
+
+.aura-field-ribbon {
+  left: -20%;
+  top: 9%;
+  width: 140%;
+  height: 42%;
+  filter: blur(58px);
+  border-radius: 999px;
+  background: linear-gradient(115deg, rgba(var(--aura-accent-rgb), 0) 0%, rgba(var(--aura-accent-rgb), 0.30) 34%, rgba(var(--aura-contrast-rgb), 0.28) 52%, rgba(var(--aura-accent-rgb), 0.20) 68%, rgba(var(--aura-accent-rgb), 0) 100%);
+  animation: aura-ribbon-sweep 12s ease-in-out infinite;
+}
+
+.aura-field-ribbon-b {
+  top: 56%;
+  left: -18%;
+  width: 132%;
+  height: 34%;
+  transform: rotate(6deg);
+  animation-delay: -4.5s;
+}
+
+.aura-field-orbits {
+  position: absolute;
+  inset: 0;
+}
+
+.aura-field-orbit {
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.92) 0%, rgba(var(--aura-accent-rgb), 0.85) 38%, rgba(var(--aura-accent-rgb), 0) 76%);
+  box-shadow: 0 0 18px rgba(var(--aura-accent-rgb), 0.78), 0 0 34px rgba(var(--aura-accent-rgb), 0.3);
+  filter: blur(0.2px);
+  animation: aura-orbit-float 10s ease-in-out infinite;
+}
+
+.aura-field-particles {
+  position: absolute;
+  inset: 0;
+}
+
+.aura-field-particle {
   width: 6px;
-  background: linear-gradient(to bottom, transparent 0%, rgba(0, 255, 191, 1) 20%, rgba(0, 255, 191, 0.9) 50%, rgba(0, 255, 191, 1) 80%, transparent 100%);
-  box-shadow: 0 0 30px rgba(0, 255, 191, 0.8), inset 0 0 20px rgba(0, 255, 191, 0.5);
-  opacity: 0;
-  transition: opacity 80ms ease-out;
+  height: 6px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.98) 0%, rgba(var(--aura-accent-rgb), 0.9) 48%, rgba(var(--aura-accent-rgb), 0.05) 100%);
+  box-shadow: 0 0 12px rgba(var(--aura-accent-rgb), 0.74), 0 0 22px rgba(var(--aura-accent-rgb), 0.28);
+  animation: aura-particle-drift 14s ease-in-out infinite;
 }
 
-.aura-side-channel-left {
-  left: 0;
+.aura-mode-active .glass-card {
+  border-color: rgba(var(--aura-accent-rgb), calc(0.16 + var(--aura-kick-glow) * 0.08)) !important;
 }
 
-.aura-side-channel-right {
-  right: 0;
+.aura-preset-calm .aura-field {
+  filter: hue-rotate(calc(var(--aura-kick-shift) * 0.7)) saturate(1.02);
+}
+
+.aura-preset-cinematic .aura-field {
+  filter: hue-rotate(calc(var(--aura-kick-shift) * 1.1)) saturate(1.15);
+}
+
+.aura-preset-cinematic .aura-field-ribbon {
+  opacity: calc(var(--aura-field-flare, 0) * 1.08) !important;
+}
+
+.aura-mode-active .glass-card,
+.aura-mode-active .rounded-\[3\.5rem\],
+.aura-mode-active .rounded-3xl,
+.aura-mode-active .rounded-2xl,
+.aura-mode-active .rounded-xl {
+  box-shadow:
+    0 18px 60px rgba(0, 0, 0, 0.24),
+    0 0 20px rgba(var(--aura-accent-rgb), calc(0.08 + var(--aura-kick-glow) * 0.12)),
+    0 0 20px rgba(var(--aura-contrast-rgb), calc(0.07 + var(--aura-kick-glow) * 0.10)),
+    inset 1px 0 0 rgba(var(--aura-accent-rgb), 0.14),
+    inset -1px 0 0 rgba(var(--aura-contrast-rgb), 0.12),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+}
+
+.aura-mode-active header {
+  backdrop-filter: blur(32px) saturate(1.2);
 }
 
 /* Beat trail echo rings on play button */
@@ -50,7 +194,7 @@
 
 .beat-ring circle {
   fill: none;
-  stroke: rgba(0, 255, 191, 0.6);
+  stroke: rgba(var(--aura-accent-rgb), 0.66);
   stroke-width: 1.5;
 }
 
@@ -58,15 +202,15 @@
 @keyframes lyric-shimmer {
   0% { 
     opacity: 0;
-    box-shadow: -20px 0 20px rgba(0, 255, 191, 0.3), 0 0 8px rgba(0, 255, 191, 0.4);
+    box-shadow: -20px 0 20px rgba(var(--aura-accent-rgb), 0.34), 0 0 8px rgba(var(--aura-accent-rgb), 0.45);
   }
   50% { 
     opacity: 1;
-    box-shadow: 0 0 20px rgba(0, 255, 191, 0.8), 0 0 40px rgba(0, 255, 191, 0.4);
+    box-shadow: 0 0 20px rgba(var(--aura-accent-rgb), 0.86), 0 0 42px rgba(var(--aura-accent-rgb), 0.42);
   }
   100% { 
     opacity: 0;
-    box-shadow: 20px 0 20px rgba(0, 255, 191, 0.3), 0 0 8px rgba(0, 255, 191, 0.4);
+    box-shadow: 20px 0 20px rgba(var(--aura-accent-rgb), 0.34), 0 0 8px rgba(var(--aura-accent-rgb), 0.45);
   }
 }
 
@@ -243,6 +387,38 @@ input[type="range"]::-webkit-slider-thumb {
   filter: drop-shadow(0 0 12px rgba(124, 248, 211, 0.14));
 }
 
+.doodle-soft-blob {
+  position: absolute;
+  border-radius: 999px;
+  pointer-events: none;
+  filter: blur(48px);
+  mix-blend-mode: screen;
+}
+
+.doodle-soft-blob-a {
+  width: 28vw;
+  height: 28vw;
+  left: -8vw;
+  top: 14vh;
+  background: radial-gradient(circle at 40% 40%, rgba(var(--aura-accent-rgb), 0.22), rgba(var(--aura-accent-rgb), 0.05) 52%, rgba(var(--aura-accent-rgb), 0) 74%);
+}
+
+.doodle-soft-blob-b {
+  width: 24vw;
+  height: 24vw;
+  right: -6vw;
+  top: 46vh;
+  background: radial-gradient(circle at 50% 50%, rgba(255, 176, 232, 0.2), rgba(255, 176, 232, 0.05) 52%, rgba(255, 176, 232, 0) 74%);
+}
+
+.doodle-soft-blob-c {
+  width: 22vw;
+  height: 22vw;
+  left: 30vw;
+  bottom: -8vw;
+  background: radial-gradient(circle at 50% 50%, rgba(164, 220, 255, 0.18), rgba(164, 220, 255, 0.04) 52%, rgba(164, 220, 255, 0) 74%);
+}
+
 .doodle-cloud-layer img {
   mix-blend-mode: screen;
 }
@@ -250,6 +426,50 @@ input[type="range"]::-webkit-slider-thumb {
 .doodle-bg-layer img {
   opacity: 0.26;
   filter: blur(0.1px);
+}
+
+.doodle-preset-subtle .doodle-bg-layer img {
+  opacity: 0.16 !important;
+  filter: blur(0.25px);
+}
+
+.doodle-preset-medium .doodle-bg-layer img {
+  opacity: 0.24 !important;
+}
+
+.doodle-preset-dreamy .doodle-bg-layer img {
+  opacity: 0.32 !important;
+  filter: drop-shadow(0 0 10px rgba(124, 248, 211, 0.2));
+}
+
+.doodle-preset-subtle .doodle-glide-a,
+.doodle-preset-subtle .doodle-glide-b,
+.doodle-preset-subtle .doodle-glide-c {
+  animation-duration: 36s !important;
+}
+
+.doodle-preset-medium .doodle-glide-a,
+.doodle-preset-medium .doodle-glide-b,
+.doodle-preset-medium .doodle-glide-c {
+  animation-duration: 29s !important;
+}
+
+.doodle-preset-dreamy .doodle-glide-a,
+.doodle-preset-dreamy .doodle-glide-b,
+.doodle-preset-dreamy .doodle-glide-c {
+  animation-duration: 24s !important;
+}
+
+.doodle-preset-subtle .doodle-soft-blob {
+  opacity: 0.42;
+}
+
+.doodle-preset-medium .doodle-soft-blob {
+  opacity: 0.58;
+}
+
+.doodle-preset-dreamy .doodle-soft-blob {
+  opacity: 0.74;
 }
 
 .doodle-mode-active:not(.aura-mode-active) .glass-card {
