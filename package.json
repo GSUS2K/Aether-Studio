@@ -1,7 +1,7 @@
 {
   "name": "aether",
   "productName": "Aether",
-  "version": "2026.4.12",
+  "version": "2026.4.16",
   "description": "Standalone Aether Desktop Application",
   "main": "desktop/main.js",
   "scripts": {

@@ -1,5 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, Component } from 'react';
-import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, Cpu, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles } from 'lucide-react';
+import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { setupDiscordSdk } from './discord';
 import axios from 'axios';
@@ -518,7 +518,6 @@ function App() {
   const [isSleepTimerMenuOpen, setIsSleepTimerMenuOpen] = useState(false);
   const [localIp, setLocalIp] = useState('');
   const [isMiniPlayer, setIsMiniPlayer] = useState(false);
-  const [isMiniOverlayOpen, setIsMiniOverlayOpen] = useState(false);
   const [isSpotifyImportOpen, setIsSpotifyImportOpen] = useState(false);
   const [spotifyImportUrl, setSpotifyImportUrl] = useState('');
   const [spotifyImportProgress, setSpotifyImportProgress] = useState({ stage: 'idle', progress: 0, message: '' });
@@ -4769,11 +4768,9 @@ function App() {
       if (isMiniPlayer) {
           await window.aether.resizeWindow(1160, 780, false);
           setIsMiniPlayer(false);
-          setIsMiniOverlayOpen(false);
       } else {
-        await window.aether.resizeWindow(isMacPlatform ? 500 : 480, isMacPlatform ? 240 : 220, true);
+      await window.aether.resizeWindow(isMacPlatform ? 560 : 540, isMacPlatform ? 276 : 260, true);
           setIsMiniPlayer(true);
-          setIsMiniOverlayOpen(false);
       }
   }, [isMiniPlayer, isStandalone, isMacPlatform]);
 
@@ -4978,86 +4975,82 @@ function App() {
     const miniTitle = currentTrack?.title || '';
     const miniArtist = currentTrack?.author || '';
     const miniTitleMarquee = miniTitle.length > 40;
+    const miniProgressSafePct = Number.isFinite(miniProgressPct) ? miniProgressPct : 0;
 
      return (
-        <div className={`w-[100vw] h-[100vh] bg-[#050505] overflow-hidden drag relative ${isMacPlatform ? 'pt-7 pl-16 pr-3 pb-3' : 'p-3'}`}>
-          <div className="absolute inset-0 bg-gradient-to-br from-brand-accent/12 via-transparent to-transparent pointer-events-none" />
-          <div className="w-full h-full rounded-[22px] border border-white/10 bg-white/[0.03] backdrop-blur-2xl p-3 relative z-10 shadow-[0_12px_30px_rgba(0,0,0,0.45)] overflow-hidden flex flex-col">
+        <div className={`w-[100vw] h-[100vh] bg-[#040607] overflow-hidden drag relative ${isMacPlatform ? 'pt-7 px-2 pb-2' : 'p-2'}`}>
+          <div className="absolute -top-20 -left-16 w-64 h-64 rounded-full blur-3xl opacity-35 pointer-events-none" style={{ background: `${themeColor}33` }} />
+          <div className="absolute -bottom-20 -right-16 w-72 h-72 rounded-full blur-3xl opacity-25 pointer-events-none" style={{ background: `${themeColor}26` }} />
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_0%,rgba(255,255,255,0.08),transparent_45%),radial-gradient(circle_at_100%_100%,rgba(0,255,191,0.08),transparent_48%)] pointer-events-none" />
+          <div className="w-full h-full rounded-[20px] border border-white/12 bg-[#090d12]/88 backdrop-blur-2xl p-3 relative z-10 shadow-[0_14px_38px_rgba(0,0,0,0.52)] overflow-hidden flex flex-col">
            {currentTrack ? (
             <>
-              <div className="flex items-center justify-between gap-2 no-drag">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className={`w-2 h-2 rounded-full ${isPlaying ? 'bg-brand-accent shadow-[0_0_10px_rgba(0,255,191,0.8)]' : 'bg-white/35'}`} />
-                  <span className="text-[8px] font-black uppercase tracking-[0.22em] text-brand-accent/80">Aether Mini</span>
-                  <span className="text-[8px] font-mono text-white/45">Q:{Math.max(0, queue.length - 1)}</span>
+              <div className="flex items-center justify-between gap-2 no-drag mb-1">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className={`w-2.5 h-2.5 rounded-full ${isPlaying ? 'bg-brand-accent shadow-[0_0_12px_rgba(0,255,191,0.85)]' : 'bg-white/35'}`} />
+                  <span className="text-[10px] font-black uppercase tracking-[0.22em] text-brand-accent/85">Aether Mini</span>
+                  <span className="text-[10px] font-mono text-white/45">Queue {Math.max(0, queue.length - 1)}</span>
                 </div>
-                <div className="flex items-center gap-1">
-                  <button onClick={() => setIsMiniOverlayOpen((prev) => !prev)} className="p-1.5 rounded-lg text-white/35 hover:text-brand-accent no-drag transition-colors active:scale-90 border border-white/10 bg-white/[0.03]" title="Quick actions"><Cpu size={12} /></button>
-                  <button onClick={toggleMiniPlayer} className="p-1.5 rounded-lg text-white/35 hover:text-brand-accent no-drag transition-colors active:scale-90 border border-white/10 bg-white/[0.03]" title="Expand"><AppWindow size={12} /></button>
+                <div className="flex items-center gap-1.5">
+                  <button onClick={toggleMiniPlayer} className="px-2.5 h-8 rounded-xl text-white/70 hover:text-brand-accent no-drag transition-colors active:scale-95 border border-white/12 bg-white/[0.04] hover:border-brand-accent/35 text-[10px] font-semibold flex items-center gap-1.5" title="Expand to full player">
+                    <AppWindow size={12} />
+                    <span>Expand</span>
+                  </button>
                 </div>
               </div>
 
-              {isMiniOverlayOpen && (
-                <div className="absolute right-3 top-10 z-30 no-drag w-40 rounded-xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-2 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
-                  <button onClick={() => { setLibraryActionTarget({ type: 'track', items: [currentTrack] }); setIsLibraryOverlayOpen(true); setIsMiniOverlayOpen(false); }} className="w-full text-left px-2.5 py-2 rounded-lg text-[10px] font-black uppercase tracking-[0.18em] text-white/70 hover:text-brand-accent hover:bg-white/5">Save to Library</button>
-                  <button onClick={() => { setIsPlayerOverlayOpen(true); setIsMiniOverlayOpen(false); }} className="w-full text-left px-2.5 py-2 rounded-lg text-[10px] font-black uppercase tracking-[0.18em] text-white/70 hover:text-brand-accent hover:bg-white/5">Player Overlay</button>
-                  <button onClick={() => { setIsLyricsExpanded(true); setIsMiniOverlayOpen(false); }} className="w-full text-left px-2.5 py-2 rounded-lg text-[10px] font-black uppercase tracking-[0.18em] text-white/70 hover:text-brand-accent hover:bg-white/5">Open Lyrics</button>
-                  <button onClick={() => { setIsDiagnosticsOpen(true); setIsMiniOverlayOpen(false); }} className="w-full text-left px-2.5 py-2 rounded-lg text-[10px] font-black uppercase tracking-[0.18em] text-white/70 hover:text-brand-accent hover:bg-white/5">Diagnostics</button>
-                </div>
-              )}
-
-              <div className="flex gap-3 flex-1 min-h-0 mt-2">
-                <img src={getProxyUrl(currentTrack.thumbnail)} className="w-[88px] h-[88px] object-cover rounded-2xl shadow-[0_10px_24px_rgba(0,0,0,0.55)] border border-white/10 flex-none" />
+              <div className="flex gap-3.5 flex-1 min-h-0 mt-1.5">
+                <img src={getProxyUrl(currentTrack.thumbnail)} className="w-[96px] h-[96px] object-cover rounded-[18px] shadow-[0_12px_28px_rgba(0,0,0,0.6)] border border-white/12 flex-none" />
 
                 <div className="flex flex-col flex-1 min-w-0 justify-between">
                   <div className="min-w-0">
                     {miniTitleMarquee ? (
                       <div className="overlay-marquee">
-                        <div className="overlay-marquee-track text-[13px] font-semibold text-white/95 leading-tight" style={{ textShadow: `0 0 10px ${themeColor}44` }}>
+                        <div className="overlay-marquee-track text-[16px] font-semibold text-white/95 leading-tight" style={{ textShadow: `0 0 10px ${themeColor}44` }}>
                           <span>{miniTitle}</span>
                           <span aria-hidden="true">{miniTitle}</span>
                         </div>
                       </div>
                     ) : (
-                      <div className="text-[13px] font-semibold text-white/95 leading-tight truncate" style={{ textShadow: `0 0 10px ${themeColor}44` }}>{miniTitle}</div>
+                      <div className="text-[16px] font-semibold text-white/95 leading-tight truncate" style={{ textShadow: `0 0 10px ${themeColor}44` }}>{miniTitle}</div>
                     )}
 
-                    <div className="text-[10px] font-medium text-white/60 truncate mt-0.5">{miniArtist}</div>
+                    <div className="text-[12px] font-medium text-white/65 truncate mt-0.5">{miniArtist}</div>
                   </div>
 
-                  <div className="rounded-xl border border-white/10 bg-white/[0.03] px-2 py-1.5 mt-1 min-h-[2.2em] flex items-center">
-                    <div className="w-full text-[9px] font-medium italic text-white/72 leading-snug line-clamp-2">
+                  <div className="rounded-xl border border-white/12 bg-white/[0.04] px-2.5 py-1.5 mt-1 min-h-[2.35em] flex items-center">
+                    <div className="w-full text-[11px] font-medium italic text-white/74 leading-snug line-clamp-2">
                       {compactLyric || 'Lyric sync loading…'}
                     </div>
                   </div>
 
                   <div className="mt-1.5">
                     <div
-                      className="h-1.5 w-full bg-white/10 rounded-full overflow-hidden relative no-drag cursor-pointer"
+                      className="h-2 w-full bg-white/10 rounded-full overflow-hidden relative no-drag cursor-pointer border border-white/10"
                       onClick={(e) => {
                         const rect = e.currentTarget.getBoundingClientRect();
                         const pos = (e.clientX - rect.left) / rect.width;
                         handleSeek(pos * miniDurationMs);
                       }}
                     >
-                      <div className="absolute inset-y-0 left-0 bg-brand-accent shadow-[0_0_10px_rgba(0,255,191,0.55)]" style={{ width: `${miniProgressPct}%` }} />
+                      <div className="absolute inset-y-0 left-0 bg-brand-accent shadow-[0_0_12px_rgba(0,255,191,0.65)]" style={{ width: `${miniProgressSafePct}%` }} />
                     </div>
-                    <div className="flex items-center justify-between mt-1 text-[8px] font-mono text-white/45 tracking-wide">
+                    <div className="flex items-center justify-between mt-1 text-[10px] font-mono text-white/50 tracking-wide">
                       <span>{formatTime(currentTime)}</span>
                       <span>{formatTime(miniDurationMs)}</span>
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between mt-1.5 no-drag">
-                    <div className="flex items-center gap-2.5 text-white/60">
-                      <button onClick={() => handleControl('previous')} className="w-7 h-7 rounded-full bg-white/[0.03] border border-white/10 hover:text-white hover:border-brand-accent/45 transition-colors active:scale-90 flex items-center justify-center"><Rewind size={13} fill="currentColor" /></button>
-                      <button onClick={() => handleControl(isPlaying ? 'pause' : 'resume')} className="w-9 h-9 rounded-full bg-brand-accent hover:bg-white text-black flex items-center justify-center transition-all shadow-[0_0_14px_rgba(0,255,191,0.25)] hover:scale-105 active:scale-95 border border-brand-accent/40">
-                        {isPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" className="ml-0.5" />}
+                  <div className="flex items-center justify-between mt-2 no-drag">
+                    <div className="flex items-center gap-2.5 text-white/70">
+                      <button onClick={() => handleControl('previous')} className="w-8 h-8 rounded-full bg-white/[0.05] border border-white/14 hover:text-white hover:border-brand-accent/45 transition-colors active:scale-90 flex items-center justify-center" title="Previous"><Rewind size={14} fill="currentColor" /></button>
+                      <button onClick={() => handleControl(isPlaying ? 'pause' : 'resume')} className="w-10 h-10 rounded-full bg-brand-accent hover:bg-white text-black flex items-center justify-center transition-all shadow-[0_0_18px_rgba(0,255,191,0.32)] hover:scale-105 active:scale-95 border border-brand-accent/40" title={isPlaying ? 'Pause' : 'Play'}>
+                        {isPlaying ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" className="ml-0.5" />}
                       </button>
-                      <button onClick={() => handleControl('skip')} className="w-7 h-7 rounded-full bg-white/[0.03] border border-white/10 hover:text-white hover:border-brand-accent/45 transition-colors active:scale-90 flex items-center justify-center"><FastForward size={13} fill="currentColor" /></button>
+                      <button onClick={() => handleControl('skip')} className="w-8 h-8 rounded-full bg-white/[0.05] border border-white/14 hover:text-white hover:border-brand-accent/45 transition-colors active:scale-90 flex items-center justify-center" title="Next"><FastForward size={14} fill="currentColor" /></button>
                     </div>
-                    <div className="flex items-center gap-1.5 text-white/50">
-                      <button onClick={() => handleControl('mute')} className="hover:text-brand-accent transition-colors active:scale-90"><Volume2 size={12} /></button>
+                    <div className="flex items-center gap-2 text-white/55">
+                      <button onClick={() => handleControl('mute')} className="hover:text-brand-accent transition-colors active:scale-90" title="Mute / unmute"><Volume2 size={14} /></button>
                       <input
                         type="range"
                         min="0"
@@ -5070,7 +5063,7 @@ function App() {
                           if (localAudioRef.current) localAudioRef.current.volume = next;
                           if (isStandalone) window.aether?.store?.set('volume', next);
                         }}
-                        className="w-20 h-1 no-drag"
+                        className="w-24 h-1.5 no-drag mini-volume-slider"
                         title="Volume"
                       />
                     </div>
@@ -5279,13 +5272,13 @@ function App() {
           </div>
 
           {/* SEARCH ROW: Dedicated full-width row on mobile */}
-          <div className="w-full md:flex-1 flex justify-center md:max-w-[600px] md:px-8 order-3 md:order-2 ultra-compact-hide no-drag">
+          <div className="w-full md:flex-1 flex justify-center md:max-w-[760px] md:px-6 lg:px-8 order-3 md:order-2 ultra-compact-hide no-drag">
             <form onSubmit={handleSearch} className="relative w-full group no-drag">
-              <Search className="absolute left-5 top-1/2 -translate-y-1/2 text-brand-text-dim group-focus-within:text-brand-accent z-10 transition-colors" size={18} />
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-brand-text-dim group-focus-within:text-brand-accent z-10 transition-colors" size={18} />
               <input 
                 type="text" 
                 placeholder="Search music..." 
-                className={`w-full rounded-full pl-14 pr-12 h-11 text-sm outline-none transition-all ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/5 border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'}`}
+                className={`w-full rounded-full pl-12 pr-12 h-12 text-base md:text-[15px] outline-none transition-all ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/5 border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'}`}
                 value={searchQuery}
                 onChange={(e) => {
                   setSearchQuery(e.target.value);
@@ -5327,15 +5320,30 @@ function App() {
                <div className="relative" ref={looksPanelRef}>
                  <button
                    onClick={() => setIsLooksPanelOpen((prev) => !prev)}
-                   className={`h-10 px-3 rounded-2xl flex items-center gap-2 transition-all border no-drag ${isLooksPanelOpen ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
+                   className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${isLooksPanelOpen ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
                    title="Visual presets"
                  >
                    <Sparkles size={14} />
-                   <span className="text-[10px] font-black uppercase tracking-widest">Looks</span>
                  </button>
 
                  {isLooksPanelOpen && (
                    <div className="absolute right-0 mt-2 z-[320] w-64 rounded-2xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-3 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
+                     <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Visualizer</div>
+                     <div className="grid grid-cols-2 gap-1.5 mb-3">
+                       <button
+                         onClick={() => setVisualizerMode('bars')}
+                         className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${visualizerMode === 'bars' ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                       >
+                         Bars
+                       </button>
+                       <button
+                         onClick={() => setVisualizerMode('pulse')}
+                         className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${visualizerMode === 'pulse' ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                       >
+                         Aura
+                       </button>
+                     </div>
+
                      <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Aura Preset</div>
                      <div className="grid grid-cols-3 gap-1.5 mb-3">
                        {AURA_PRESETS.map((preset) => (
@@ -6380,9 +6388,6 @@ function App() {
                 <span className="label-caps mb-0 text-[10px] tracking-widest truncate">Studio Library</span>
               </div>
               <div className="flex items-center gap-1 shrink-0">
-                <button onClick={() => setVisualizerMode(prev => prev === 'bars' ? 'pulse' : 'bars')} className={`h-6 px-1.5 rounded-md text-[6px] font-black uppercase tracking-[0.16em] border transition-all whitespace-nowrap ${visualizerMode === 'pulse' ? 'bg-brand-accent text-brand-dark border-brand-accent shadow-[0_0_12px_rgba(0,255,191,0.35)]' : 'bg-white/5 text-white/30 border-white/10 hover:border-white/20'}`}>
-                  {visualizerMode === 'bars' ? 'BARS' : 'AURA'}
-                </button>
                 <button onClick={handleGenerateSmartMix} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Generate Smart Mix"><Zap size={10} /></button>
                 <button onClick={handleCleanVault} disabled={isVaultCleaning} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors disabled:opacity-40 flex items-center justify-center" title="Clean Vault (dedupe + remove unavailable + normalize metadata)"><RefreshCw size={10} className={isVaultCleaning ? 'animate-spin' : ''} /></button>
                 <button onClick={() => setIsLibraryOverlayOpen(true)} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Open Vault Overlay"><ListMusic size={10} /></button>
