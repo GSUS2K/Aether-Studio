@@ -1,3 +1,70 @@
+// --- YT-DLP HEALTH CHECK & ERROR DIALOG ---
+function showYtDlpErrorDialog(error) {
+    const { dialog } = require('electron');
+    const os = require('os');
+    const path = require('path');
+    const appData = (process.platform === 'win32')
+        ? path.join(os.homedir(), 'AppData', 'Roaming', 'Aether', 'bin')
+        : process.platform === 'darwin'
+            ? path.join(os.homedir(), 'Library', 'Application Support', 'Aether', 'bin')
+            : path.join(os.homedir(), '.config', 'Aether', 'bin');
+    let binaryName = 'yt-dlp';
+    if (process.platform === 'win32') binaryName = 'yt-dlp.exe';
+    if (process.platform === 'darwin') binaryName = 'yt-dlp_macos';
+    const expectedPath = path.join(appData, binaryName);
+
+    let message = 'yt-dlp (media engine) is missing, blocked, or not executable.\n\n';
+    message += 'Possible reasons and solutions:\n';
+    message += '- Antivirus or Windows Defender blocked yt-dlp.\n';
+    message += '- File is in use by another app.\n';
+    message += '- Wrong binary for your OS/CPU.\n';
+    message += '- Lacking execute permissions.\n';
+    message += '\nHow to fix:\n';
+    message += '1. Check your antivirus/Defender quarantine for yt-dlp and restore/allow it.\n';
+    message += '2. Close other Aether/yt-dlp processes.\n';
+    message += '3. Re-download yt-dlp from the official site.\n';
+    message += '4. Place the yt-dlp binary here (replace if exists):\n';
+    message += `   ${expectedPath}\n`;
+    if (process.platform === 'darwin' || process.platform === 'linux') {
+        message += '5. On Mac/Linux, run: chmod +x ' + expectedPath + '\n';
+    }
+    message += '6. Restart the app as administrator.\n';
+    if (error) message += `\nError: ${error.message || error}`;
+    dialog.showErrorBox('yt-dlp Error', message);
+}
+
+async function checkYtDlpHealth() {
+    try {
+        const ready = await ensureYtDlpPathWithTimeout(5000);
+        if (!ready || !ytdlpPath || !isSpawnableCommand(ytdlpPath)) {
+            showYtDlpErrorDialog('yt-dlp not found or not executable');
+            return false;
+        }
+        return true;
+    } catch (e) {
+        showYtDlpErrorDialog(e);
+        return false;
+    }
+}
+    // Check yt-dlp health at startup
+    await checkYtDlpHealth();
+        // Check yt-dlp health before streaming
+        const healthy = await checkYtDlpHealth();
+        if (!healthy) {
+            if (!res.headersSent) res.status(503).send('yt-dlp unavailable. See error dialog.');
+            return;
+        }
+    try {
+        proc = spawn(ytdlpPath, args);
+    } catch (err) {
+        if ([ 'EBUSY', 'EPERM', 'ENOENT' ].includes(err.code)) {
+            showYtDlpErrorDialog(err);
+            if (!res.headersSent) res.status(503).send('yt-dlp error. See error dialog.');
+            return;
+        } else {
+            throw err;
+        }
+    }
 const { app, BrowserWindow, ipcMain, globalShortcut, Menu, dialog, systemPreferences, screen } = require('electron');
 app.setName('Aether');
 app.name = 'Aether';
@@ -1201,10 +1268,15 @@ streamApp.get('/stream', async (req, res) => {
     });
 
     proc.on('error', (err) => {
-        activeStreamProcesses.delete(proc);
-        fs.appendFileSync(path.join(app.getPath('desktop'), 'AetherDebug.log'), `\n[Stream Spawn Fault]\nytdlpPath: ${ytdlpPath}\nerr: ${err.message}\nstack: ${err.stack}\n`);
-        console.error(`[Aether] Engine launch error: ${err.message}`);
+    activeStreamProcesses.delete(proc);
+    fs.appendFileSync(path.join(app.getPath('desktop'), 'AetherDebug.log'), `\n[Stream Spawn Fault]\nytdlpPath: ${ytdlpPath}\nerr: ${err.message}\nstack: ${err.stack}\n`);
+    console.error(`[Aether] Engine launch error: ${err.message}`);
+    if ([ 'EBUSY', 'EPERM', 'ENOENT' ].includes(err.code)) {
+        showYtDlpErrorDialog(err);
+        if (!res.headersSent) res.status(503).send('yt-dlp error. See error dialog.');
+    } else {
         if (!res.headersSent) res.status(500).send(`Neural Engine failed: ${err.message}`);
+    }
     });
 
     // yt-dlp primary format is m4a, so expose mp4 audio MIME for browser compatibility.
@@ -1313,6 +1385,12 @@ streamApp.get('/api/queue/:id', (req, res) => {
 
 // 2. SEARCH (Direct Integration)
 streamApp.get('/api/search', async (req, res) => {
+    // Check yt-dlp health before searching
+    const healthy = await checkYtDlpHealth();
+    if (!healthy) {
+        if (!res.headersSent) res.status(503).send('yt-dlp unavailable. See error dialog.');
+        return;
+    }
     try {
         console.log('[Aether/API] GET /api/search', { q: req.query.q });
         const results = await search(req.query.q, ytdlpPath);
@@ -1326,6 +1404,9 @@ streamApp.get('/api/search', async (req, res) => {
     } catch (e) {
         console.error('[Aether/API] GET /api/search failed', e.message);
         logDebug('api search failed', { query: String(req.query.q || '').slice(0, 60), error: e?.message || String(e) });
+        if ([ 'EBUSY', 'EPERM', 'ENOENT' ].includes(e.code)) {
+            showYtDlpErrorDialog(e);
+        }
         res.json([]);
     }
 });
