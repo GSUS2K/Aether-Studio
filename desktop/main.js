@@ -17,7 +17,7 @@ require('dotenv').config({ path: path.join(__dirname, '../.env') });
 const express = require('express');
 const cors = require('cors');
 const { spawn, spawnSync } = require('child_process');
-const { OfflineEngine, search, getMetadata, getRecommendations, getLyrics } = require('./offline-engine');
+const { OfflineEngine, search, getMetadata, getRecommendations, getLyrics, engineEvents } = require('./offline-engine');
 const getDebugLogPath = () => {
     try {
         if (app?.isReady?.()) {
@@ -639,6 +639,12 @@ const offlineEngine = new OfflineEngine(app.getPath('userData'));
 const downloadBackoffByTrack = new Map();
 let mainWindow;
 
+engineEvents.on('oauth-required', (data) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('aether:oauth-required', data);
+    }
+});
+
 const STORAGE_POLICY_STORE_KEY = 'storagePolicy';
 const DEFAULT_STORAGE_POLICY = {
     cacheCapMb: 2048,
@@ -1078,12 +1084,7 @@ streamApp.get('/', (req, res) => {
 streamApp.get('/stream', async (req, res) => {
     const startTime = Date.now();
     const videoUrl = req.query.url;
-            const ready = await ensureYtDlpPathWithTimeout(12000);
-            if (!ready) {
-                logDebug('search proceeding without confirmed yt-dlp readiness', { query: String(query || '').slice(0, 60) });
-            }
-            const searchPath = ytdlpPath || resolveYtDlpPath() || resolveSystemYtDlp();
-            const results = await search(query, searchPath);
+    const seekTime = parseFloat(req.query.t || '0');
 
     // Extract track ID only from YouTube share links (youtube.com?v=XXXXX)
     const trackIdMatch = videoUrl.match(/(?:youtube\.com|youtu\.be).*[?&]v=([A-Za-z0-9_-]{11})/);
@@ -1627,6 +1628,7 @@ async function setRPCActivity(details) {
 
 // --- ELECTRON LIFECYCLE ---
 function createWindow() {
+  const isWin = process.platform === 'win32';
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -1634,7 +1636,13 @@ function createWindow() {
     minHeight: 800,
     title: "Aether",
     icon: path.join(__dirname, '../icon.png'),
-    titleBarStyle: 'hiddenInset',
+    frame: !isWin,
+    titleBarStyle: isWin ? 'hidden' : 'hiddenInset',
+    titleBarOverlay: isWin ? {
+      color: '#050505',
+      symbolColor: '#ffffff55',
+      height: 34,
+    } : undefined,
     backgroundColor: '#050505',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -2033,6 +2041,11 @@ app.whenReady().then(async () => {
         return { success: true, state: 'maximized' };
     });
 
+    ipcMain.handle('aether:window-minimize', () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        mainWindow.minimize();
+    });
+
     ipcMain.handle('aether:open-external', async (event, url) => {
         const { shell } = require('electron');
         await shell.openExternal(url);
@@ -2306,6 +2319,26 @@ app.whenReady().then(async () => {
             }
             return { success: false, cancel: true };
         } catch (e) { return { success: false, error: e.message }; }
+    });
+
+    ipcMain.handle('aether:import-cookies', async () => {
+        try {
+            if (!mainWindow) return { success: false, error: 'No main window' };
+            const result = await dialog.showOpenDialog(mainWindow, {
+                title: 'Select cookies.txt',
+                properties: ['openFile'],
+                filters: [{ name: 'Text Files', extensions: ['txt'] }]
+            });
+            if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
+                return { success: false, canceled: true };
+            }
+            const srcPath = result.filePaths[0];
+            const destPath = require('path').join(app.getPath('userData'), 'cookies.txt');
+            require('fs').copyFileSync(srcPath, destPath);
+            return { success: true };
+        } catch (e) {
+            return { success: false, error: e.message };
+        }
     });
 
     ipcMain.handle('aether:import-vault', async () => {

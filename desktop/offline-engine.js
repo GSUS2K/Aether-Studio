@@ -6,8 +6,28 @@ const os = require('os');
 const MIN_VALID_AUDIO_BYTES = 64 * 1024;
 const SEARCH_TIMEOUT_MS = 15000;
 
+const { EventEmitter } = require('events');
+const engineEvents = new EventEmitter();
+
+const handleOAuthIntercept = (text) => {
+    if (text.includes('HTTP Error 429') || text.includes('Sign in to confirm')) {
+        engineEvents.emit('oauth-required', { url: null, code: null });
+        return true;
+    }
+    return false;
+};
+
+const getResolvedCookiesPath = () => {
+    let cp = path.join(__dirname, '../cookies.txt');
+    if (fs.existsSync(cp) && fs.statSync(cp).size > 0) return cp;
+    try {
+        cp = path.join(require('electron').app.getPath('userData'), 'cookies.txt');
+        if (fs.existsSync(cp) && fs.statSync(cp).size > 0) return cp;
+    } catch(e) {}
+    return null;
+};
+
 const runYtDlpSearch = (query, ytdlpPath, extraArgs = []) => new Promise((resolve) => {
-    const cookiesPath = path.join(__dirname, '../cookies.txt');
     const args = [
         query,
         '--dump-json',
@@ -18,7 +38,11 @@ const runYtDlpSearch = (query, ytdlpPath, extraArgs = []) => new Promise((resolv
         '--socket-timeout', '10',
         ...extraArgs,
     ];
-    if (fs.existsSync(cookiesPath) && fs.statSync(cookiesPath).size > 0) args.push('--cookies', cookiesPath);
+    
+    const cookiesPath = getResolvedCookiesPath();
+    if (cookiesPath) {
+        args.push('--cookies', cookiesPath);
+    }
 
     const proc = spawn(ytdlpPath || 'yt-dlp', args);
     let output = '';
@@ -31,13 +55,21 @@ const runYtDlpSearch = (query, ytdlpPath, extraArgs = []) => new Promise((resolv
         resolve(results);
     };
 
-    const timeout = setTimeout(() => {
+    let timeout = setTimeout(() => {
         try { proc.kill('SIGKILL'); } catch {}
         finish([]);
     }, SEARCH_TIMEOUT_MS);
 
-    proc.stdout.on('data', (data) => { output += data.toString(); });
-    proc.stderr.on('data', (data) => { errorOutput += data.toString(); });
+    proc.stdout.on('data', (data) => { 
+        const str = data.toString();
+        output += str; 
+        if (handleOAuthIntercept(str)) clearTimeout(timeout);
+    });
+    proc.stderr.on('data', (data) => { 
+        const str = data.toString();
+        errorOutput += str; 
+        if (handleOAuthIntercept(str)) clearTimeout(timeout);
+    });
     proc.on('close', (code) => {
         clearTimeout(timeout);
         if (code !== 0) {
@@ -137,10 +169,18 @@ class OfflineEngine {
                 '-f', 'bestaudio[ext=m4a]/bestaudio',
                 '-o', filePath
             ];
+            
+            const cookiesPath = getResolvedCookiesPath();
+            if (cookiesPath) {
+                args.push('--cookies', cookiesPath);
+            }
+
             // Ensure no partial file rename concurrency issues
-            args.push('--no-part', '--no-continue', '--no-check-certificates', '--no-warnings', '--quiet');
+            args.push('--no-part', '--no-continue', '--no-check-certificates', '--no-warnings');
             const proc = spawn(ytdlpPath, args);
             this.activeDownloadProcesses.set(trackId, proc);
+
+            proc.stdout.on('data', (d) => handleOAuthIntercept(d.toString()));
 
             proc.on('close', (code) => {
                 const duration = Date.now() - startTime;
@@ -404,9 +444,9 @@ const search = async (query, ytdlpPath) => {
 
 const getMetadata = async (url, ytdlpPath) => {
     return new Promise((resolve) => {
-        const cookiesPath = path.join(__dirname, '../cookies.txt');
         const args = ['--dump-json', '--no-check-certificates'];
-        if (fs.existsSync(cookiesPath) && fs.statSync(cookiesPath).size > 0) {
+        const cookiesPath = getResolvedCookiesPath();
+        if (cookiesPath) {
             args.push('--cookies', cookiesPath);
         }
         args.push(url);
@@ -414,8 +454,16 @@ const getMetadata = async (url, ytdlpPath) => {
         const proc = spawn(ytdlpPath || 'yt-dlp', args);
         let output = '';
         let errorOutput = '';
-        proc.stdout.on('data', (data) => { output += data.toString(); });
-        proc.stderr.on('data', (data) => { errorOutput += data.toString(); });
+        proc.stdout.on('data', (data) => { 
+            const str = data.toString();
+            output += str;
+            handleOAuthIntercept(str);
+        });
+        proc.stderr.on('data', (data) => { 
+            const str = data.toString();
+            errorOutput += str;
+            handleOAuthIntercept(str);
+        });
         proc.on('close', (code) => {
             if (code !== 0 && output.trim() === '') {
                 const fs = require('fs');
@@ -451,7 +499,6 @@ const getRecommendations = async (details, ytdlpPath) => {
     const { title, author, url } = details;
     return new Promise((resolve) => {
         try {
-            const cookiesPath = path.join(__dirname, '../cookies.txt');
             let query = `ytsearch5:related to ${title} ${author || ''}`;
             if (url && url.includes('v=')) {
                 const videoId = new URL(url).searchParams.get('v');
@@ -459,11 +506,19 @@ const getRecommendations = async (details, ytdlpPath) => {
             }
 
             const args = [query, '--dump-single-json', '--no-warnings', '--flat-playlist', '--playlist-items', '1-5', '--no-check-certificates'];
-            if (fs.existsSync(cookiesPath) && fs.statSync(cookiesPath).size > 0) args.push('--cookies', cookiesPath);
+            const cookiesPath = getResolvedCookiesPath();
+            if (cookiesPath) {
+                args.push('--cookies', cookiesPath);
+            }
 
             const proc = spawn(ytdlpPath || 'yt-dlp', args);
             let stdout = '';
-            proc.stdout.on('data', (d) => { stdout += d; });
+            proc.stdout.on('data', (d) => { 
+                const str = d.toString();
+                stdout += str; 
+                handleOAuthIntercept(str);
+            });
+            proc.stderr.on('data', (d) => handleOAuthIntercept(d.toString()));
             proc.on('close', (code) => {
                 if (code !== 0) return resolve([]);
                 try {
@@ -490,4 +545,4 @@ const getLyrics = async (details) => {
     return [];
 };
 
-module.exports = { OfflineEngine, search, getMetadata, getRecommendations, getLyrics };
+module.exports = { OfflineEngine, search, getMetadata, getRecommendations, getLyrics, engineEvents };

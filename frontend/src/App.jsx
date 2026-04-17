@@ -597,6 +597,22 @@ function App() {
   const [isManualStop, setIsManualStop] = useState(false);
   const [streamPort, setStreamPort] = useState(3333);
   const [pendingResumeTime, setPendingResumeTime] = useState(null); // Track-specific resume time
+  const [oauthPrompt, setOauthPrompt] = useState(null);
+  
+  useEffect(() => {
+    if (!isStandalone || !window.aether?.onYouTubeAuthRequired) return;
+    const unsub = window.aether.onYouTubeAuthRequired((data) => {
+      setOauthPrompt(data);
+    });
+    return unsub;
+  }, [isStandalone]);
+
+  useEffect(() => {
+    if (!isAudioBuffering && oauthPrompt) {
+      setOauthPrompt(null);
+    }
+  }, [isAudioBuffering, oauthPrompt]);
+
   // --- AETHER STUDIO CORE: NEURAL ENGINE STATE (NOVA ---
   const currentTrack = queue?.[0];
   const currentTrackSourceUrl = useMemo(() => {
@@ -4529,6 +4545,14 @@ function App() {
         if (action === 'pause') setIsPlaying(false);
         if (action === 'resume') setIsPlaying(true);
         if (action === 'toggle') setIsPlaying(prev => !prev);
+        if (action === 'mute') {
+            setVolume(prev => {
+                const nextV = prev > 0 ? 0 : 0.5;
+                if (localAudioRef.current) localAudioRef.current.volume = nextV;
+                return nextV;
+            });
+            return;
+        }
         
         // PREVIOUS TRACK: If > 3s into current, restart. Otherwise go to previous track.
         if (action === 'previous') {
@@ -4974,110 +4998,157 @@ function App() {
     const miniProgressPct = miniDurationMs > 0 ? clamp01(currentTime / miniDurationMs) * 100 : 0;
     const miniTitle = currentTrack?.title || '';
     const miniArtist = currentTrack?.author || '';
-    const miniTitleMarquee = miniTitle.length > 40;
+    const miniTitleMarquee = miniTitle.length > 32;
     const miniProgressSafePct = Number.isFinite(miniProgressPct) ? miniProgressPct : 0;
 
      return (
-        <div className={`w-[100vw] h-[100vh] bg-[#040607] overflow-hidden drag relative ${isMacPlatform ? 'pt-7 px-2 pb-2' : 'p-2'}`}>
-          <div className="absolute -top-20 -left-16 w-64 h-64 rounded-full blur-3xl opacity-35 pointer-events-none" style={{ background: `${themeColor}33` }} />
-          <div className="absolute -bottom-20 -right-16 w-72 h-72 rounded-full blur-3xl opacity-25 pointer-events-none" style={{ background: `${themeColor}26` }} />
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_0%,rgba(255,255,255,0.08),transparent_45%),radial-gradient(circle_at_100%_100%,rgba(0,255,191,0.08),transparent_48%)] pointer-events-none" />
-          <div className="w-full h-full rounded-[20px] border border-white/12 bg-[#090d12]/88 backdrop-blur-2xl p-3 relative z-10 shadow-[0_14px_38px_rgba(0,0,0,0.52)] overflow-hidden flex flex-col">
+        <div className={`w-[100vw] h-[100vh] bg-[#040607] overflow-hidden drag relative ${isMacPlatform ? 'pt-7' : 'pt-0'}`}>
+          {/* Ambient glow from album art color */}
+          <div className="absolute -top-24 -left-20 w-72 h-72 rounded-full blur-[80px] opacity-30 pointer-events-none" style={{ background: `${themeColor}55` }} />
+          <div className="absolute -bottom-24 -right-20 w-80 h-80 rounded-full blur-[80px] opacity-20 pointer-events-none" style={{ background: `${themeColor}33` }} />
+
+          <div className="w-full h-full bg-[#090d12]/90 backdrop-blur-2xl flex flex-col relative z-10 overflow-hidden">
+
+           {/* ── Header bar ── */}
+           <div className="flex items-center justify-between px-4 py-2.5 no-drag border-b border-white/[0.06] flex-none">
+             <div className="flex items-center gap-2">
+               <span className={`w-2 h-2 rounded-full transition-all ${isPlaying ? 'bg-brand-accent shadow-[0_0_8px_rgba(0,255,191,0.9)]' : 'bg-white/30'}`} />
+               <span className="text-[10px] font-black uppercase tracking-[0.25em] text-brand-accent/80">Aether</span>
+               {queue.length > 1 && <span className="text-[9px] font-bold text-white/35 tracking-widest uppercase">+{Math.max(0, queue.length - 1)} queued</span>}
+             </div>
+             <button
+               onClick={toggleMiniPlayer}
+               className="no-drag flex items-center gap-1.5 px-3 h-7 rounded-lg border border-white/10 bg-white/[0.04] hover:border-brand-accent/40 hover:bg-brand-accent/10 hover:text-brand-accent text-white/50 transition-all text-[10px] font-bold uppercase tracking-widest"
+               title="Expand to full studio"
+             >
+               <AppWindow size={11} />
+               <span>Studio</span>
+             </button>
+           </div>
+
+           {/* ── Main content ── */}
            {currentTrack ? (
-            <>
-              <div className="flex items-center justify-between gap-2 no-drag mb-1">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <span className={`w-2.5 h-2.5 rounded-full ${isPlaying ? 'bg-brand-accent shadow-[0_0_12px_rgba(0,255,191,0.85)]' : 'bg-white/35'}`} />
-                  <span className="text-[10px] font-black uppercase tracking-[0.22em] text-brand-accent/85">Aether Mini</span>
-                  <span className="text-[10px] font-mono text-white/45">Queue {Math.max(0, queue.length - 1)}</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <button onClick={toggleMiniPlayer} className="px-2.5 h-8 rounded-xl text-white/70 hover:text-brand-accent no-drag transition-colors active:scale-95 border border-white/12 bg-white/[0.04] hover:border-brand-accent/35 text-[10px] font-semibold flex items-center gap-1.5" title="Expand to full player">
-                    <AppWindow size={12} />
-                    <span>Expand</span>
-                  </button>
-                </div>
-              </div>
+             <div className="flex-1 flex gap-3 p-3 min-h-0">
 
-              <div className="flex gap-3.5 flex-1 min-h-0 mt-1.5">
-                <img src={getProxyUrl(currentTrack.thumbnail)} className="w-[96px] h-[96px] object-cover rounded-[18px] shadow-[0_12px_28px_rgba(0,0,0,0.6)] border border-white/12 flex-none" />
+               {/* Album Art */}
+               <div className="relative flex-none">
+                 <img
+                   src={getProxyUrl(currentTrack.thumbnail)}
+                   className="w-[88px] h-[88px] object-cover rounded-2xl shadow-[0_10px_30px_rgba(0,0,0,0.7)] border border-white/10"
+                   alt=""
+                 />
+                 {isAudioBuffering && (
+                   <div className="absolute inset-0 rounded-2xl bg-black/60 flex items-center justify-center">
+                     <Loader2 size={20} className="animate-spin text-brand-accent" />
+                   </div>
+                 )}
+               </div>
 
-                <div className="flex flex-col flex-1 min-w-0 justify-between">
-                  <div className="min-w-0">
-                    {miniTitleMarquee ? (
-                      <div className="overlay-marquee">
-                        <div className="overlay-marquee-track text-[16px] font-semibold text-white/95 leading-tight" style={{ textShadow: `0 0 10px ${themeColor}44` }}>
-                          <span>{miniTitle}</span>
-                          <span aria-hidden="true">{miniTitle}</span>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="text-[16px] font-semibold text-white/95 leading-tight truncate" style={{ textShadow: `0 0 10px ${themeColor}44` }}>{miniTitle}</div>
-                    )}
+               {/* Right side */}
+               <div className="flex flex-col flex-1 min-w-0 justify-between">
 
-                    <div className="text-[12px] font-medium text-white/65 truncate mt-0.5">{miniArtist}</div>
-                  </div>
+                 {/* Track info */}
+                 <div className="min-w-0">
+                   {miniTitleMarquee ? (
+                     <div className="overlay-marquee">
+                       <div className="overlay-marquee-track text-[14px] font-bold text-white leading-tight">
+                         <span>{miniTitle}</span>
+                         <span aria-hidden="true">{miniTitle}</span>
+                       </div>
+                     </div>
+                   ) : (
+                     <div className="text-[14px] font-bold text-white leading-tight truncate">{miniTitle}</div>
+                   )}
+                   <div className="text-[11px] text-white/50 truncate mt-0.5">{miniArtist}</div>
+                 </div>
 
-                  <div className="rounded-xl border border-white/12 bg-white/[0.04] px-2.5 py-1.5 mt-1 min-h-[2.35em] flex items-center">
-                    <div className="w-full text-[11px] font-medium italic text-white/74 leading-snug line-clamp-2">
-                      {compactLyric || 'Lyric sync loading…'}
-                    </div>
-                  </div>
+                 {/* Lyric pill */}
+                 {compactLyric && (
+                   <div className="text-[10px] italic text-white/55 leading-snug line-clamp-1 border-l-2 pl-2" style={{ borderColor: `${themeColor}88` }}>
+                     {compactLyric}
+                   </div>
+                 )}
 
-                  <div className="mt-1.5">
-                    <div
-                      className="h-2 w-full bg-white/10 rounded-full overflow-hidden relative no-drag cursor-pointer border border-white/10"
-                      onClick={(e) => {
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        const pos = (e.clientX - rect.left) / rect.width;
-                        handleSeek(pos * miniDurationMs);
-                      }}
-                    >
-                      <div className="absolute inset-y-0 left-0 bg-brand-accent shadow-[0_0_12px_rgba(0,255,191,0.65)]" style={{ width: `${miniProgressSafePct}%` }} />
-                    </div>
-                    <div className="flex items-center justify-between mt-1 text-[10px] font-mono text-white/50 tracking-wide">
-                      <span>{formatTime(currentTime)}</span>
-                      <span>{formatTime(miniDurationMs)}</span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between mt-2 no-drag">
-                    <div className="flex items-center gap-2.5 text-white/70">
-                      <button onClick={() => handleControl('previous')} className="w-8 h-8 rounded-full bg-white/[0.05] border border-white/14 hover:text-white hover:border-brand-accent/45 transition-colors active:scale-90 flex items-center justify-center" title="Previous"><Rewind size={14} fill="currentColor" /></button>
-                      <button onClick={() => handleControl(isPlaying ? 'pause' : 'resume')} className="w-10 h-10 rounded-full bg-brand-accent hover:bg-white text-black flex items-center justify-center transition-all shadow-[0_0_18px_rgba(0,255,191,0.32)] hover:scale-105 active:scale-95 border border-brand-accent/40" title={isPlaying ? 'Pause' : 'Play'}>
-                        {isPlaying ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" className="ml-0.5" />}
-                      </button>
-                      <button onClick={() => handleControl('skip')} className="w-8 h-8 rounded-full bg-white/[0.05] border border-white/14 hover:text-white hover:border-brand-accent/45 transition-colors active:scale-90 flex items-center justify-center" title="Next"><FastForward size={14} fill="currentColor" /></button>
-                    </div>
-                    <div className="flex items-center gap-2 text-white/55">
-                      <button onClick={() => handleControl('mute')} className="hover:text-brand-accent transition-colors active:scale-90" title="Mute / unmute"><Volume2 size={14} /></button>
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.01"
-                        value={volume}
-                        onChange={(e) => {
-                          const next = parseFloat(e.target.value);
-                          setVolume(next);
-                          if (localAudioRef.current) localAudioRef.current.volume = next;
-                          if (isStandalone) window.aether?.store?.set('volume', next);
-                        }}
-                        className="w-24 h-1.5 no-drag mini-volume-slider"
-                        title="Volume"
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </>
+                 {/* Progress bar */}
+                 <div>
+                   <div
+                     className="h-1.5 w-full bg-white/10 rounded-full overflow-hidden relative no-drag cursor-pointer"
+                     onClick={(e) => {
+                       const rect = e.currentTarget.getBoundingClientRect();
+                       const pos = (e.clientX - rect.left) / rect.width;
+                       handleSeek(pos * miniDurationMs);
+                     }}
+                   >
+                     <div
+                       className="absolute inset-y-0 left-0 rounded-full transition-all"
+                       style={{ width: `${miniProgressSafePct}%`, background: themeColor, boxShadow: `0 0 8px ${themeColor}99` }}
+                     />
+                   </div>
+                   <div className="flex items-center justify-between mt-1 text-[9px] font-mono text-white/35">
+                     <span>{formatTime(currentTime)}</span>
+                     <span>{formatTime(miniDurationMs)}</span>
+                   </div>
+                 </div>
+               </div>
+             </div>
            ) : (
-              <div className="w-full text-center text-xs font-medium text-white/50 tracking-wide flex flex-col items-center justify-center h-full relative z-10">
-                 <button className="absolute top-1 right-1 p-1.5 text-white/25 hover:text-brand-accent no-drag cursor-pointer transition-colors" onClick={toggleMiniPlayer} title="Expand"><AppWindow size={13} /></button>
-                 <Music size={18} className="text-brand-accent/70 mb-2" />
-                 <div>No signal detected</div>
-              </div>
+             <div className="flex-1 flex flex-col items-center justify-center gap-2 text-white/35">
+               <button className="absolute top-2 right-2 p-1.5 text-white/25 hover:text-brand-accent no-drag cursor-pointer transition-colors" onClick={toggleMiniPlayer} title="Expand">
+                 <AppWindow size={13} />
+               </button>
+               <Music size={20} className="text-brand-accent/50" />
+               <span className="text-[10px] uppercase tracking-widest">No signal</span>
+             </div>
            )}
+
+           {/* ── Transport bar ── */}
+           {currentTrack && (
+             <div className="flex items-center justify-between px-4 pb-3 pt-1 no-drag flex-none">
+               <div className="flex items-center gap-2">
+                 <button
+                   onClick={() => handleControl('previous')}
+                   className="w-8 h-8 rounded-full bg-white/[0.05] border border-white/10 hover:border-brand-accent/40 hover:text-brand-accent text-white/60 transition-all active:scale-90 flex items-center justify-center"
+                   title="Previous"
+                 >
+                   <Rewind size={13} fill="currentColor" />
+                 </button>
+                 <button
+                   onClick={() => handleControl(isPlaying ? 'pause' : 'resume')}
+                   className="w-11 h-11 rounded-full text-black flex items-center justify-center transition-all active:scale-95 shadow-[0_0_18px_rgba(0,255,191,0.4)] hover:scale-105"
+                   style={{ background: themeColor }}
+                   title={isPlaying ? 'Pause' : 'Play'}
+                 >
+                   {isPlaying ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" className="ml-0.5" />}
+                 </button>
+                 <button
+                   onClick={() => handleControl('skip')}
+                   className="w-8 h-8 rounded-full bg-white/[0.05] border border-white/10 hover:border-brand-accent/40 hover:text-brand-accent text-white/60 transition-all active:scale-90 flex items-center justify-center"
+                   title="Next"
+                 >
+                   <FastForward size={13} fill="currentColor" />
+                 </button>
+               </div>
+               <div className="flex items-center gap-2 text-white/45">
+                 <button onClick={() => handleControl('mute')} className="hover:text-brand-accent transition-colors active:scale-90" title="Mute">
+                   {volume === 0 ? <VolumeX size={13} /> : <Volume2 size={13} />}
+                 </button>
+                 <input
+                   type="range"
+                   min="0" max="1" step="0.01"
+                   value={volume}
+                   onChange={(e) => {
+                     const next = parseFloat(e.target.value);
+                     setVolume(next);
+                     if (localAudioRef.current) localAudioRef.current.volume = next;
+                     if (isStandalone) window.aether?.store?.set('volume', next);
+                   }}
+                   className="w-20 h-1 no-drag mini-volume-slider"
+                   title="Volume"
+                 />
+               </div>
+             </div>
+           )}
+
           </div>
         </div>
      );
@@ -5125,6 +5196,39 @@ function App() {
       <div className="fixed inset-0 bg-[#050505] z-[-2]" />
       {/* Background Mesh (Absolute to avoid flex interference) */}
       <div className="absolute inset-0 bg-mesh pointer-events-none z-[-1]" />
+
+      {/* Windows: Auto-hide titlebar overlay on maximize */}
+      {isStandalone && window.aether?.platform === 'win32' && (
+        <div
+          className="fixed top-0 left-0 right-0 z-[500] group"
+          style={{ height: '4px' }}
+        >
+          {/* The 4px invisible trip-wire — hover expands it */}
+          <div
+            className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-all duration-200"
+            style={{ height: '34px', background: 'rgba(5,5,5,0.96)', backdropFilter: 'blur(20px)' }}
+          >
+            <div className="h-full flex items-center justify-between px-4 drag">
+              <div className="flex items-center gap-2">
+                <div className="w-1.5 h-1.5 rounded-full bg-brand-accent/60" />
+                <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40 select-none">Aether</span>
+              </div>
+              <div className="flex items-center gap-1 no-drag">
+                <button
+                  onClick={() => window.aether?.toggleMaximize?.()}
+                  className="w-7 h-7 rounded flex items-center justify-center text-white/40 hover:text-white hover:bg-white/10 transition-all text-xs"
+                  title="Restore"
+                >⊡</button>
+                <button
+                  onClick={() => window.aether?.minimize?.()}
+                  className="w-7 h-7 rounded flex items-center justify-center text-white/40 hover:text-white hover:bg-white/10 transition-all text-xs"
+                  title="Minimize"
+                >─</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Neural Dynamic Backdrop (NOVA */}
       <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
@@ -7507,6 +7611,74 @@ function App() {
       </AnimatePresence>
     
       {/* GLOBAL BACKGROUND ELEMENTS (NOVA */}
+            {/* OAUTH INTERCEPT OVERLAY */}
+            <AnimatePresence>
+              {oauthPrompt && (
+                <motion.div 
+                  initial={{ opacity: 0 }} 
+                  animate={{ opacity: 1 }} 
+                  exit={{ opacity: 0 }} 
+                  className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-brand-dark/95 backdrop-blur-[30px]"
+                >
+                  <motion.div 
+                    initial={{ scale: 0.95, y: 20 }} 
+                    animate={{ scale: 1, y: 0 }} 
+                    exit={{ scale: 0.95, y: 20 }}
+                    className="w-full max-w-lg glass-card bg-brand-dark/80 border-brand-accent/40 rounded-3xl flex flex-col items-center justify-center overflow-hidden relative z-10 px-8 py-10 text-center"
+                  >
+                    <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-transparent via-brand-accent to-transparent opacity-50" />
+                    
+                    <div className="w-16 h-16 rounded-full bg-brand-accent/10 border border-brand-accent/30 flex items-center justify-center mb-6 shadow-[0_0_40px_rgba(0,255,191,0.2)]">
+                      <Lock size={28} className="text-brand-accent" />
+                    </div>
+
+                    <h2 className="text-2xl font-black uppercase tracking-tighter text-white mb-2">Authentication Required</h2>
+                    <p className="text-brand-text-dim text-sm mb-8 leading-relaxed max-w-sm">
+                      YouTube is temporarily blocking anonymous requests from your network. Please upload a valid `cookies.txt` file to verify your session and unblock downloads.
+                    </p>
+
+                    <div className="flex flex-col w-full gap-3">
+                      <button 
+                        onClick={async () => {
+                          if (isStandalone && window.aether?.importCookies) {
+                            const res = await window.aether.importCookies();
+                            if (res?.success) {
+                              setOauthPrompt(null);
+                            }
+                          }
+                        }}
+                        className="w-full py-4 rounded-xl bg-brand-accent text-brand-dark font-black tracking-[0.2em] uppercase hover:bg-white hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-3"
+                      >
+                       <Upload size={18} /> Upload cookies.txt
+                      </button>
+                      <button 
+                        onClick={() => {
+                          if (isStandalone && window.aether?.openExternal) {
+                            window.aether.openExternal("https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies");
+                          } else {
+                            window.open("https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies", '_blank');
+                          }
+                        }}
+                        className="w-full py-2 rounded-xl bg-transparent text-brand-accent/70 font-bold tracking-[0.1em] uppercase hover:text-brand-accent transition-all text-[11px] mb-2"
+                      >
+                        How to export cookies?
+                      </button>
+                      <button 
+                        onClick={() => setOauthPrompt(null)}
+                        className="w-full py-3 rounded-xl bg-transparent border border-white/10 text-white/50 font-bold tracking-[0.2em] uppercase hover:bg-white/5 hover:text-white transition-all text-sm"
+                      >
+                        Dismiss Overlay
+                      </button>
+                    </div>
+
+                    <div className="mt-8 text-[10px] text-white/30 uppercase tracking-widest flex items-center justify-center gap-2">
+                      <AlertTriangle size={12} className="text-yellow-500/50" /> Downloads are paused until authentication
+                    </div>
+                  </motion.div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {/* FULL DISCOVERY OVERLAY */}
             <AnimatePresence>
               {isViewingFullDiscovery && (

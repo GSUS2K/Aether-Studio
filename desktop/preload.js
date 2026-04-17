@@ -29,6 +29,8 @@ contextBridge.exposeInMainWorld('aether', {
   },
   onControl: (callback) => ipcRenderer.on('aether:control', (event, action) => callback(action)),
   resizeWindow: (width, height, alwaysOnTop) => ipcRenderer.invoke('aether:window-resize', { width, height, alwaysOnTop }),
+  toggleMaximize: () => ipcRenderer.invoke('aether:window-toggle-maximize'),
+  minimize: () => ipcRenderer.invoke('aether:window-minimize'),
   toggleWindowMaximize: () => ipcRenderer.invoke('aether:window-toggle-maximize'),
   onMaximized: (callback) => ipcRenderer.on('aether:maximized-state', (event, state) => callback(state)),
   openExternal: (url) => ipcRenderer.invoke('aether:open-external', url),
@@ -46,6 +48,7 @@ contextBridge.exposeInMainWorld('aether', {
   optimizeStorage: (payload) => ipcRenderer.invoke('aether:optimize-storage', payload),
   exportVault: (name, data) => ipcRenderer.invoke('aether:export-vault', { name, data }),
   importVault: () => ipcRenderer.invoke('aether:import-vault'),
+  importCookies: () => ipcRenderer.invoke('aether:import-cookies'),
   importSpotifyPlaylist: (url) => ipcRenderer.invoke('aether:import-spotify-playlist', { url }),
   onSpotifyImportProgress: (callback) => {
     const handler = (event, payload) => callback(payload);
@@ -53,6 +56,11 @@ contextBridge.exposeInMainWorld('aether', {
     return () => ipcRenderer.removeListener('aether:spotify-import-progress', handler);
   },
   offSpotifyImportProgress: (callback) => ipcRenderer.removeListener('aether:spotify-import-progress', callback),
+  onYouTubeAuthRequired: (callback) => {
+    const handler = (event, payload) => callback(payload);
+    ipcRenderer.on('aether:oauth-required', handler);
+    return () => ipcRenderer.removeListener('aether:oauth-required', handler);
+  },
   streamPort: 3333,
   platform: process.platform,
   getStreamPort: () => ipcRenderer.invoke('aether:get-port'),
