@@ -23,7 +23,10 @@ const getDebugLogPath = () => {
         if (app?.isReady?.()) {
             return path.join(app.getPath('userData'), 'AetherDebug.log');
         }
-    } catch {}
+    } catch (e) {
+        // Log error for debugging
+        logDebug('getDebugLogPath error', { error: e?.message || String(e) });
+    }
     return path.join(os.homedir(), 'Desktop', 'AetherDebug.log');
 };
 const logDebug = (message, meta = null) => {
@@ -33,7 +36,9 @@ const logDebug = (message, meta = null) => {
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         const line = `[${new Date().toISOString()}] ${message}${meta ? ` ${JSON.stringify(meta)}` : ''}\n`;
         fs.appendFileSync(logPath, line);
-    } catch {}
+    } catch (e) {
+        logDebug('logDebug error', { error: e?.message || String(e) });
+    }
 };
 const decodeHtmlEntities = (value) => String(value || '')
     .replace(/&amp;/g, '&')
@@ -43,6 +48,33 @@ const decodeHtmlEntities = (value) => String(value || '')
     .replace(/&gt;/g, '>')
     .replace(/&#x27;/g, "'")
     .replace(/&#x2F;/g, '/');
+
+const handleOAuthIntercept = (text) => {
+    const normalized = String(text || '');
+    if (normalized.includes('HTTP Error 429') || normalized.includes('Sign in to confirm')) {
+        engineEvents.emit('oauth-required', { url: null, code: null });
+        return true;
+    }
+    return false;
+};
+
+const getResolvedCookiesPath = () => {
+    const candidates = [];
+    try {
+        candidates.push(path.join(app.getPath('userData'), 'cookies.txt'));
+    } catch (e) {}
+    candidates.push(path.join(__dirname, '../cookies.txt'));
+
+    for (const candidate of candidates) {
+        try {
+            if (candidate && fs.existsSync(candidate) && fs.statSync(candidate).size > 0) {
+                return candidate;
+            }
+        } catch (e) {}
+    }
+
+    return null;
+};
 
 const APP_LOCK_STORE_KEY = 'appLock';
 const SESSION_PLAYBACK_STORE_KEY = 'aether.sessionPlayback.v1';
@@ -62,12 +94,25 @@ const emitUpdateState = () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     try {
         mainWindow.webContents.send('aether:update-status', { ...updateState });
-    } catch {}
+    } catch (e) {
+        logDebug('emitUpdateState error', { error: e?.message || String(e) });
+    }
 };
 
 const setUpdateState = (patch = {}) => {
     Object.assign(updateState, patch);
     emitUpdateState();
+    // User-facing notification for update errors
+    if (updateState.status === 'error' && mainWindow && !mainWindow.isDestroyed()) {
+        try {
+            mainWindow.webContents.send('aether:user-error', {
+                type: 'update',
+                message: updateState.message || 'Update error occurred.'
+            });
+        } catch (e) {
+            logDebug('user-error notification failed', { error: e?.message || String(e) });
+        }
+    }
 };
 
 const initAutoUpdater = () => {
@@ -81,6 +126,17 @@ const initAutoUpdater = () => {
     } catch (e) {
         setUpdateState({ enabled: false, status: 'unsupported', message: 'Updater module unavailable.' });
         logDebug('autoUpdater unavailable', { error: e?.message || String(e) });
+        // User-facing notification for updater failure
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            try {
+                mainWindow.webContents.send('aether:user-error', {
+                    type: 'update',
+                    message: 'Updater module unavailable.'
+                });
+            } catch (err) {
+                logDebug('user-error notification failed', { error: err?.message || String(err) });
+            }
+        }
         return;
     }
 
@@ -168,13 +224,16 @@ const getLockRecord = () => store.get(APP_LOCK_STORE_KEY) || null;
 const canPromptTouchId = () => {
     try {
         return process.platform === 'darwin' && typeof systemPreferences?.canPromptTouchID === 'function' && systemPreferences.canPromptTouchID();
-    } catch {
+    } catch (e) {
+        logDebug('canPromptTouchId error', { error: e?.message || String(e) });
         return false;
     }
 };
 const hashLockPassword = (password, salt) => crypto.scryptSync(String(password || ''), String(salt || ''), 64).toString('hex');
 const verifyLockPassword = (password, record) => {
     if (!record?.hash || !record?.salt) return false;
+    // Ensure salt is random and unique per user
+    // (Consider: store a UUID or random string as salt at lock creation)
     const computed = hashLockPassword(password, record.salt);
     const a = Buffer.from(record.hash, 'hex');
     const b = Buffer.from(computed, 'hex');
@@ -282,6 +341,7 @@ const fetchSpotifyHtml = async (url) => {
         const text = await response.text();
         return { ok: response.ok, status: response.status, text };
     } catch (fetchErr) {
+        logDebug('fetchSpotifyHtml fallback error', { error: fetchErr?.message || String(fetchErr) });
         return await new Promise((resolve) => {
             https.get(url, { headers }, (res) => {
                 let data = '';
@@ -290,6 +350,7 @@ const fetchSpotifyHtml = async (url) => {
                     resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode || 0, text: data });
                 });
             }).on('error', (err) => {
+                logDebug('https.get error in fetchSpotifyHtml', { error: err?.message || String(err) });
                 resolve({ ok: false, status: 0, text: '', error: err?.message || String(err) });
             });
         });
@@ -876,25 +937,35 @@ const runFinalTeardown = () => {
     // Clear in-memory queues so no playback state survives process teardown.
     try {
         studioQueues.clear();
-    } catch {}
+    } catch (e) {
+        logDebug('studioQueues.clear error', { error: e?.message || String(e) });
+    }
 
     // Clear persisted playback session queue/time so reopen starts clean.
     try {
         store.delete(SESSION_PLAYBACK_STORE_KEY);
-    } catch {}
+    } catch (e) {
+        logDebug('store.delete SESSION_PLAYBACK_STORE_KEY error', { error: e?.message || String(e) });
+    }
 
     // Clear transient cache files (keeps downloaded library intact except warmup-orphan cleanup above).
     try {
         keepDownloadedOnlyCleanup();
-    } catch {}
+    } catch (e) {
+        logDebug('keepDownloadedOnlyCleanup error', { error: e?.message || String(e) });
+    }
 
     // Hard-stop active stream workers to avoid stale pipes on next launch.
     try {
         for (const proc of activeStreamProcesses) {
-            try { proc.kill('SIGKILL'); } catch {}
+            try { proc.kill('SIGKILL'); } catch (e) {
+                logDebug('proc.kill SIGKILL error', { error: e?.message || String(e) });
+            }
         }
         activeStreamProcesses.clear();
-    } catch {}
+    } catch (e) {
+        logDebug('activeStreamProcesses.clear error', { error: e?.message || String(e) });
+    }
 };
 
 const estimateStorageReclaim = (mode = 'cap', payload = {}) => {
@@ -964,6 +1035,8 @@ const estimateStorageReclaim = (mode = 'cap', payload = {}) => {
 };
 
 // --- NEURAL CONVERGENCE: STANDALONE ENGINE (V9.0.0) ---
+// NOTE: Many async operations and state changes below may be subject to race conditions if triggered rapidly.
+// Consider debouncing or locking for critical flows (e.g., downloads, updates, queue changes).
 const studioQueues = new Map();
 const DEFAULT_STUDIO_ID = 'local_studio';
 
@@ -1155,7 +1228,7 @@ streamApp.get('/stream', async (req, res) => {
 
     console.log(`[Aether] Cache miss for ${trackId || 'direct-stream'}, streaming from yt-dlp`);
     // Fallback to yt-dlp streaming
-    const cookiesPath = path.join(__dirname, '../cookies.txt');
+    const cookiesPath = getResolvedCookiesPath();
     
     console.log(`[Aether] Streaming: ${videoUrl} @ ${seekTime}s`);
 
@@ -1187,7 +1260,7 @@ streamApp.get('/stream', async (req, res) => {
         args.push('--ffmpeg-location', ffmpegPath);
     }
 
-    if (fs.existsSync(cookiesPath) && fs.statSync(cookiesPath).size > 0) {
+    if (cookiesPath) {
         args.push('--cookies', cookiesPath);
     }
 
@@ -1222,6 +1295,7 @@ streamApp.get('/stream', async (req, res) => {
             console.log(`[Aether/Engine] ${msg}`);
             logRemuxIfDetected(msg);
         }
+        handleOAuthIntercept(msg);
     });
 
     proc.stderr.on('data', (data) => {
@@ -1243,6 +1317,78 @@ streamApp.get('/stream', async (req, res) => {
         proc.kill('SIGKILL');
     });
 });
+
+// ─── VIDEO STREAM ENDPOINT ───────────────────────────────────────────────────
+// We do NOT pipe bytes through Node — that causes the 9s browser timeout
+// because progressive MP4 has moov atom at end (browser can't play without it).
+// Instead: extract the direct YouTube CDN URL via --get-url and 302-redirect.
+// Chromium plays directly from CDN: instant start, full seek, no timeout.
+streamApp.get('/videostream', async (req, res) => {
+    const startTime = Date.now();
+    const videoUrl = req.query.url;
+    if (!videoUrl) return res.status(400).send('No URL');
+
+    const readyForStream = await ensureYtDlpPathWithTimeout(7000);
+    if (!readyForStream || !ytdlpPath) {
+        if (!res.headersSent) res.status(503).send('yt-dlp unavailable');
+        return;
+    }
+
+    const trackIdMatch = videoUrl.match(/[?&]v=([A-Za-z0-9_-]{11})/);
+    const trackId = trackIdMatch ? trackIdMatch[1] : 'direct';
+
+    // Extract direct CDN URL — this is fast (~1-3s), no download
+    const args = [
+        videoUrl,
+        '--get-url',
+        // 22 = 720p combined, 18 = 360p combined. Prioritize these for audio inclusion.
+        '--format', '22/18/best[height<=720][ext=mp4]/best',
+        '--no-check-certificates',
+        '--no-warnings',
+        '--quiet',
+    ];
+
+    if (ffmpegPath) args.push('--ffmpeg-location', ffmpegPath);
+
+    const cookiesPath = getResolvedCookiesPath();
+    if (cookiesPath) {
+        args.push('--cookies', cookiesPath);
+    }
+
+    console.log(`[Aether/Video] Extracting CDN URL for ${trackId}...`);
+    const proc = spawn(ytdlpPath, args);
+    let output = '';
+    let errOutput = '';
+
+    proc.stdout.on('data', (d) => { output += d.toString(); });
+    proc.stderr.on('data', (d) => {
+        const msg = d.toString().trim();
+        errOutput += msg + '\n';
+        if (msg.length > 5) console.log(`[Aether/Video] ${msg}`);
+        handleOAuthIntercept(msg);
+    });
+
+    proc.on('error', (err) => {
+        console.error(`[Aether/Video] Spawn error: ${err.message}`);
+        if (!res.headersSent) res.status(500).send('Video engine error');
+    });
+
+    proc.on('close', (code) => {
+        const elapsed = Date.now() - startTime;
+        if (res.headersSent) return;
+        if (code !== 0 || !output.trim()) {
+            console.error(`[Aether/Video] URL extraction failed for ${trackId} (code=${code}) in ${elapsed}ms`);
+            return res.status(500).send('Failed to extract video URL');
+        }
+
+        // yt-dlp may return multiple lines (video + audio URLs for merged formats)
+        // The first URL is the video stream — redirect Chromium to it directly
+        const cdnUrl = output.trim().split('\n')[0].trim();
+        console.log(`[Aether/Video] CDN redirect for ${trackId} in ${elapsed}ms → ${cdnUrl.substring(0, 80)}...`);
+        res.redirect(302, cdnUrl);
+    });
+});
+
 
 streamApp.get('/api/proxy', async (req, res) => {
     const { url } = req.query;
@@ -1848,6 +1994,22 @@ app.whenReady().then(async () => {
         return true;
     });
     ipcMain.handle('aether:get-port', () => actualPort);
+    ipcMain.handle('aether:get-engine-status', async () => {
+        const ytDlpReady = await ensureYtDlpPathWithTimeout(2500);
+        const cookiesPath = getResolvedCookiesPath();
+        const ffmpegReady = !!ffmpegPath && (ffmpegPath === 'ffmpeg' || fs.existsSync(ffmpegPath));
+        return {
+            success: true,
+            ytDlpReady: !!ytDlpReady && !!ytdlpPath,
+            ytDlpPath: ytdlpPath || null,
+            ffmpegReady,
+            ffmpegPath: ffmpegPath || null,
+            cookiesReady: !!cookiesPath,
+            cookiesPath: cookiesPath || null,
+            streamPort: actualPort,
+            platform: process.platform,
+        };
+    });
 
     ipcMain.handle('aether:update-get-status', () => ({ ...updateState }));
 

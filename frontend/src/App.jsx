@@ -1,5 +1,8 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, Component } from 'react';
-import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles } from 'lucide-react';
+// NOTE: Many async operations and state changes below may be subject to race conditions if triggered rapidly.
+// Consider debouncing or locking for critical flows (e.g., downloads, updates, queue changes).
+import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, VolumeX, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles, Clapperboard, Columns2 } from 'lucide-react';
+
 import { motion, AnimatePresence } from 'framer-motion';
 import { setupDiscordSdk } from './discord';
 import axios from 'axios';
@@ -546,6 +549,7 @@ function App() {
   const [storagePolicy, setStoragePolicy] = useState({ cacheCapMb: 2048, maxCacheAgeDays: 30 });
   const [storageEstimate, setStorageEstimate] = useState({ cap: null, age: null, downloadsOnly: null });
   const [isStorageBusy, setIsStorageBusy] = useState(false);
+  const [engineStatus, setEngineStatus] = useState(null);
   const [offlineDownloads, setOfflineDownloads] = useState([]);
   const [isOfflineDownloadsBusy, setIsOfflineDownloadsBusy] = useState(false);
   
@@ -576,11 +580,19 @@ function App() {
   const uiPulseRef = useRef(1);
   const uiPulseSignalRef = useRef({ bass: 0, rms: 0 });
   const uiPulsePeakRef = useRef(0);
+  const visualizerStateRef = useRef({
+    visualizerMode: 'bars',
+    themeColor: '#00ffbf',
+    auraPreset: 'balanced',
+    isMixtapeVaultOpen: false,
+  });
+  const visualizerErrorCountRef = useRef(0);
   const playButtonRef = useRef(null);
   const beatRingsRef = useRef(null);
   const lastBeatRingTimeRef = useRef(0);
   const mixtapeVaultRef = useRef(null);
   const vaultTelemetryRef = useRef({ lastStateAt: 0 });
+  const currentTrackRef = useRef(null);
   const prevTrackRef = useRef(null); // Neural Memory Ref (NOVA
   const standaloneTrackLoadKeyRef = useRef('');
   const bufferingRescueRef = useRef({ trackKey: '', lastAttemptAt: 0, attempts: 0 });
@@ -596,9 +608,151 @@ function App() {
   const [history, setHistory] = useState([]);
   const [isManualStop, setIsManualStop] = useState(false);
   const [streamPort, setStreamPort] = useState(3333);
-  const [pendingResumeTime, setPendingResumeTime] = useState(null); // Track-specific resume time
+  const [playbackResetNonce, setPlaybackResetNonce] = useState(0);
+  const [pendingResumeTime, setPendingResumeTime] = useState(null);
   const [oauthPrompt, setOauthPrompt] = useState(null);
-  
+  const [videoMode, setVideoMode] = useState(null); // null | 'dual' | 'cinema'
+  const videoModeRef = useRef(null); // synchronous mirror — safe to read in audio callbacks
+  const isPlayingRef = useRef(false); // live mirror of isPlaying for video handler closures
+  const currentTimeRef = useRef(0);   // live mirror of currentTime for video handler closures
+  const [cinemaControlsVisible, setCinemaControlsVisible] = useState(true);
+  const cinemaHideTimerRef = useRef(null);
+  const localVideoRef = useRef(null);
+  const [showVisualLyrics, setShowVisualLyrics] = useState(true);
+  const [visualControlsPinned, setVisualControlsPinned] = useState(false);
+  const [visualVideoFit, setVisualVideoFit] = useState('contain');
+
+  // MASTER SINGLETON: Lazy-initialized once to prevent memory leaks and ghost audio streams.
+  const localAudioRef = useRef(null);
+
+  const getActivePlaybackPositionMs = useCallback(() => {
+    if (videoModeRef.current && localVideoRef.current?.currentTime > 0) {
+      return Math.max(0, Math.floor(localVideoRef.current.currentTime * 1000));
+    }
+    if (localAudioRef.current?.currentTime > 0) {
+      return Math.max(0, Math.floor(localAudioRef.current.currentTime * 1000));
+    }
+    return Math.max(0, Math.floor(currentTimeRef.current || 0));
+  }, []);
+
+  const stopVideoElement = useCallback((vid, options = {}) => {
+    const { clearSource = true } = options;
+    if (!vid) return;
+    vid.oncanplay = null;
+    vid.onwaiting = null;
+    vid.onplaying = null;
+    vid.ontimeupdate = null;
+    vid.onended = null;
+    vid.onerror = null;
+    try {
+      vid.pause();
+      if (clearSource) {
+        vid.removeAttribute('src');
+        vid.load();
+      }
+    } catch {}
+  }, []);
+
+  const exitVideoMode = useCallback((options = {}) => {
+    const { preservePosition = true } = options;
+    const vid = localVideoRef.current;
+
+    // Step 1: Capture handoff timestamp BEFORE touching anything
+    const handoffMs = vid?.currentTime > 0
+      ? Math.floor(vid.currentTime * 1000)
+      : null;
+
+    // Step 2: Hard-kill all video event handlers BEFORE unmounting.
+    // The video element stays in memory after unmount and its events
+    // (onwaiting, onplaying) will keep firing, corrupting buffering state.
+    stopVideoElement(vid);
+    // Clear the ref immediately so no stale pointer lingers
+    localVideoRef.current = null;
+
+    // Step 3: Synchronously clear videoModeRef so audio callbacks see it immediately
+    videoModeRef.current = null;
+
+    // Step 4: Seed audio resumption time from where video left off
+    if (preservePosition && handoffMs !== null) {
+      currentTimeRef.current = handoffMs;
+      pendingResumeTimeRef.current = handoffMs;
+      setPendingResumeTime(handoffMs);
+      setCurrentTime(handoffMs);
+    } else {
+      pendingResumeTimeRef.current = null;
+      setPendingResumeTime(null);
+    }
+
+    // Step 5: Fully reset audio element to avoid stuck/screeching playback,
+    // then bump the load key ONCE to force audio re-initialization.
+    if (localAudioRef.current) {
+      try {
+        localAudioRef.current.oncanplay = null;
+        localAudioRef.current.onplaying = null;
+        localAudioRef.current.onwaiting = null;
+        localAudioRef.current.onstalled = null;
+        localAudioRef.current.onended = null;
+        localAudioRef.current.onerror = null;
+        localAudioRef.current.onloadstart = null;
+        localAudioRef.current.pause();
+        localAudioRef.current.removeAttribute('src');
+        localAudioRef.current.load();
+        localAudioRef.current.muted = false;
+      } catch {}
+    }
+    standaloneTrackLoadKeyRef.current = '';
+    setPlaybackResetNonce((prev) => prev + 1);
+
+    // Step 6: Re-arm buffering until the audio transport proves it is healthy again.
+    setIsAudioBuffering(true);
+    setVisualControlsPinned(false);
+
+    setVideoMode(null);
+  }, [stopVideoElement]);
+
+  const switchVideoMode = useCallback((nextMode) => {
+    const next = nextMode || null;
+    const currentMode = videoModeRef.current;
+    if (next === currentMode) return;
+    if (next === null) {
+      if (!currentMode) return;
+      exitVideoMode();
+      return;
+    }
+
+    const handoffMs = getActivePlaybackPositionMs();
+    if (handoffMs > 0) {
+      currentTimeRef.current = handoffMs;
+      setCurrentTime(handoffMs);
+    }
+    pendingResumeTimeRef.current = null;
+    setPendingResumeTime(null);
+    setIsLyricsExpanded(false);
+
+    if (next === 'dual') {
+      setShowVisualLyrics(false);
+      setVisualControlsPinned(false);
+    }
+    if (next === 'cinema') {
+      setShowVisualLyrics(true);
+    }
+
+    // Split <-> cinema is just a shell transition around the same video element.
+    if (currentMode && next && localVideoRef.current) {
+      setCinemaControlsVisible(true);
+      setVideoMode(next);
+      return;
+    }
+
+    if (currentMode && localVideoRef.current) {
+      stopVideoElement(localVideoRef.current);
+      localVideoRef.current = null;
+    }
+    setIsAudioBuffering(true);
+    setCinemaControlsVisible(true);
+    setVideoMode(next);
+  }, [exitVideoMode, getActivePlaybackPositionMs, stopVideoElement]);
+
   useEffect(() => {
     if (!isStandalone || !window.aether?.onYouTubeAuthRequired) return;
     const unsub = window.aether.onYouTubeAuthRequired((data) => {
@@ -607,11 +761,204 @@ function App() {
     return unsub;
   }, [isStandalone]);
 
+  // Keep videoModeRef in sync with videoMode state (synchronous for closure callbacks)
+  useEffect(() => { videoModeRef.current = videoMode; }, [videoMode]);
+  // Live mirrors so video handler closures never go stale on isPlaying / currentTime
+  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+  useEffect(() => { currentTimeRef.current = currentTime; }, [currentTime]);
+  useEffect(() => { currentTrackRef.current = queue?.[0] || null; }, [queue]);
+  useEffect(() => { pendingResumeTimeRef.current = pendingResumeTime; }, [pendingResumeTime]);
+  useEffect(() => {
+    visualizerStateRef.current = {
+      visualizerMode,
+      themeColor,
+      auraPreset,
+      isMixtapeVaultOpen,
+    };
+  }, [visualizerMode, themeColor, auraPreset, isMixtapeVaultOpen]);
+
+  // Auto-exit video mode when queue empties (no current track)
+  useEffect(() => {
+    if (videoMode && !queue?.[0]) {
+      console.log('[Aether/Video] Queue empty — exiting video mode');
+      exitVideoMode({ preservePosition: false });
+    }
+  }, [queue, videoMode, exitVideoMode]);
+
+  useEffect(() => {
+    if (!isStandalone) return;
+
+    const teardownPlaybackSession = () => {
+      sessionReadyRef.current = false;
+      pendingResumeTimeRef.current = null;
+      try {
+        window.aether?.store?.set?.(SESSION_PLAYBACK_STORAGE_KEY, {
+          queue: [],
+          isPlaying: false,
+          currentTime: 0,
+          savedAt: Date.now(),
+          closedAt: Date.now(),
+        });
+      } catch {}
+
+      stopVideoElement(localVideoRef.current);
+      localVideoRef.current = null;
+
+      if (localAudioRef.current) {
+        try {
+          localAudioRef.current.oncanplay = null;
+          localAudioRef.current.onplaying = null;
+          localAudioRef.current.ontimeupdate = null;
+          localAudioRef.current.onwaiting = null;
+          localAudioRef.current.onstalled = null;
+          localAudioRef.current.onended = null;
+          localAudioRef.current.onerror = null;
+          localAudioRef.current.onloadstart = null;
+          localAudioRef.current.pause();
+          localAudioRef.current.muted = true;
+          localAudioRef.current.removeAttribute('src');
+          localAudioRef.current.load();
+        } catch {}
+      }
+    };
+
+    window.addEventListener('beforeunload', teardownPlaybackSession);
+    window.addEventListener('pagehide', teardownPlaybackSession);
+    return () => {
+      window.removeEventListener('beforeunload', teardownPlaybackSession);
+      window.removeEventListener('pagehide', teardownPlaybackSession);
+    };
+  }, [isStandalone, stopVideoElement]);
+
   useEffect(() => {
     if (!isAudioBuffering && oauthPrompt) {
       setOauthPrompt(null);
     }
   }, [isAudioBuffering, oauthPrompt]);
+
+  // ─── SIMPLE VIDEO ENGINE ─────────────────────────────────────────────────
+  // NOTE: isPlaying is intentionally NOT in the dep array.
+  // Play/Pause sync is handled by a separate effect below to avoid
+  // re-running src assignment and seek logic on every play/pause toggle.
+  useEffect(() => {
+    const vid = localVideoRef.current;
+    if (!queue?.[0] || !isStandalone || !videoMode) {
+      if (vid) {
+        vid.oncanplay = null;
+        vid.onwaiting = null;
+        vid.onplaying = null;
+        vid.ontimeupdate = null;
+        vid.onended = null;
+        vid.onerror = null;
+        vid.pause();
+        vid.src = '';
+      }
+      // Do NOT call setIsAudioBuffering here — the audio engine owns that state
+      // and will race against us if we touch it during its own re-init.
+      if (localAudioRef.current) localAudioRef.current.muted = false;
+      return;
+    }
+
+    const track = queue[0];
+    const youtubeUrl = track?.youtubeId
+      ? `https://www.youtube.com/watch?v=${track.youtubeId}`
+      : track?.actualUrl || track?.url || '';
+    
+    if (!youtubeUrl) return;
+
+    const streamBase = `http://localhost:${streamPort}`;
+    const targetSrc = `${streamBase}/videostream?url=${encodeURIComponent(youtubeUrl)}&_r=${playbackResetNonce}`;
+
+    // Mute / pause the audio element — video owns output now
+    if (localAudioRef.current) {
+        localAudioRef.current.muted = true;
+        localAudioRef.current.pause();
+    }
+
+    // Only reload src if actually changed (don't disrupt a playing video on re-render)
+    if (vid && vid.src !== targetSrc) {
+        vid.src = targetSrc;
+        setIsAudioBuffering(true);
+    }
+
+    // Handlers — re-attach every time track/mode changes, not on play/pause
+    vid.oncanplay = () => {
+        // Sync video position to where audio was (one-time on initial load only)
+        const targetSec = Math.floor(currentTimeRef.current / 1000);
+        if (vid.currentTime === 0 && targetSec > 2) vid.currentTime = targetSec;
+        if (isPlayingRef.current) vid.play().catch(() => {});
+        setIsAudioBuffering(false);
+    };
+    vid.onwaiting = () => setIsAudioBuffering(true);
+    vid.onplaying = () => setIsAudioBuffering(false);
+    vid.ontimeupdate = () => {
+        if (vid.currentTime > 0) setCurrentTime(Math.floor(vid.currentTime * 1000));
+    };
+    vid.onended = () => advanceQueue('natural_end');
+    vid.onerror = () => {
+      console.warn('[Aether/Video] Video playback error, falling back to audio mode', {
+        title: track?.title,
+        url: youtubeUrl,
+      });
+      setIsAudioBuffering(false);
+      exitVideoMode();
+    };
+
+    return () => {
+        if (vid) {
+            vid.oncanplay = null;
+            vid.onwaiting = null;
+            vid.onplaying = null;
+            vid.ontimeupdate = null;
+            vid.onended = null;
+            vid.onerror = null;
+        }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queue?.[0]?.id, queue?.[0]?.queueNonce, videoMode, streamPort, playbackResetNonce]);
+
+  // Video play/pause sync — separate effect so it doesn't re-run src/seek logic
+  useEffect(() => {
+    if (!videoMode || !localVideoRef.current) return;
+    if (isPlaying) {
+      localVideoRef.current.play().catch(() => {});
+    } else {
+      localVideoRef.current.pause();
+    }
+  }, [isPlaying, videoMode]);
+
+  useEffect(() => {
+    if (videoMode && localVideoRef.current) {
+      localVideoRef.current.volume = volume;
+    }
+  }, [volume, videoMode]);
+
+  // Cinema mode: auto-hide controls after 3s of inactivity
+  useEffect(() => {
+    if (videoMode !== 'cinema') return;
+    setCinemaControlsVisible(true);
+    if (visualControlsPinned) return;
+    clearTimeout(cinemaHideTimerRef.current);
+    cinemaHideTimerRef.current = setTimeout(() => setCinemaControlsVisible(false), 3000);
+    return () => clearTimeout(cinemaHideTimerRef.current);
+  }, [videoMode, visualControlsPinned]);
+
+  const handleCinemaMouseMove = useCallback(() => {
+    if (videoMode !== 'cinema') return;
+    setCinemaControlsVisible(true);
+    if (visualControlsPinned) return;
+    clearTimeout(cinemaHideTimerRef.current);
+    cinemaHideTimerRef.current = setTimeout(() => setCinemaControlsVisible(false), 3000);
+  }, [videoMode, visualControlsPinned]);
+
+
+  // Escape exits Cinema Mode — must call exitVideoMode() for full handoff, not bare setVideoMode(null)
+  useEffect(() => {
+    if (videoMode !== 'cinema') return;
+    const handler = (e) => { if (e.key === 'Escape') exitVideoMode(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [videoMode, exitVideoMode]);
 
   // --- AETHER STUDIO CORE: NEURAL ENGINE STATE (NOVA ---
   const currentTrack = queue?.[0];
@@ -791,6 +1138,7 @@ function App() {
             savedAt: Date.now(),
           });
         })().catch((e) => {
+          setUserError('Failed to save session settings.');
           console.warn('[Aether/Session] Failed to persist hideFirstRunTips (standalone)', e);
         });
         return;
@@ -801,14 +1149,23 @@ function App() {
         const raw = localStorage.getItem(SESSION_UI_STORAGE_KEY);
         const parsed = raw ? JSON.parse(raw) : null;
         if (parsed && typeof parsed === 'object') existing = parsed;
-      } catch {}
+      } catch (e) {
+        setUserError('Failed to read session settings.');
+        console.warn('[Aether/Session] Failed to read session settings', e);
+      }
 
-      localStorage.setItem(SESSION_UI_STORAGE_KEY, JSON.stringify({
-        ...existing,
-        hideFirstRunTips: nextValue,
-        savedAt: Date.now(),
-      }));
+      try {
+        localStorage.setItem(SESSION_UI_STORAGE_KEY, JSON.stringify({
+          ...existing,
+          hideFirstRunTips: nextValue,
+          savedAt: Date.now(),
+        }));
+      } catch (e) {
+        setUserError('Failed to save session settings.');
+        console.warn('[Aether/Session] Failed to persist hideFirstRunTips', e);
+      }
     } catch (e) {
+      setUserError('Failed to save session settings.');
       console.warn('[Aether/Session] Failed to persist hideFirstRunTips', e);
     }
   }, [isStandalone]);
@@ -1186,7 +1543,7 @@ function App() {
      }, 1000);
      return () => clearInterval(int);
   }, [isStandalone, isPlaying, currentTime, currentTrack, streamPort]);
-  const localAudioRef = useRef(null);
+
 
   const getEffectiveGuildId = useCallback(() => {
     const guildId = auth?.guild_id || new URLSearchParams(window.location.search).get('guild_id');
@@ -1920,11 +2277,11 @@ function App() {
             // play/buffer loops from stale stream/session state.
             setIsPlaying(false);
           }
-          if (typeof savedPlayback.currentTime === 'number' && savedPlayback.currentTime > 0) {
-            const restoredMs = Math.max(0, Math.floor(savedPlayback.currentTime));
-            console.log(`[Aether/Session] Restored currentTime: ${restoredMs}ms`);
-            setPendingResumeTime(restoredMs);
-          }
+          // Cold-launch resume position caused stale seeks and screechy recovery paths.
+          // We restore the queue paused, but always start a fresh track session from 0.
+          pendingResumeTimeRef.current = null;
+          setPendingResumeTime(null);
+          setCurrentTime(0);
 
           if (restoredQueueCount > 0) {
             setSessionRestoreNotice(
@@ -2094,7 +2451,9 @@ function App() {
     const trackUrl = track.actualUrl || track.url;
     const baseTrackLoadKey = track.queueNonce || track.id || track.youtubeId || `${track.title || ''}|${track.author || ''}|${trackUrl || ''}`;
     const isHeadDownloaded = downloadedTracks.includes(track.id);
-    const trackLoadKey = `${baseTrackLoadKey}|p:${streamPort}|d:${isHeadDownloaded ? 1 : 0}`;
+    const trackLoadKey = `${baseTrackLoadKey}|p:${streamPort}|r:${playbackResetNonce}`;
+    const resumeMs = Math.max(0, Math.floor(Number(pendingResumeTimeRef.current || 0)));
+    const startSec = resumeMs > 0 ? (resumeMs / 1000) : 0;
 
     console.log("[Aether/Audio] Queue head details", {
       id: track.id,
@@ -2129,6 +2488,7 @@ function App() {
 
         const isLocalDownloaded = downloadedTracks.includes(track.id);
         const streamNonce = encodeURIComponent(String(track.queueNonce || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`));
+        const resetQuery = `&_r=${playbackResetNonce}`;
         // Reconstruct YouTube URL if we have the ID (avoids expired direct URLs)
         const youtubeUrl = track.youtubeId
           ? `https://www.youtube.com/watch?v=${track.youtubeId}`
@@ -2138,14 +2498,14 @@ function App() {
         const fallbackToOnlineStream = () => {
           if (!isPlaying || !isLocalDownloaded || didOfflineFallback) return;
           didOfflineFallback = true;
-          const onlineUrl = `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&_q=${streamNonce}`;
+          const onlineUrl = `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&_q=${streamNonce}${resetQuery}`;
           console.warn('[Aether/Audio] Offline source stalled, switching to live stream', {
             trackId: track.id,
             title: track.title,
             onlineUrl,
           });
           localAudioRef.current.src = onlineUrl;
-          localAudioRef.current.play().catch(() => {});
+          if (!videoModeRef.current) localAudioRef.current.play().catch(() => {});
         };
 
         // Neural Flow Bridge (NOVA) - High-Fidelity Signal Acquisition
@@ -2153,36 +2513,43 @@ function App() {
             console.log(`[Aether/Audio] loadstart at ${Date.now() - loadStartTime}ms`);
         };
         localAudioRef.current.oncanplay = () => {
-            console.log(`[Aether/Audio] canplay after ${Date.now() - loadStartTime}ms`);
-            // Apply pending resume time only once per track
-            if (pendingResumeTime && pendingResumeTime > 0) {
-              const resumeSec = Math.floor(pendingResumeTime / 1000);
-              let canSeek = !!isLocalDownloaded;
-              if (!canSeek) {
+            if (videoModeRef.current) return; // still in video mode — stay silent
+            // Apply pending resume time only once (from video exit handoff)
+            if (resumeMs > 0) {
+              const resumeSec = resumeMs / 1000;
+              const canSeek = !!isLocalDownloaded || (() => {
                 try {
                   const seekable = localAudioRef.current?.seekable;
-                  canSeek = !!(seekable && seekable.length > 0 && seekable.end(seekable.length - 1) >= Math.max(0, resumeSec - 1));
-                } catch {
-                  canSeek = false;
-                }
-              }
-
+                  return !!(seekable && seekable.length > 0 && seekable.end(seekable.length - 1) >= Math.max(0, resumeSec - 1));
+                } catch { return false; }
+              })();
               if (canSeek) {
-                console.log(`[Aether/Audio] Seeking to ${resumeSec}s from pending resume time`);
                 localAudioRef.current.currentTime = resumeSec;
-                setCurrentTime(resumeSec * 1000);
+                setCurrentTime(Math.floor(resumeSec * 1000));
+                currentTimeRef.current = Math.floor(resumeSec * 1000);
+                pendingResumeTimeRef.current = null;
+                setPendingResumeTime(null);
+                // Resume playback after seek
+                if (isPlaying) localAudioRef.current.play().catch(() => {});
               } else {
-                console.warn('[Aether/Audio] Resume seek skipped (stream not seekable yet)', {
-                  trackId: track.id,
-                  title: track.title,
-                  resumeSec,
-                });
-                setCurrentTime(0);
+                setIsAudioBuffering(true);
               }
-              setPendingResumeTime(null); // Clear after first canplay gate
+            } else {
+              setIsAudioBuffering(false);
+            }
+        };
+        localAudioRef.current.ontimeupdate = () => {
+            if (videoModeRef.current) return;
+            const nextMs = Math.max(0, Math.floor((localAudioRef.current?.currentTime || 0) * 1000));
+            currentTimeRef.current = nextMs;
+            setCurrentTime(nextMs);
+            if (isPlayingRef.current && nextMs >= 0) {
+              setIsAudioBuffering(false);
             }
         };
         localAudioRef.current.onplaying = () => {
+            // In video mode the video element owns audio output — don't un-mute here
+            if (videoModeRef.current) return;
             console.log(`[Aether/Audio] playing after ${Date.now() - loadStartTime}ms`);
             if (localAudioRef.current) localAudioRef.current.muted = false;
             setIsAudioBuffering(false);
@@ -2195,51 +2562,29 @@ function App() {
             }));
         };
         localAudioRef.current.onwaiting = () => {
-            console.log("[Aether/Audio] Buffer Underrun. Visuals paused.");
-          if (localAudioRef.current) localAudioRef.current.muted = true;
-          if (isPlaying) setIsAudioBuffering(true);
+            if (videoModeRef.current) return;
+            // Do NOT mute here — muting causes an oscillation loop.
+            // Browser naturally outputs silence while buffering.
+            if (isPlaying) setIsAudioBuffering(true);
         };
         localAudioRef.current.onstalled = () => {
-            console.log("[Aether/Audio] Connection Stalled. Maintaining status.");
-          if (localAudioRef.current) localAudioRef.current.muted = true;
+            if (videoModeRef.current) return;
             if (isPlaying) {
               setIsAudioBuffering(true);
               fallbackToOnlineStream();
             }
         };
         localAudioRef.current.onended = () => {
-            const advanceQueue = (reason) => {
-              const endedTrackKey = getTrackActionKey(track);
-              const transportGuard = manualTransportAdvanceRef.current;
-              if (
-                reason === 'natural_end' &&
-                transportGuard?.action &&
-                transportGuard.trackKey === endedTrackKey &&
-                (Date.now() - Number(transportGuard.at || 0)) < 1500
-              ) {
-                console.log('[Aether/Queue] Ignoring ended event after manual transport action', {
-                  action: transportGuard.action,
-                  title: track?.title,
-                });
-                setDiagnostics((prev) => ({
-                  ...prev,
-                  transportGuardHits: Number(prev.transportGuardHits || 0) + 1,
-                  lastTransportGuardAt: Date.now(),
-                  lastTransportGuardAction: transportGuard.action || 'transport',
-                }));
-                return;
-              }
-              noteSkipReason(reason, { trackId: track.id, title: track.title });
-              setQueue(prev => {
-                const next = prev.slice(1);
-                if (next.length === 0) setIsPlaying(false);
-                return next;
-              });
-              setCurrentTime(0);
-            };
+            // In video mode the video element owns queue advance — audio ended while muted, ignore
+            if (videoModeRef.current) {
+              console.log('[Aether/Audio] onended suppressed — video mode active');
+              return;
+            }
+            
             const playedMs = Math.floor((localAudioRef.current?.currentTime || 0) * 1000);
             const durationMs = Number(track.totalDurationMs || track.duration || 0);
             const completion = durationMs > 0 ? playedMs / durationMs : 1;
+            
             if (completion > 0 && completion < 0.9 && !prematureEndGuardRef.current.retried) {
                 prematureEndGuardRef.current = { trackId: track.id, retried: true };
                 const youtubeUrl = track.youtubeId
@@ -2247,25 +2592,26 @@ function App() {
                   : track.actualUrl || track.url;
                 const streamBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
                 const recoveryUrl = `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&_r=${Date.now()}`;
-                console.warn('[Aether/Audio] Premature end detected, attempting one recovery play', {
+                console.warn('[Aether/Audio] Premature end detected, attempting recovery', {
                   title: track.title,
-                  playedMs,
-                  durationMs,
-                  completion,
-                  recoveryUrl,
+                  playedMs, durationMs, recoveryUrl,
                 });
                 setIsAudioBuffering(true);
                 localAudioRef.current.src = recoveryUrl;
-                localAudioRef.current.play().catch((e) => {
-                  console.error('[Aether/Audio] Recovery play failed', e);
+                if (!videoModeRef.current) localAudioRef.current.play().catch((e) => {
+                  console.error('[Aether/Audio] Recovery failed', e);
                   advanceQueue('premature_recover_failed');
                 });
                 return;
             }
-            console.log("[Aether/Audio] Signal Terminated Naturally. Advancing Queue.");
+            console.log("[Aether/Audio] Terminated Naturally. Handing to Shared Advance.");
             advanceQueue('natural_end');
         };
         localAudioRef.current.onerror = (e) => {
+            if (videoModeRef.current) {
+              console.log('[Aether/Audio] onerror suppressed — video mode active');
+              return;
+            }
             // HIGH-FIDELITY FAULT TOLERANCE: Do not skip on initial connection fault
           console.error("[Aether/Audio] Signal Disturbance Detected:", e, {
             src: localAudioRef.current?.src,
@@ -2283,20 +2629,40 @@ function App() {
             }
         };
         
+        // VIDEO MODE GUARD: If video is active, audio player MUST stay dead to prevent echo/waste
+        if (videoModeRef.current) {
+          console.log("[Aether/Audio] Suppression Active: Video mode driving session");
+          if (localAudioRef.current) {
+            localAudioRef.current.pause();
+            localAudioRef.current.src = '';
+          }
+          return;
+        }
+
         const streamUrl = isLocalDownloaded
-          ? `${streamBase}/offline/${track.id}.m4a?_q=${streamNonce}`
-          : `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&_q=${streamNonce}`;
+          ? `${streamBase}/offline/${track.id}.m4a?_q=${streamNonce}${resetQuery}`
+          : `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&_q=${streamNonce}${resetQuery}`;
         prematureEndGuardRef.current = { trackId: track.id, retried: false };
+        
         console.log("[Aether/Audio] Initializing Stream:", streamUrl, {
             isLocalDownloaded,
-            streamBase,
-            youtubeUrl,
+            startSec,
             trackId: track.id,
         });
         
         localAudioRef.current.crossOrigin = "anonymous";
-        setCurrentTime(0);
         localAudioRef.current.src = streamUrl;
+        
+        // New tracks always start clean unless an explicit handoff/session resume asked otherwise.
+        if (startSec > 0) {
+            localAudioRef.current.currentTime = startSec;
+        } else {
+            try {
+              localAudioRef.current.currentTime = 0;
+            } catch {}
+            currentTimeRef.current = 0;
+            setCurrentTime(0);
+        }
         const startupWatchdog = setTimeout(() => {
           const audio = localAudioRef.current;
           if (!audio || !isPlaying) return;
@@ -2319,13 +2685,13 @@ function App() {
             warmupTrack(track);
         }
         
-        if (isPlaying) {
+        if (isPlaying && !videoModeRef.current) {
           console.log("[Aether/Audio] Attempting play()", {
             src: localAudioRef.current?.src,
             readyState: localAudioRef.current?.readyState,
             networkState: localAudioRef.current?.networkState,
           });
-            localAudioRef.current.play().catch(e => {
+            if (!videoModeRef.current) localAudioRef.current.play().catch(e => {
             if (e?.name === 'AbortError') {
               console.warn('[Aether/Audio] play() interrupted by source refresh (non-fatal)');
               return;
@@ -2342,19 +2708,26 @@ function App() {
           setIsAudioBuffering(false);
         }
         const clearWatchdog = () => clearTimeout(startupWatchdog);
-        localAudioRef.current.onplaying = ((orig) => (...args) => {
+        
+        // Return cleanup function to clear state before next effect run
+        return () => {
           clearWatchdog();
-          return orig?.(...args);
-        })(localAudioRef.current.onplaying);
-        localAudioRef.current.onended = ((orig) => (...args) => {
-          clearWatchdog();
-          return orig?.(...args);
-        })(localAudioRef.current.onended);
+          if (localAudioRef.current) {
+            localAudioRef.current.oncanplay = null;
+            localAudioRef.current.onplaying = null;
+            localAudioRef.current.ontimeupdate = null;
+            localAudioRef.current.onwaiting = null;
+            localAudioRef.current.onstalled = null;
+            localAudioRef.current.onended = null;
+            localAudioRef.current.onerror = null;
+            localAudioRef.current.onloadstart = null;
+          }
+        };
     }
-  }, [queue?.[0]?.title, queue?.[0]?.id, isPlaying, isStandalone, downloadedTracks, warmingTrackIds, streamPort, API_BASE, noteSkipReason, getTrackActionKey]);
+  }, [queue?.[0]?.title, queue?.[0]?.id, queue?.[0]?.queueNonce, isPlaying, isStandalone, streamPort, API_BASE, pendingResumeTime, videoMode, playbackResetNonce]);
 
   useEffect(() => {
-    if (!isStandalone || !isPlaying || !isAudioBuffering || !currentTrack || !localAudioRef.current) return;
+    if (!isStandalone || !isPlaying || !isAudioBuffering || !currentTrack || !localAudioRef.current || videoModeRef.current) return;
     // Rescue only during startup buffering. Mid-song stalls should recover naturally without forced source switch.
     if ((currentTime || 0) > 5000) return;
 
@@ -2378,7 +2751,7 @@ function App() {
         audio.pause();
         setIsPlaying(false);
         setIsAudioBuffering(false);
-        if (audio) audio.muted = false;
+        if (audio && !videoModeRef.current) audio.muted = false;
         return;
       }
       if (lastAttemptAt > 0 && now - lastAttemptAt < 6000) {
@@ -2414,6 +2787,59 @@ function App() {
 
     return () => clearTimeout(timer);
   }, [isStandalone, isPlaying, isAudioBuffering, currentTime, currentTrack?.id, currentTrack?.youtubeId, currentTrack?.title, currentTrack?.author, currentTrack?.actualUrl, currentTrack?.url, streamPort]);
+
+  useEffect(() => {
+    if (!isStandalone || videoMode || !isPlaying || !isAudioBuffering) return;
+    if (!localAudioRef.current) return;
+
+    let timer = null;
+    const syncHealthyPlaybackState = () => {
+      const audio = localAudioRef.current;
+      if (!audio || videoModeRef.current) return;
+
+      const progressMs = Math.max(
+        0,
+        Math.floor((audio.currentTime || 0) * 1000),
+        Math.floor(currentTimeRef.current || 0),
+      );
+      const healthyPlayback = !audio.paused && !audio.ended && (audio.readyState >= 3 || progressMs > 350);
+
+      if (healthyPlayback) {
+        setIsAudioBuffering(false);
+        return;
+      }
+
+      timer = window.setTimeout(syncHealthyPlaybackState, 250);
+    };
+
+    syncHealthyPlaybackState();
+    return () => {
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [isStandalone, videoMode, isPlaying, isAudioBuffering, currentTrack?.id, currentTrack?.queueNonce]);
+
+  useEffect(() => {
+    if (!isStandalone || videoMode || !isPlaying || !currentTrack) return;
+    if (!localAudioRef.current) return;
+
+    const interval = window.setInterval(() => {
+      const audio = localAudioRef.current;
+      if (!audio || videoModeRef.current) return;
+
+      const nextMs = Math.max(0, Math.floor((audio.currentTime || 0) * 1000));
+      if (Math.abs(nextMs - currentTimeRef.current) >= 180) {
+        currentTimeRef.current = nextMs;
+        setCurrentTime(nextMs);
+      }
+
+      const isHealthy = !audio.paused && !audio.ended && (audio.readyState >= 2 || nextMs > 0);
+      if (isHealthy && isAudioBuffering) {
+        setIsAudioBuffering(false);
+      }
+    }, 220);
+
+    return () => window.clearInterval(interval);
+  }, [isStandalone, videoMode, isPlaying, currentTrack?.id, currentTrack?.queueNonce, isAudioBuffering]);
 
   // --- AETHER: UNIFIED DISCORD RPC ENGINE (NOVA ---
   useEffect(() => {
@@ -2512,7 +2938,7 @@ function App() {
   useEffect(() => {
     if (!isStandalone || !localAudioRef.current) return;
     if (isPlaying) {
-       localAudioRef.current.play().catch(() => {});
+       if (localAudioRef.current && !videoModeRef.current) localAudioRef.current.play().catch(() => {});
        if (audioCtxRef.current?.state === 'suspended') audioCtxRef.current.resume();
     } else {
        localAudioRef.current.pause();
@@ -2521,7 +2947,7 @@ function App() {
         audioCtxRef.current.suspend().catch(() => {});
        }
     }
-  }, [isPlaying, isStandalone]);
+  }, [isPlaying, isStandalone, videoMode]);
 
   // Audio Visualizer Loop (NOVA
   useEffect(() => {
@@ -2562,14 +2988,20 @@ function App() {
       const draw = () => {
         try {
           if (cancelled) return;
-          animationFrameRef.current = requestAnimationFrame(draw);
-          
+
           const canvas = visualizerCanvasRef.current;
           const pulseCanvas = pulseCanvasRef.current;
           if (!canvas && !pulseCanvas) return;
 
           const ctx = canvas?.getContext('2d');
           const pCtx = pulseCanvas?.getContext('2d');
+          const visualizerState = visualizerStateRef.current;
+          const liveVisualizerMode = visualizerState.visualizerMode;
+          const liveThemeColor = visualizerState.themeColor;
+          const liveAuraPreset = visualizerState.auraPreset;
+          const isVaultOpen = visualizerState.isMixtapeVaultOpen;
+          const auraModeActive = liveVisualizerMode === 'pulse';
+          const rootStyle = document.documentElement ? getComputedStyle(document.documentElement) : null;
           
           const width = canvas?.width || 800;
           const height = canvas?.height || 40;
@@ -2600,7 +3032,7 @@ function App() {
         const spinDeg = (auraEnergyRef.current.phase * 180) / Math.PI;
         const energy = clamp01((bass * 0.46) + (mids * 0.34) + (highs * 0.20));
 
-        uiPulseRef.current = visualizerMode === 'pulse' ? auraScale : 1;
+        uiPulseRef.current = auraModeActive ? auraScale : 1;
 
         if (mixtapeVaultRef.current) {
           mixtapeVaultRef.current.style.setProperty('--vault-bass', String(bass));
@@ -2613,8 +3045,8 @@ function App() {
         }
 
         // AURA MODE: Propagate beat energy to transport & lyric underline
-        if (isAuraMode && document.documentElement) {
-          const selectedAuraPreset = AURA_PRESETS.find((preset) => preset.id === auraPreset) || AURA_PRESETS[1];
+        if (auraModeActive && document.documentElement) {
+          const selectedAuraPreset = AURA_PRESETS.find((preset) => preset.id === liveAuraPreset) || AURA_PRESETS[1];
           const kickTransient = clamp01(Math.max(0, (bassRaw - bass) * 3.8) + Math.max(0, (bass - 0.66) * 1.9));
           const auraShiftDeg = ((kickTransient * 13.5) + (energy * 1.8)) * selectedAuraPreset.hueShift;
           document.documentElement.style.setProperty('--aura-beat-pulse', String(bass * 0.8 + energy * 0.3));
@@ -2675,8 +3107,10 @@ function App() {
         }
 
         const now = performance.now();
-        if (isMixtapeVaultOpen && now - vaultTelemetryRef.current.lastStateAt > 120) {
+        if (isVaultOpen && now - vaultTelemetryRef.current.lastStateAt > 120) {
           vaultTelemetryRef.current.lastStateAt = now;
+          const liveTrack = currentTrackRef.current;
+          const liveTime = currentTimeRef.current;
           const sampledBars = Array.from({ length: 8 }, (_, i) => {
             const start = Math.floor((i / 8) * bufferLength);
             const end = Math.max(start + 1, Math.floor(((i + 1) / 8) * bufferLength));
@@ -2697,8 +3131,8 @@ function App() {
             spin: spinDeg,
             stamp: [
               'AETHER-PULSE',
-              currentTrack?.title || 'Aether Secret Session',
-              `t=${Math.floor((currentTime || 0) / 1000)}s`,
+              liveTrack?.title || 'Aether Secret Session',
+              `t=${Math.floor((liveTime || 0) / 1000)}s`,
               `b=${Math.round(bass * 100)}`,
               `m=${Math.round(mids * 100)}`,
               `h=${Math.round(highs * 100)}`,
@@ -2707,18 +3141,18 @@ function App() {
           setVaultSpectrum((prev) => sampledBars.map((v, idx) => lerp(prev[idx] ?? 0, v, 0.45)));
         }
 
-        if (visualizerMode === 'bars' && ctx) {
+        if (liveVisualizerMode === 'bars' && ctx) {
             const barWidth = (width / bufferLength) * 2.5;
             let x = 0;
             for (let i = 0; i < bufferLength; i++) {
                 const barHeight = (dataArray[i] / 255) * height;
-                ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--brand-contrast').trim() || '#ff00ff'; 
+                ctx.fillStyle = rootStyle?.getPropertyValue('--brand-contrast')?.trim() || '#ff00ff'; 
                 ctx.fillRect(x, height - barHeight, barWidth, barHeight);
                 x += barWidth + 2;
             }
-        } else if (visualizerMode === 'pulse' && pCtx) {
-          const accent = getComputedStyle(document.documentElement).getPropertyValue('--brand-accent').trim() || themeColor || '#00ffbf';
-          const contrast = getComputedStyle(document.documentElement).getPropertyValue('--brand-contrast').trim() || '#ff00ff';
+        } else if (liveVisualizerMode === 'pulse' && pCtx) {
+          const accent = rootStyle?.getPropertyValue('--brand-accent')?.trim() || liveThemeColor || '#00ffbf';
+          const contrast = rootStyle?.getPropertyValue('--brand-contrast')?.trim() || '#ff00ff';
 
           const centerX = pWidth / 2;
           const centerY = pHeight / 2;
@@ -2779,9 +3213,17 @@ function App() {
             pCtx.stroke();
           }
         }
+        visualizerErrorCountRef.current = 0;
         } catch (e) {
-          console.error('[Aether/Visualizer] Frame error (likely post-restart):', e.message);
-          // Silently continue - visualizer will recover on next frame
+          visualizerErrorCountRef.current += 1;
+          const shouldLog = visualizerErrorCountRef.current <= 3 || visualizerErrorCountRef.current % 60 === 0;
+          if (shouldLog) {
+            console.error('[Aether/Visualizer] Frame error (likely post-restart):', e?.message || String(e));
+          }
+        } finally {
+          if (!cancelled) {
+            animationFrameRef.current = requestAnimationFrame(draw);
+          }
         }
       };
       
@@ -2798,8 +3240,9 @@ function App() {
       cancelled = true;
       if (startTimer) window.clearTimeout(startTimer);
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+      visualizerErrorCountRef.current = 0;
     };
-  }, [isStandalone, isPlaying, currentTrack, currentTime, visualizerMode, themeColor, isMixtapeVaultOpen, auraPreset]);
+  }, [isStandalone, currentTrack?.id, currentTrack?.queueNonce, playbackResetNonce]);
 
   const handleVolumeChange = (val) => {
     const v = parseFloat(val);
@@ -3151,15 +3594,23 @@ function App() {
 
   const activeLyric = useMemo(() => {
     if (!lyrics || lyrics.length === 0) return null;
-    const currentMs = currentTime;
+    const offsetMs = (currentTrack?.introOffsetMs || 0) + (lyricOffsetMs || 0);
+    const currentMs = currentTime - offsetMs;
     const line = [...lyrics].reverse().find(l => l.time <= currentMs);
     return line ? line.text : null;
-  }, [lyrics, currentTime]);
+  }, [lyrics, currentTime, currentTrack?.introOffsetMs, lyricOffsetMs]);
 
   const compactLyric = useMemo(() => {
     if (!lyrics || lyrics.length === 0) return null;
     return lyrics[activeLyricIndex]?.text || activeLyric || null;
   }, [lyrics, activeLyricIndex, activeLyric]);
+
+  const nextLyric = useMemo(() => {
+    if (!Array.isArray(lyrics) || activeLyricIndex < 0) return null;
+    const candidate = lyrics[activeLyricIndex + 1]?.text?.trim();
+    if (!candidate || candidate === compactLyric) return null;
+    return candidate;
+  }, [lyrics, activeLyricIndex, compactLyric]);
 
   const handleRenamePlaylist = (oldName, newName) => {
     if (!newName || oldName === newName) { setIsRenamingPlaylist(null); return; }
@@ -3763,6 +4214,18 @@ function App() {
     }
   }, [isStandalone]);
 
+  const refreshEngineStatus = useCallback(async () => {
+    if (!isStandalone || !window.aether?.getEngineStatus) return;
+    try {
+      const res = await window.aether.getEngineStatus();
+      if (res?.success) {
+        setEngineStatus(res);
+      }
+    } catch (e) {
+      console.warn('[Aether/Diagnostics] engine status fetch failed', e);
+    }
+  }, [isStandalone]);
+
   const applyStoragePolicy = useCallback(async (nextPolicy) => {
     if (!isStandalone || !window.aether?.updateStoragePolicy) return;
     try {
@@ -3847,11 +4310,11 @@ function App() {
 
   useEffect(() => {
     let interval;
-    if (isPlaying && currentTrack && !isAudioBuffering) {
+    if (isPlaying && currentTrack && !isAudioBuffering && !videoMode && !localAudioRef.current) {
         interval = setInterval(() => setCurrentTime(prev => prev + 250), 250);
     }
     return () => clearInterval(interval);
-  }, [isPlaying, currentTrack, isAudioBuffering]);
+  }, [isPlaying, currentTrack, isAudioBuffering, videoMode]);
 
   useEffect(() => {
     if (!lyrics || lyrics.length === 0) { setActiveLyricIndex(-1); return; }
@@ -4115,14 +4578,16 @@ function App() {
     refreshStorageStats();
     refreshStorageEstimate();
     refreshOfflineDownloads();
-  }, [isStandalone, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats]);
+    refreshEngineStatus();
+  }, [isStandalone, refreshEngineStatus, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats]);
 
   useEffect(() => {
     if (!isStandalone || !isDiagnosticsOpen) return;
     refreshStorageStats();
     refreshStorageEstimate();
     refreshOfflineDownloads();
-  }, [isStandalone, isDiagnosticsOpen, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats]);
+    refreshEngineStatus();
+  }, [isStandalone, isDiagnosticsOpen, refreshEngineStatus, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats]);
 
   useEffect(() => {
     const currentKey = getTrackActionKey(currentTrack);
@@ -4200,10 +4665,10 @@ function App() {
     try {
       if (isStandalone) {
           const results = await window.aether.search(searchQuery);
-          setSearchResults(results);
+          setSearchResults(Array.isArray(results) ? results : []);
       } else {
           const resp = await axios.get(`${API_BASE}/api/search?q=${encodeURIComponent(searchQuery)}`);
-          setSearchResults(resp.data);
+          setSearchResults(Array.isArray(resp.data) ? resp.data : []);
       }
       if (isMobileSearchOpen) setIsMobileSearchOpen(false);
     } catch (err) {
@@ -4213,6 +4678,18 @@ function App() {
         }
     } finally { setIsSearching(false); }
   };
+
+  const clearDiscoveryResults = useCallback(() => {
+    setSearchResults([]);
+    setHasCompletedSearch(false);
+    setIsSearching(false);
+  }, []);
+
+  useEffect(() => {
+    if (searchQuery.trim()) return;
+    if (searchResults.length > 0 || !hasCompletedSearch) return;
+    setHasCompletedSearch(false);
+  }, [searchQuery, searchResults.length, hasCompletedSearch]);
 
   const warmupTrack = async (track) => {
     if (!window.aether?.download || !track || isWarmupUnavailable) return;
@@ -4379,6 +4856,7 @@ function App() {
         }
         const url = newTrack.actualUrl || newTrack.url;
         const stableId = newTrack.id;
+        const queueNonce = newTrack.queueNonce;
         console.log(`[Aether] Adding standalone track to queue: ${newTrack.title} (${url}) -> id=${stableId}`);
         setQueue(prev => {
             const next = [...prev, newTrack];
@@ -4396,7 +4874,7 @@ function App() {
         window.aether.getMetadata(newTrack.actualUrl || newTrack.url).then(fullTrack => {
             if (fullTrack) {
                 setQueue(current => current.map(item => 
-              item.id === stableId ? mergeTrackMetadata(item, fullTrack) : item
+              item.queueNonce === queueNonce ? mergeTrackMetadata(item, fullTrack) : item
                 ));
             }
         });
@@ -4539,6 +5017,88 @@ function App() {
   };
 
 
+
+  const seekActivePlaybackTo = useCallback((timeMs) => {
+    const clampedMs = Math.max(0, Math.floor(Number(timeMs) || 0));
+    const seekSeconds = clampedMs / 1000;
+    currentTimeRef.current = clampedMs;
+
+    if (videoModeRef.current && localVideoRef.current) {
+      try {
+        localVideoRef.current.currentTime = seekSeconds;
+        pendingResumeTimeRef.current = null;
+        setPendingResumeTime(null);
+      } catch {
+        pendingResumeTimeRef.current = clampedMs;
+        setPendingResumeTime(clampedMs);
+      }
+      setCurrentTime(clampedMs);
+      return;
+    }
+
+    if (localAudioRef.current) {
+      try {
+        localAudioRef.current.currentTime = seekSeconds;
+        pendingResumeTimeRef.current = null;
+        setPendingResumeTime(null);
+      } catch {
+        pendingResumeTimeRef.current = clampedMs;
+        setPendingResumeTime(clampedMs);
+      }
+    }
+
+    setCurrentTime(clampedMs);
+  }, []);
+
+  // Consolidate queue advancement logic
+  const advanceQueue = useCallback((reason) => {
+    const track = queue?.[0];
+    if (!track) return;
+
+    const endedTrackKey = getTrackActionKey(track);
+    const transportGuard = manualTransportAdvanceRef.current;
+    if (
+      reason === 'natural_end' &&
+      transportGuard?.action &&
+      transportGuard.trackKey === endedTrackKey &&
+      (Date.now() - Number(transportGuard.at || 0)) < 1500
+    ) {
+      console.log('[Aether/Queue] Ignoring advance event after manual transport action', {
+        action: transportGuard.action,
+        title: track?.title,
+      });
+      return;
+    }
+
+    console.log(`[Aether/Queue] Advancing: ${reason} for ${track.title}`);
+    noteSkipReason(reason, { trackId: track.id, title: track.title });
+    
+    setQueue(prev => {
+      const normalized = Array.isArray(prev) ? prev.filter(item => item && typeof item === 'object') : [];
+      const removed = normalized[0] || null;
+      const removedKey = getTrackActionKey(removed);
+      let next = normalized.slice(1);
+      
+      // Skip adjacent duplicates with same key
+      while (next.length > 0 && removedKey && getTrackActionKey(next[0]) === removedKey) {
+        next = next.slice(1);
+      }
+
+      if (next.length === 0) {
+        setIsPlaying(false);
+        if (isAutoplayEnabled && removed) {
+          setTimeout(() => triggerAutoplay(removed), 50);
+        }
+      }
+      return next;
+    });
+    pendingResumeTimeRef.current = null;
+    setPendingResumeTime(null);
+    currentTimeRef.current = 0;
+    setCurrentTime(0);
+    manualTransportAdvanceRef.current = null;
+  }, [queue, getTrackActionKey, isAutoplayEnabled, triggerAutoplay, noteSkipReason]);
+
   const handleControl = useCallback(async (action) => {
     console.log("[Aether/Control] Signal Bridge Active:", action);
     if (isStandalone) {
@@ -4559,8 +5119,7 @@ function App() {
             if (currentTime > 3000) {
                 // Restart current track
                 console.log("[Aether/Control] Restarting current track (> 3s in)");
-                setCurrentTime(0);
-                if (localAudioRef.current) localAudioRef.current.currentTime = 0;
+                seekActivePlaybackTo(0);
             } else if (history.length > 0) {
                 // Go to actual previous track
                 const prev = history[0];
@@ -4582,44 +5141,27 @@ function App() {
                   const deduped = normalized.filter((item) => getTrackActionKey(item) !== prevKey);
                   return [prev, ...deduped];
                 });
+                pendingResumeTimeRef.current = null;
+                setPendingResumeTime(null);
+                currentTimeRef.current = 0;
                 setCurrentTime(0);
                 setIsPlaying(true);
             } else {
                 // No history, just restart current
                 console.log("[Aether/Control] No history, restarting current");
-                setCurrentTime(0);
-                if (localAudioRef.current) localAudioRef.current.currentTime = 0;
+                seekActivePlaybackTo(0);
             }
         }
         
         // SKIP: Remove current track and play next
         if (action === 'skip') {
           console.log("[Aether/Control] Skip triggered");
-          noteSkipReason('manual_skip', { source: 'transport', title: queue?.[0]?.title });
-            manualTransportAdvanceRef.current = {
-              trackKey: getTrackActionKey(queue?.[0]),
-              at: Date.now(),
-              action: 'skip',
-            };
-            setQueue(prev => {
-                const normalized = Array.isArray(prev) ? prev.filter(item => item && typeof item === 'object') : [];
-                const removed = normalized[0] || null;
-                const removedKey = getTrackActionKey(removed);
-                let next = normalized.slice(1);
-                while (next.length > 0 && removedKey && getTrackActionKey(next[0]) === removedKey) {
-                  next = next.slice(1);
-                }
-                if (next.length === 0) {
-                    setIsPlaying(false);
-              if (isAutoplayEnabled && removed) setTimeout(() => triggerAutoplay(removed), 0);
-                }
-                return next;
-            });
-            setCurrentTime(0);
-            if (localAudioRef.current) {
-                localAudioRef.current.currentTime = 0;
-                localAudioRef.current.pause();
-            }
+          manualTransportAdvanceRef.current = {
+            trackKey: getTrackActionKey(queue?.[0]),
+            at: Date.now(),
+            action: 'skip',
+          };
+          advanceQueue('manual_skip');
         }
         
         // CLEAR/STOP: Empty queue and stop playback
@@ -4628,6 +5170,9 @@ function App() {
             setQueue([]);
             setHistory([]);
             setIsPlaying(false);
+            pendingResumeTimeRef.current = null;
+            setPendingResumeTime(null);
+            currentTimeRef.current = 0;
             setCurrentTime(0);
             setIsManualStop(true);
             if (localAudioRef.current) {
@@ -4648,7 +5193,7 @@ function App() {
       }
       if (action === 'resume') {
         setIsPlaying(true);
-        if (localAudioRef.current) localAudioRef.current.play().catch(() => {});
+        if (localAudioRef.current && !videoModeRef.current) localAudioRef.current.play().catch(() => {});
       }
       if (action === 'skip') {
         setCurrentTime(0);
@@ -4659,6 +5204,9 @@ function App() {
       if (action === 'clear' || action === 'stop') {
         setQueue([]);
         setIsPlaying(false);
+        pendingResumeTimeRef.current = null;
+        setPendingResumeTime(null);
+        currentTimeRef.current = 0;
         setCurrentTime(0);
         if (localAudioRef.current) {
           localAudioRef.current.pause();
@@ -4675,7 +5223,7 @@ function App() {
         guildId: getEffectiveGuildId(),
       });
     }
-  }, [isStandalone, API_BASE, history, isAutoplayEnabled, getEffectiveGuildId, noteSkipReason, queue, currentTime, getTrackActionKey]);
+  }, [isStandalone, API_BASE, history, isAutoplayEnabled, getEffectiveGuildId, noteSkipReason, queue, currentTime, getTrackActionKey, seekActivePlaybackTo]);
 
   const [uiPulse, setUiPulse] = useState(1);
   const [accentColor, setAccentColor] = useState('#00ffbf');
@@ -4735,34 +5283,8 @@ function App() {
         await axios.post(`${API_BASE}/api/control/${guildId}`, { action: 'seek', time });
     } catch (e) {}
 
-    const audio = localAudioRef.current;
-    const seekSeconds = Math.max(0, time / 1000);
-
-    // Seek the existing audio element in-place. Replacing src restarts playback,
-    // which is why the song jumped back to the beginning before this fix.
-    if (!isStandalone) {
-        if (audio) {
-          try {
-            audio.currentTime = seekSeconds;
-          } catch {
-            setPendingResumeTime(time);
-          }
-        }
-        setCurrentTime(time);
-    } else {
-        if (audio && currentTrack) {
-            try {
-              audio.currentTime = seekSeconds;
-              if (!isPlaying) {
-                audio.play().catch(() => {});
-              }
-            } catch {
-              setPendingResumeTime(time);
-            }
-        }
-        setCurrentTime(time);
-    }
-  }, [API_BASE, isStandalone, currentTrack, streamPort, getEffectiveGuildId]);
+    seekActivePlaybackTo(time);
+  }, [API_BASE, getEffectiveGuildId, seekActivePlaybackTo]);
 
   const handleRemove = useCallback(async (index) => {
     if (isStandalone) {
@@ -4793,10 +5315,11 @@ function App() {
           await window.aether.resizeWindow(1160, 780, false);
           setIsMiniPlayer(false);
       } else {
-      await window.aether.resizeWindow(isMacPlatform ? 560 : 540, isMacPlatform ? 276 : 260, true);
+          exitVideoMode(); // exit video mode clean when going mini
+          await window.aether.resizeWindow(isMacPlatform ? 560 : 540, isMacPlatform ? 276 : 260, true);
           setIsMiniPlayer(true);
       }
-  }, [isMiniPlayer, isStandalone, isMacPlatform]);
+  }, [isMiniPlayer, isStandalone, isMacPlatform, exitVideoMode]);
 
   const toggleDiagnostics = useCallback(() => {
     setIsDiagnosticsOpen(prev => !prev);
@@ -4812,41 +5335,56 @@ function App() {
   }, [isStandalone]);
 
   const handleResetPlaybackEngine = useCallback(() => {
-    const audio = localAudioRef.current;
-    if (!audio) return;
-
-    const resumeAt = Number.isFinite(audio.currentTime) ? Math.max(0, audio.currentTime) : 0;
     const sourceUrl = currentTrack?.actualUrl || currentTrack?.url;
-    if (!sourceUrl) return;
+    if (!sourceUrl) {
+      setLastAdded('No active playback to reset');
+      setTimeout(() => setLastAdded(null), 1800);
+      return;
+    }
+
+    const resumeAtMs = getActivePlaybackPositionMs();
+    const activeMode = videoModeRef.current ? 'video' : 'audio';
 
     console.log('[Aether/Diagnostics] Reset playback engine', {
       title: currentTrack?.title,
-      resumeAt,
+      resumeAtMs,
+      activeMode,
       isStandalone,
     });
 
     bufferingRescueRef.current = { trackKey: '', lastAttemptAt: 0, attempts: 0 };
     standaloneTrackLoadKeyRef.current = '';
-
-    audio.pause();
-    audio.removeAttribute('src');
-    audio.load();
-
-    const nextSrc = isStandalone
-      ? `http://localhost:${streamPort}/stream?url=${encodeURIComponent(sourceUrl)}&_r=${Date.now()}`
-      : `${API_BASE}/stream?url=${encodeURIComponent(sourceUrl)}&_r=${Date.now()}`;
-
-    audio.src = nextSrc;
-    audio.currentTime = 0;
-    setCurrentTime(Math.floor(resumeAt * 1000));
+    prematureEndGuardRef.current = { trackId: null, retried: false };
+    currentTimeRef.current = resumeAtMs;
+    pendingResumeTimeRef.current = resumeAtMs;
+    setPendingResumeTime(resumeAtMs);
+    setCurrentTime(resumeAtMs);
     setIsAudioBuffering(true);
 
-    if (isPlaying) {
-      audio.play().catch((err) => {
-        console.warn('[Aether/Diagnostics] playback reset play failed', err);
-      });
+    if (localAudioRef.current) {
+      try {
+        localAudioRef.current.oncanplay = null;
+        localAudioRef.current.onplaying = null;
+        localAudioRef.current.onwaiting = null;
+        localAudioRef.current.onstalled = null;
+        localAudioRef.current.onended = null;
+        localAudioRef.current.onerror = null;
+        localAudioRef.current.onloadstart = null;
+        localAudioRef.current.pause();
+        localAudioRef.current.removeAttribute('src');
+        localAudioRef.current.load();
+        localAudioRef.current.muted = !!videoModeRef.current;
+      } catch {}
     }
-  }, [API_BASE, currentTrack?.actualUrl, currentTrack?.title, currentTrack?.url, isPlaying, isStandalone, streamPort]);
+    if (videoModeRef.current && localVideoRef.current) {
+      stopVideoElement(localVideoRef.current);
+      setCinemaControlsVisible(true);
+    }
+
+    setPlaybackResetNonce((prev) => prev + 1);
+    setLastAdded(`Engine reset • ${activeMode} transport`);
+    setTimeout(() => setLastAdded(null), 2200);
+  }, [currentTrack?.actualUrl, currentTrack?.title, currentTrack?.url, getActivePlaybackPositionMs, isStandalone, stopVideoElement]);
 
   useEffect(() => {
     const isTypingTarget = (el) => {
@@ -5190,6 +5728,35 @@ function App() {
   const queuePollTime = isStandalone ? 'direct engine' : formatDiagTime(diagnostics.lastQueueFetchAt);
   const doodleIntensityScale = doodleIntensity === 'subtle' ? 0.75 : doodleIntensity === 'dreamy' ? 1.35 : 1;
   const doodleIntensityBadge = doodlePresetConfig.badge;
+  const visualStageLyric = compactLyric || activeLyric || null;
+  const visualStageNextLyric = nextLyric && nextLyric !== visualStageLyric ? nextLyric : null;
+  const showVisualStage = Boolean(isStandalone && currentTrack && videoMode);
+  const isDualVisualMode = showVisualStage && videoMode === 'dual';
+  const isDualWorkspaceMode = isDualVisualMode && !isVerticalStack;
+  const showSecondaryColumn = !isFocusedMode && !isDualVisualMode;
+  const visualStageHeaderVisible = videoMode !== 'cinema' || cinemaControlsVisible || visualControlsPinned;
+  const visualStageFooterVisible = videoMode !== 'cinema' || cinemaControlsVisible || visualControlsPinned;
+  const dualVisualStageWidth = 'clamp(320px, 34vw, 560px)';
+  const visualStageTitle = currentTrack?.title || '';
+  const visualStageTitleMarquee = visualStageTitle.length > (videoMode === 'cinema' ? 42 : 24);
+  const showVisualLyricOverlay = Boolean(showVisualLyrics && visualStageLyric && (videoMode === 'cinema' || videoMode === 'dual'));
+  const visualLyricOverlayBottomClass = videoMode === 'cinema'
+    ? (visualStageFooterVisible ? 'bottom-28 md:bottom-36' : 'bottom-0')
+    : 'bottom-24';
+  const showImmersiveLyricsOverlay = Boolean(isLyricsExpanded && !showVisualStage);
+  const leftWorkspaceClass = isVerticalStack ? '!w-full !max-w-full !flex-none' : (showSecondaryColumn ? 'w-[66.666%] h-full' : 'w-full px-0');
+  const playerCardClass = isDualWorkspaceMode
+    ? 'p-5 md:p-6 gap-6 md:gap-8 min-h-[248px] lg:min-h-[266px]'
+    : 'p-6 md:p-8 gap-8 md:gap-10 min-h-[300px]';
+  const playerTitleClass = isDualWorkspaceMode ? 'text-xl md:text-2xl lg:text-3xl' : 'text-2xl md:text-3xl lg:text-4xl';
+  const lyricsPanelHeightClass = isVerticalStack ? 'h-[400px] flex-none' : 'flex-1';
+  const lyricsViewportClass = isDualWorkspaceMode
+    ? 'px-6 py-8 lg:px-12 lg:py-12 overflow-x-hidden custom-scrollbar-heavy'
+    : 'p-10 lg:p-20';
+  const lyricsListClass = isDualWorkspaceMode
+    ? 'relative z-10 flex flex-col items-center gap-14 lg:gap-20 py-[18vh] text-center w-full mx-auto'
+    : 'flex flex-col gap-6 py-4 text-center';
+  const lyricsHeaderEyebrow = isDualWorkspaceMode ? 'Split Immersive' : 'Subtitles';
 
   return (
     <div className={`fixed inset-0 bg-transparent selection:bg-brand-accent selection:text-brand-dark flex flex-col h-screen overflow-hidden relative isolate ${isVerticalStack ? 'vertical-stack-mode' : ''} ${isDoodleMode ? `doodle-mode-active doodle-preset-${doodleIntensity}` : ''} ${isAuraMode ? `aura-mode-active aura-preset-${auraPreset}` : ''}`} style={auraFieldStyle}>
@@ -5333,7 +5900,8 @@ function App() {
                   <span className="text-[10px] font-black tracking-tighter text-white/90">AETHER</span>
                   <div className="flex items-center gap-1.5">
                     <span className="text-[7px] font-mono text-brand-accent/60 font-black tracking-[0.2em] uppercase">{BUILD_VERSION}</span>
-                    <span className="text-[7px] font-mono text-brand-accent/80 font-black tracking-[0.16em] uppercase px-1.5 py-[1px] rounded-full border border-brand-accent/30 bg-brand-accent/10">{UX_VERSION}</span>
+                    {/* <span className="text-[7px] font-mono text-brand-accent/80 font-black tracking-[0.16em] uppercase px-1.5 py-[1px] rounded-full border border-brand-accent/30 bg-brand-accent/10">{UX_VERSION}</span> */}
+                    <span className="text-[7px] font-mono text-brand-accent/80 font-black tracking-[0.16em] uppercase px-1.5 py-[1px] rounded-full border border-brand-accent/30 bg-brand-accent/10">β</span>
                   </div>
                 </div>
             </div>
@@ -5852,6 +6420,27 @@ function App() {
 
               {isStandalone && (
                 <>
+                  <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                    <div className="text-white/40 uppercase mb-1">YT-DLP</div>
+                    <div className={`font-black ${engineStatus?.ytDlpReady ? 'text-brand-accent' : 'text-yellow-400'}`}>
+                      {engineStatus ? (engineStatus.ytDlpReady ? 'READY' : 'UNAVAILABLE') : 'CHECKING'}
+                    </div>
+                    <div className="text-white/40 mt-1 truncate">{engineStatus?.ytDlpPath || 'bootstrap pending'}</div>
+                  </div>
+                  <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                    <div className="text-white/40 uppercase mb-1">FFmpeg</div>
+                    <div className={`font-black ${engineStatus?.ffmpegReady ? 'text-brand-accent' : 'text-yellow-400'}`}>
+                      {engineStatus ? (engineStatus.ffmpegReady ? 'READY' : 'MISSING') : 'CHECKING'}
+                    </div>
+                    <div className="text-white/40 mt-1 truncate">{engineStatus?.ffmpegPath || 'not resolved'}</div>
+                  </div>
+                  <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                    <div className="text-white/40 uppercase mb-1">Cookies Session</div>
+                    <div className={`font-black ${engineStatus?.cookiesReady ? 'text-brand-accent' : 'text-white/60'}`}>
+                      {engineStatus ? (engineStatus.cookiesReady ? 'LOADED' : 'NOT LOADED') : 'CHECKING'}
+                    </div>
+                    <div className="text-white/40 mt-1 truncate">{engineStatus?.cookiesPath || 'anonymous requests only'}</div>
+                  </div>
                   <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
                     <div className="text-white/40 uppercase mb-1">Storage</div>
                     <div className="font-black text-brand-accent">{formatBytes(storageStats?.totalBytes || 0)}</div>
@@ -6014,16 +6603,100 @@ function App() {
 
       <motion.main 
         className={`flex-1 relative z-10 w-full mb-0 min-h-0 px-4 md:px-6 py-4 ${isVerticalStack ? '!flex !flex-col !gap-8 overflow-y-auto scroll-smooth pb-20 custom-scrollbar' : 'flex flex-row gap-4 overflow-hidden'}`}
-        style={{ scale: 1 }}
+        style={{
+          scale: 1,
+          paddingRight: isDualVisualMode && !isVerticalStack ? `calc(${dualVisualStageWidth} + 1.25rem)` : undefined,
+        }}
         transition={{ type: "spring", stiffness: 300, damping: 20 }}
       >
         
         {/* PLAYER & LYRICS PILLAR */}
-        <div className={`flex flex-col gap-4 min-w-0 overflow-hidden ${isVerticalStack ? '!w-full !max-w-full !flex-none' : (isFocusedMode ? 'w-full px-0' : 'w-[66.666%] h-full')}`}>
+        <div className={`flex flex-col gap-4 min-w-0 overflow-hidden ${leftWorkspaceClass}`}>
           
           {/* PLAYER CARD */}
+          {isDualWorkspaceMode ? (
+            <div
+              className={`glass-card relative overflow-hidden shrink-0 rounded-[2.35rem] border border-white/[0.08] px-4 py-4 md:px-5 md:py-4 transition-all duration-500 ${isAuraMode ? 'bg-white/[0.02] border-white/[0.14] backdrop-blur-[28px] shadow-[0_20px_70px_rgba(0,0,0,0.26)]' : 'bg-[#080b10]/88'}`}
+              style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder } : undefined}
+            >
+              {currentTrack ? (
+                <div className="relative z-10 flex flex-col gap-3">
+                  <div className="flex items-start gap-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="label-caps mb-0 text-brand-accent/75 text-[9px] tracking-[0.24em]">Dual Stage</span>
+                        <span className="rounded-full border border-brand-accent/20 bg-brand-accent/10 px-2 py-1 text-[8px] font-black uppercase tracking-[0.18em] text-brand-accent/80">
+                          Main Player
+                        </span>
+                      </div>
+                      <div className="mt-1 text-lg md:text-xl font-black text-white/95 leading-tight uppercase tracking-tight line-clamp-2">{currentTrack.title}</div>
+                      <div className="mt-1 text-[10px] font-black uppercase tracking-[0.26em] text-brand-accent/70 truncate">{currentTrack.author}</div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button onClick={() => handleControl('previous')} className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/60 transition-all hover:border-brand-accent/30 hover:text-brand-accent active:scale-95" title="Previous">
+                        <Rewind size={18} fill="currentColor" />
+                      </button>
+                      <button onClick={() => handleControl(isPlaying ? 'pause' : 'resume')} className="flex h-12 w-12 items-center justify-center rounded-[1.2rem] bg-brand-accent text-black shadow-[0_0_20px_rgba(0,255,191,0.32)] transition-all hover:scale-[1.03] active:scale-95" title={isPlaying ? 'Pause' : 'Play'}>
+                        {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-0.5" />}
+                      </button>
+                      <button onClick={() => handleControl('skip')} className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/60 transition-all hover:border-brand-accent/30 hover:text-brand-accent active:scale-95" title="Next">
+                        <FastForward size={18} fill="currentColor" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div
+                      className="h-1.5 w-full cursor-pointer overflow-hidden rounded-full bg-white/10"
+                      onClick={(e) => {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const pos = (e.clientX - rect.left) / rect.width;
+                        handleSeek(pos * (currentTrack.totalDurationMs || currentTrack.duration || 0));
+                      }}
+                    >
+                      <div
+                        className="h-full rounded-full transition-all"
+                        style={{
+                          width: `${currentTrack ? (currentTime / (currentTrack.totalDurationMs || currentTrack.duration || 1)) * 100 : 0}%`,
+                          background: themeColor,
+                          boxShadow: `0 0 12px ${themeColor}`,
+                        }}
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3 text-[10px] font-mono text-white/42">
+                      <span>{formatTime(currentTime)}</span>
+                      <div className="flex items-center rounded-full border border-white/10 bg-white/[0.04] p-1">
+                        <button
+                          onClick={() => switchVideoMode(null)}
+                          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] transition-all ${videoMode === null ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.34)]' : 'text-white/45 hover:text-white'}`}
+                        >
+                          <Music size={10} /> Audio
+                        </button>
+                        <button
+                          onClick={() => switchVideoMode('dual')}
+                          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] transition-all ${videoMode === 'dual' ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.34)]' : 'text-white/45 hover:text-white'}`}
+                        >
+                          <Columns2 size={10} /> Dual
+                        </button>
+                        <button
+                          onClick={() => switchVideoMode('cinema')}
+                          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] transition-all ${videoMode === 'cinema' ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.34)]' : 'text-white/45 hover:text-white'}`}
+                        >
+                          <Clapperboard size={10} /> Cinema
+                        </button>
+                      </div>
+                      <span>{formatTime(currentTrack.totalDurationMs || currentTrack.duration || 0)}</span>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex h-28 items-center justify-center text-white/25">Standby</div>
+              )}
+            </div>
+          ) : (
           <div
-            className={`glass-card flex relative overflow-hidden group shrink-0 transition-all duration-700 p-6 md:p-8 flex-col sm:flex-row gap-8 md:gap-10 min-h-[300px] flex-none rounded-[3.5rem] shadow-2xl transition-all ${isAuraMode ? 'bg-white/[0.015] border-white/[0.14] backdrop-blur-[30px] shadow-[0_24px_90px_rgba(0,0,0,0.32)]' : 'border-white/5'}`}
+            className={`glass-card flex relative overflow-hidden group shrink-0 transition-all duration-700 flex-col sm:flex-row flex-none rounded-[3.5rem] shadow-2xl transition-all ${playerCardClass} ${isAuraMode ? 'bg-white/[0.015] border-white/[0.14] backdrop-blur-[30px] shadow-[0_24px_90px_rgba(0,0,0,0.32)]' : 'border-white/5'}`}
             style={isAuraMode ? { boxShadow: auraCardShadow, borderColor: auraCardBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
           >
             {isAuraMode && (
@@ -6107,7 +6780,7 @@ function App() {
                              <button onClick={() => setIsFocusedMode(!isFocusedMode)} className={`p-2 transition-colors ${isFocusedMode ? 'text-brand-accent' : 'text-white/40 hover:text-brand-accent'}`} title="Toggle Focus Mode"><Target size={16} /></button>
                            </div>
                         </div>
-                        <h1 className="text-2xl md:text-3xl lg:text-4xl font-black text-white/95 leading-none uppercase tracking-tighter mb-2 line-clamp-2 transition-all duration-700" style={{ textShadow: visualizerMode === 'pulse' ? `0 0 20px ${themeColor}44` : 'none' }}>{currentTrack.title}</h1>
+                        <h1 className={`${playerTitleClass} font-black text-white/95 leading-none uppercase tracking-tighter mb-2 line-clamp-2 transition-all duration-700`} style={{ textShadow: visualizerMode === 'pulse' ? `0 0 20px ${themeColor}44` : 'none' }}>{currentTrack.title}</h1>
                         <p className="text-brand-accent text-xs font-black uppercase tracking-[0.3em] opacity-80 transition-all duration-700" style={{ textShadow: visualizerMode === 'pulse' ? `0 0 10px ${themeColor}88` : 'none' }}>{currentTrack.author}</p>
                     </div>
 
@@ -6141,6 +6814,44 @@ function App() {
                               <button onClick={() => handleControl('skip')} className="p-3 hover:text-brand-accent transition-colors active:scale-90"><FastForward size={22} fill="currentColor" /></button>
                             </div>
                          </div>
+
+                         {/* VIDEO MODE TOGGLE PILL */}
+                         {currentTrack && isStandalone && (
+                           <div className="flex items-center justify-center mt-4">
+                             <div className="flex items-center bg-white/[0.04] border border-white/10 rounded-2xl p-1 gap-1">
+                               <button
+                                 onClick={() => switchVideoMode(null)}
+                                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                                   videoMode === null
+                                     ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.4)]'
+                                     : 'text-white/40 hover:text-white'
+                                 }`}
+                               >
+                                 <Music size={11} /> Audio
+                               </button>
+                               <button
+                                 onClick={() => switchVideoMode('dual')}
+                                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                                   videoMode === 'dual'
+                                     ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.4)]'
+                                     : 'text-white/40 hover:text-white'
+                                 }`}
+                               >
+                                 <Columns2 size={11} /> Dual
+                               </button>
+                               <button
+                                 onClick={() => switchVideoMode('cinema')}
+                                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                                   videoMode === 'cinema'
+                                     ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.4)]'
+                                     : 'text-white/40 hover:text-white'
+                                 }`}
+                               >
+                                 <Clapperboard size={11} /> Cinema
+                               </button>
+                             </div>
+                           </div>
+                         )}
                       </div>
                    </div>
                </div>
@@ -6152,11 +6863,12 @@ function App() {
               </div>
             )}
           </div>
+          )}
 
 
           {/* LYRICS PANEL - FLEX-1 TO FILL GAP */}
           <div
-            className={`glass-card overflow-hidden flex flex-col transition-all duration-300 min-h-0 ${panelGlassClass} ${panelInteractiveClass} ${isVerticalStack ? 'h-[400px] flex-none' : 'flex-1'}`}
+            className={`glass-card overflow-hidden flex flex-col transition-all duration-300 min-h-0 ${panelGlassClass} ${panelInteractiveClass} ${lyricsPanelHeightClass}`}
             style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
           >
             <div className={`border-b border-white/5 ${panelHeaderClass} ${isVerticalStack ? 'px-3 py-2' : 'px-5 py-4'}`}>
@@ -6167,7 +6879,7 @@ function App() {
                   </div>
                   <div className="min-w-0 flex-1 overflow-hidden">
                     <div className="flex items-center gap-2 flex-wrap min-w-0">
-                      <span className="label-caps mb-0 text-[9px] tracking-[0.1em] uppercase truncate shrink">Subtitles</span>
+                      <span className="label-caps mb-0 text-[9px] tracking-[0.1em] uppercase truncate shrink">{lyricsHeaderEyebrow}</span>
                       <span className={`px-2 py-1 rounded-full text-[8px] font-black uppercase tracking-[0.18em] border ${currentManualLyricsLines.length > 0 ? 'bg-brand-accent/15 border-brand-accent/30 text-brand-accent' : isLyricsLoading ? 'bg-white/5 border-white/10 text-white/50' : isPlaying ? (lyrics.length > 0 ? 'bg-white/5 border-white/10 text-white/65' : 'bg-white/5 border-white/10 text-white/45') : 'bg-white/5 border-white/10 text-white/45'}`}>
                         {currentManualLyricsLines.length > 0 ? 'Manual' : isLyricsLoading ? 'Fetching' : isPlaying ? (lyrics.length > 0 ? 'Synced' : 'Decoding') : lyrics.length > 0 ? 'Ready' : 'Idle'}
                       </span>
@@ -6213,9 +6925,13 @@ function App() {
                     axios.post(`${API_BASE}/api/source/${guildId}`).catch(e => console.error('Rotate error:', e));
                   }} className="hidden md:flex px-5 py-2.5 glass-card text-[10px] font-black hover:border-brand-accent transition-all uppercase tracking-widest active:scale-95 border-white/10">Rotate</button>}
                   <button 
-                    onClick={() => setIsLyricsExpanded(!isLyricsExpanded)}
-                    className="flex items-center justify-center p-2 w-8 h-8 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 hover:border-brand-accent transition-all text-brand-accent group active:scale-90 flex-none"
-                    title="Immersive Output"
+                    onClick={() => {
+                      if (isDualWorkspaceMode) return;
+                      setIsLyricsExpanded(!isLyricsExpanded);
+                    }}
+                    disabled={isDualWorkspaceMode}
+                    className={`flex items-center justify-center p-2 w-8 h-8 rounded-xl border transition-all text-brand-accent group flex-none ${isDualWorkspaceMode ? 'bg-brand-accent/12 border-brand-accent/30 text-brand-accent/80 cursor-default' : 'bg-white/5 border-white/10 hover:bg-white/10 hover:border-brand-accent active:scale-90'}`}
+                    title={isDualWorkspaceMode ? 'Dual view already uses immersive lyrics on the left' : 'Immersive Output'}
                   >
                     <Maximize2 size={16} />
                   </button>
@@ -6223,7 +6939,24 @@ function App() {
               </div>
             </div>
             
-            <div className="flex-1 overflow-y-auto p-10 lg:p-20 scroll-smooth relative" ref={lyricsContainerRef} onWheel={() => setIsAutoScrollPaused(true)} onTouchStart={() => setIsAutoScrollPaused(true)}>
+            <div className={`flex-1 overflow-y-auto scroll-smooth relative ${lyricsViewportClass}`} ref={lyricsContainerRef} onWheel={() => setIsAutoScrollPaused(true)} onTouchStart={() => setIsAutoScrollPaused(true)}>
+              {isDualWorkspaceMode && (
+                <motion.div
+                  aria-hidden
+                  className="pointer-events-none absolute left-1/2 top-1/2 z-0 -translate-x-1/2 -translate-y-1/2 rounded-full"
+                  animate={{
+                    opacity: 0.12 + immersiveBeatIntensity * 0.34,
+                    scale: 1 + immersiveBeatIntensity * 0.22,
+                  }}
+                  transition={{ duration: 0.22, ease: 'easeOut' }}
+                  style={{
+                    width: 'min(72vw, 760px)',
+                    height: 'min(72vw, 760px)',
+                    background: `radial-gradient(circle, ${themeColor}${alphaHex(0.18)} 0%, ${themeColor}${alphaHex(0.07)} 36%, transparent 72%)`,
+                    filter: `blur(${30 + immersiveBeatIntensity * 22}px)`,
+                  }}
+                />
+              )}
               {isAutoScrollPaused && lyrics.length > 0 && (
                 <button 
                   onClick={handleResyncLyrics}
@@ -6235,22 +6968,22 @@ function App() {
               {isLyricsLoading ? (
                 <div className="h-full flex items-center justify-center"><Loader2 className="animate-spin text-brand-accent" size={48} /></div>
               ) : lyrics.length > 0 ? (
-                <div className="flex flex-col gap-6 py-4 text-center">
+                <div className={lyricsListClass}>
                   {lyrics.map((line, idx) => {
                     const isActive = idx === activeLyricIndex;
+                    const lyricLineClass = isDualWorkspaceMode
+                      ? `max-w-[min(92%,760px)] px-3 md:px-5 text-2xl sm:text-3xl lg:text-5xl font-black leading-tight w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] transition-all duration-700 transform-gpu origin-center ${isActive ? 'text-brand-accent scale-[1.1] opacity-100 drop-shadow-[0_0_32px_rgba(0,255,191,0.42)]' : 'text-white/25 opacity-40 scale-100'}`
+                      : `text-base sm:text-lg lg:text-xl font-bold transition-all duration-700 transform leading-snug py-1.5 relative ${isActive ? 'text-brand-accent scale-105 opacity-100 drop-shadow-[0_0_15px_rgba(0,255,191,0.5)]' : 'text-white/50 opacity-80 hover:opacity-100 transition-opacity cursor-default'}`;
                     return (
                       <div 
                         key={idx} 
                         ref={isActive ? activeLyricRef : null} 
-                        className={`text-base sm:text-lg lg:text-xl font-bold transition-all duration-700 transform leading-snug py-1.5 relative ${
-                          isActive 
-                            ? 'text-brand-accent scale-105 opacity-100 drop-shadow-[0_0_15px_rgba(0,255,191,0.5)]' 
-                            : 'text-white/50 opacity-80 hover:opacity-100 transition-opacity cursor-default'
-                        }`}
+                        className={lyricLineClass}
+                        style={isDualWorkspaceMode ? { textWrap: 'balance' } : undefined}
                       >
                         {line.text}
                         {/* AURA MODE: Lyric pulse underline - live shimmering sync to bass */}
-                        {isActive && isAuraMode && (
+                        {isActive && isAuraMode && !isDualWorkspaceMode && (
                           <div 
                             className="absolute bottom-0 left-0 right-0 h-1 rounded-full bg-gradient-to-r from-transparent via-brand-accent to-transparent lyric-pulse-line"
                             style={{
@@ -6280,7 +7013,7 @@ function App() {
         </div>
 
         {/* RIGHT COLUMN */}
-        {!isFocusedMode && (
+        {showSecondaryColumn && (
           <div className={`flex flex-col gap-4 min-w-0 ${isVerticalStack ? '!w-full !max-w-full !flex-none pb-20' : 'w-[33.333%] h-full overflow-hidden flex-none'}`}>
             {/* QUEUE */}
             <div
@@ -6431,7 +7164,7 @@ function App() {
                 >
                   <Maximize2 size={10} />
                 </button>
-                {searchResults.length > 0 && <button onClick={() => setSearchResults([])} className="p-2 px-4 glass-card text-[9px] font-black text-red-500 hover:bg-red-500/10 active:scale-95 transition-all border-red-500/20">FLUSH</button>}
+                {(searchResults.length > 0 || hasCompletedSearch) && <button onClick={clearDiscoveryResults} className="p-2 px-4 glass-card text-[9px] font-black text-red-500 hover:bg-red-500/10 active:scale-95 transition-all border-red-500/20">FLUSH</button>}
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 pb-6">
@@ -6816,7 +7549,7 @@ function App() {
         )}
       </AnimatePresence>
       <AnimatePresence>
-        {isLyricsExpanded && (
+        {showImmersiveLyricsOverlay && (
           <motion.div 
             initial={{ opacity: 0, scale: 1.1 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -7703,12 +8436,22 @@ function App() {
                           <p className="text-brand-accent text-xs font-bold tracking-widest uppercase opacity-60">{searchResults.length} RESULT{searchResults.length !== 1 ? 'S' : ''}</p>
                         </div>
                       </div>
-                      <button
-                        onClick={() => setIsViewingFullDiscovery(false)}
-                        className="p-2 rounded-lg bg-white/5 hover:bg-red-500/20 text-white/50 hover:text-red-500 transition-all"
-                      >
-                        <X size={18} />
-                      </button>
+                      <div className="flex items-center gap-2">
+                        {(searchResults.length > 0 || hasCompletedSearch) && (
+                          <button
+                            onClick={clearDiscoveryResults}
+                            className="px-3 py-2 rounded-lg bg-white/5 hover:bg-red-500/20 text-[10px] font-black uppercase tracking-[0.22em] text-white/50 hover:text-red-400 transition-all"
+                          >
+                            Flush
+                          </button>
+                        )}
+                        <button
+                          onClick={() => setIsViewingFullDiscovery(false)}
+                          className="p-2 rounded-lg bg-white/5 hover:bg-red-500/20 text-white/50 hover:text-red-500 transition-all"
+                        >
+                          <X size={18} />
+                        </button>
+                      </div>
                     </div>
                     <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
                       <div className="flex flex-col gap-2">
@@ -7741,9 +8484,18 @@ function App() {
                               <HardDrive size={14} />
                             </button>
                           </motion.div>
-                        )) : (
-                          <div className="h-40 flex items-center justify-center text-[10px] font-black uppercase tracking-[0.28em] text-white/25">
-                            Discovery Empty
+                        )) : hasCompletedSearch ? (
+                          <div className="h-40 flex flex-col items-center justify-center gap-3 text-center">
+                            <Search size={28} className="text-brand-accent/60" strokeWidth={1.4} />
+                            <div>
+                              <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/55">No Results Found</div>
+                              <div className="mt-2 text-[9px] font-bold uppercase tracking-[0.22em] text-white/30">Flush discovery to return to the default panel state.</div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="h-40 flex flex-col items-center justify-center gap-3 text-center opacity-40">
+                            <Search size={28} className="text-white/30" strokeWidth={1.2} />
+                            <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/28">Awaiting Content</div>
                           </div>
                         )}
                       </div>
@@ -7947,8 +8699,236 @@ function App() {
          </div>
          <div className="absolute inset-0 bg-black/60" />
             </div>
+
+
+
+
+      {/* ── DUAL MODE: slide-in video panel ── */}
+      <AnimatePresence>
+        {showVisualStage && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.985 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.985 }}
+            transition={{ duration: 0.28, ease: 'easeOut' }}
+            className={`fixed z-[1000] pointer-events-none transition-all duration-500 ease-out ${videoMode === 'cinema' ? 'inset-0' : ''}`}
+            style={videoMode === 'cinema'
+              ? undefined
+              : isVerticalStack
+                ? { left: 16, right: 16, bottom: 16, height: '40vh' }
+                : { top: 80, right: 16, bottom: 16, width: dualVisualStageWidth }}
+            onMouseMove={videoMode === 'cinema' ? handleCinemaMouseMove : undefined}
+            onClick={videoMode === 'cinema' ? handleCinemaMouseMove : undefined}
+          >
+            <div className={`absolute inset-0 transition-all duration-500 ${videoMode === 'cinema' ? 'bg-black/96 backdrop-blur-md' : 'bg-transparent'}`} />
+
+            <div className="relative h-full w-full pointer-events-auto">
+              <div className={`relative flex h-full w-full overflow-hidden transition-all duration-500 ${videoMode === 'cinema' ? 'rounded-none bg-black' : 'rounded-[2.25rem] border border-white/[0.08] bg-[#06090d]/92 backdrop-blur-[28px] shadow-[0_28px_90px_rgba(0,0,0,0.5)]'}`}>
+                <div className={`relative flex-1 min-h-0 ${videoMode === 'cinema' ? '' : 'm-3 rounded-[1.8rem] overflow-hidden border border-white/[0.08] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.02)]'}`}>
+                  {currentTrack?.thumbnail && (
+                    <img
+                      src={getProxyUrl(currentTrack.thumbnail)}
+                      alt=""
+                      className="absolute inset-0 h-full w-full object-cover scale-110 blur-[40px] opacity-35"
+                    />
+                  )}
+                  <div className="absolute inset-0 bg-[#020406]" />
+                  <div
+                    className="absolute inset-0"
+                    style={{
+                      background: `radial-gradient(120% 120% at 50% 0%, ${themeColor}20 0%, rgba(0,0,0,0) 48%), linear-gradient(180deg, rgba(5,7,10,0.18) 0%, rgba(5,7,10,0.52) 58%, rgba(5,7,10,0.92) 100%)`,
+                    }}
+                  />
+
+                  <video
+                    ref={(el) => { localVideoRef.current = el; }}
+                    playsInline
+                    className={`absolute inset-0 h-full w-full ${visualVideoFit === 'cover' ? 'object-cover' : 'object-contain'}`}
+                  />
+
+                  {isAudioBuffering && (
+                    <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/45 backdrop-blur-sm">
+                      <div className="rounded-full border border-white/10 bg-black/45 p-4 shadow-[0_0_40px_rgba(0,0,0,0.35)]">
+                        <Loader2 size={videoMode === 'cinema' ? 34 : 28} className="animate-spin text-brand-accent" />
+                      </div>
+                    </div>
+                  )}
+
+                  <motion.div
+                    animate={{ opacity: visualStageHeaderVisible ? 1 : 0, y: visualStageHeaderVisible ? 0 : -14 }}
+                    transition={{ duration: 0.22 }}
+                    className="absolute left-0 right-0 top-0 z-20 p-4 md:p-5"
+                    style={{ pointerEvents: visualStageHeaderVisible ? 'auto' : 'none' }}
+                  >
+                    <div className="mx-auto flex w-full items-start justify-between gap-4 rounded-[1.4rem] border border-white/10 bg-black/38 px-4 py-3 backdrop-blur-2xl shadow-[0_18px_60px_rgba(0,0,0,0.25)]">
+                      <div className="flex min-w-0 items-start gap-3">
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/12 text-brand-accent shadow-[0_0_20px_rgba(0,255,191,0.15)]">
+                          {videoMode === 'cinema' ? <Clapperboard size={15} /> : <Columns2 size={15} />}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.24em]">
+                            <span className="text-brand-accent/85">{videoMode === 'cinema' ? 'Cinema Mode' : 'Dual Visual'}</span>
+                            {/* <span className="text-white/28 font-mono tracking-[0.18em]">shared stream</span> */}
+                          </div>
+                          {visualStageTitleMarquee ? (
+                            <div className={`overlay-marquee mt-1 font-black uppercase tracking-tight text-white/95 ${videoMode === 'cinema' ? 'text-sm md:text-lg max-w-[min(60vw,720px)]' : 'text-sm md:text-base max-w-[280px]'}`}>
+                              <div className="overlay-marquee-track">
+                                <span>{visualStageTitle}</span>
+                                <span aria-hidden="true">{visualStageTitle}</span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className={`mt-1 font-black uppercase tracking-tight text-white/95 line-clamp-2 ${videoMode === 'cinema' ? 'text-sm md:text-lg max-w-[min(60vw,720px)]' : 'text-sm md:text-base max-w-[280px]'}`}>
+                              {visualStageTitle}
+                            </div>
+                          )}
+                          <div className="mt-1 text-[10px] font-black uppercase tracking-[0.26em] text-brand-accent/72 truncate">
+                            {currentTrack.author}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => setShowVisualLyrics((prev) => !prev)}
+                          className={`flex h-10 w-10 items-center justify-center rounded-2xl border transition-all ${showVisualLyrics ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                          title={showVisualLyrics ? 'Hide visual lyrics' : 'Show visual lyrics'}
+                        >
+                          <BookOpen size={15} />
+                        </button>
+                        <button
+                          onClick={() => setVisualVideoFit((prev) => (prev === 'contain' ? 'cover' : 'contain'))}
+                          className={`flex h-10 w-10 items-center justify-center rounded-2xl border transition-all ${visualVideoFit === 'cover' ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                          title={visualVideoFit === 'cover' ? 'Show full frame' : 'Fill frame'}
+                        >
+                          <Monitor size={15} />
+                        </button>
+                        {videoMode === 'cinema' && (
+                          <button
+                            onClick={() => setVisualControlsPinned((prev) => !prev)}
+                            className={`flex h-10 w-10 items-center justify-center rounded-2xl border transition-all ${visualControlsPinned ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                            title={visualControlsPinned ? 'Unpin controls' : 'Pin controls'}
+                          >
+                            <Lock size={15} />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => switchVideoMode(videoMode === 'cinema' ? 'dual' : 'cinema')}
+                          className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/55 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
+                          title={videoMode === 'cinema' ? 'Back to Dual View' : 'Expand to Cinema'}
+                        >
+                          {videoMode === 'cinema' ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                        </button>
+                        <button
+                          onClick={exitVideoMode}
+                          className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/55 transition-all hover:border-white/25 hover:text-white"
+                          title={videoMode === 'cinema' ? 'Exit Cinema (Esc)' : 'Return to Audio'}
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+                    </div>
+                  </motion.div>
+
+                  <AnimatePresence mode="wait">
+                    {showVisualLyricOverlay && (
+                      <motion.div
+                        key={`visual-lyric-${activeLyricIndex}-${visualStageLyric}`}
+                        initial={{ opacity: 0, y: 18 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 12 }}
+                        transition={{ duration: 0.24, ease: 'easeOut' }}
+                        className={`pointer-events-none absolute left-0 right-0 z-20 ${visualLyricOverlayBottomClass}`}
+                      >
+                        <div className={`mx-auto w-full ${videoMode === 'cinema' ? 'px-6 pb-8 md:px-10 md:pb-10' : 'px-4 pb-4'}`}>
+                          <div className={`mx-auto ${videoMode === 'cinema' ? 'max-w-[min(84vw,1040px)]' : 'max-w-[92%]'}`}>
+                            <div className={`rounded-[2rem] bg-gradient-to-t from-black/52 via-black/14 to-transparent px-5 py-4 ${videoMode === 'cinema' ? 'md:px-8 md:py-6' : 'md:px-6'}`}>
+                              <div className={`text-center font-black leading-tight text-white drop-shadow-[0_6px_28px_rgba(0,0,0,0.72)] ${videoMode === 'cinema' ? 'text-lg md:text-4xl' : 'text-base md:text-xl'}`}>
+                                {visualStageLyric}
+                              </div>
+                              {visualStageNextLyric && (
+                                <div className={`mx-auto mt-2 max-w-3xl text-center font-semibold text-white/58 drop-shadow-[0_4px_16px_rgba(0,0,0,0.58)] line-clamp-2 ${videoMode === 'cinema' ? 'text-sm md:text-lg' : 'text-xs md:text-sm'}`}>
+                                  {visualStageNextLyric}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  <motion.div
+                    animate={{ opacity: visualStageFooterVisible ? 1 : 0, y: visualStageFooterVisible ? 0 : 18 }}
+                    transition={{ duration: 0.22 }}
+                    className="absolute bottom-0 left-0 right-0 z-20"
+                    style={{ pointerEvents: visualStageFooterVisible ? 'auto' : 'none' }}
+                  >
+                    <div className={`mx-auto w-full ${videoMode === 'cinema' ? 'px-6 pb-8 pt-20 md:px-10 md:pb-10' : 'px-4 pb-4 pt-20'}`}>
+                      <div className="rounded-[1.6rem] border border-white/10 bg-black/40 px-4 py-4 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.28)] md:px-5">
+                        <div>
+                          <div className="mb-2 flex items-center justify-between text-[10px] font-black uppercase tracking-[0.22em] text-white/38">
+                            <div className="flex items-center gap-2">
+                              <BookOpen size={12} className="text-brand-accent/70" />
+                              <span>{showVisualLyricOverlay ? 'Lyric overlay' : (videoMode === 'dual' ? 'Lyrics on left panel' : 'Visual Stream')}</span>
+                            </div>
+                            <span className="font-mono tracking-[0.16em]">{videoMode === 'cinema' ? (visualControlsPinned ? 'Overlay pinned' : 'Overlay unpinned') : (visualVideoFit === 'cover' ? 'Fill frame' : 'Split view active')}</span>
+                          </div>
+
+                          <div
+                            className="h-1.5 w-full cursor-pointer overflow-hidden rounded-full bg-white/12"
+                            onClick={(e) => {
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              const pos = (e.clientX - rect.left) / rect.width;
+                              handleSeek(pos * (currentTrack.totalDurationMs || currentTrack.duration || 0));
+                            }}
+                          >
+                            <div
+                              className="h-full rounded-full transition-all"
+                              style={{
+                                width: `${currentTrack ? (currentTime / (currentTrack.totalDurationMs || currentTrack.duration || 1)) * 100 : 0}%`,
+                                background: themeColor,
+                                boxShadow: `0 0 12px ${themeColor}`,
+                              }}
+                            />
+                          </div>
+
+                          <div className="mt-2 flex items-center justify-between text-[10px] font-mono text-white/42">
+                            <span>{formatTime(currentTime)}</span>
+                            <span>{formatTime(currentTrack.totalDurationMs || currentTrack.duration || 0)}</span>
+                          </div>
+                        </div>
+
+                        {videoMode === 'cinema' && (
+                          <div className="flex items-center justify-center gap-5 pt-5">
+                            <button onClick={() => handleControl('previous')} className="p-2 text-white/60 transition-colors hover:text-white active:scale-90">
+                              <Rewind size={22} fill="currentColor" />
+                            </button>
+                            <button
+                              onClick={() => handleControl(isPlaying ? 'pause' : 'resume')}
+                              className="flex h-14 w-14 items-center justify-center rounded-2xl text-black transition-all active:scale-95 hover:scale-105 shadow-[0_0_24px_rgba(0,255,191,0.5)]"
+                              style={{ background: themeColor }}
+                            >
+                              {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" className="ml-1" />}
+                            </button>
+                            <button onClick={() => handleControl('skip')} className="p-2 text-white/60 transition-colors hover:text-white active:scale-90">
+                              <FastForward size={22} fill="currentColor" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </motion.div>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
     </div>
   );
 }
+
 
 export default App;

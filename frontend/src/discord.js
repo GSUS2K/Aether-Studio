@@ -46,4 +46,3 @@ export async function setupDiscordSdk() {
   return { sdk: discordSdk, auth: null };
 }
 
-export default discordSdk;
