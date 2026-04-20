@@ -21,7 +21,7 @@ const targets = (() => {
         label: 'ffmpeg',
         fileName: 'ffmpeg.exe',
         minBytes: 5 * 1024 * 1024,
-        url: 'https://github.com/eugeneware/ffmpeg-static/releases/latest/download/win32-x64',
+        url: 'https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64.gz',
       },
     ];
   }
