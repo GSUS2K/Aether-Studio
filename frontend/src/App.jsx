@@ -46,6 +46,8 @@ const DEFAULT_SHORTCUTS = Object.freeze({
   volumeUp: 'Mod+Alt+ArrowUp',
   volumeDown: 'Mod+Alt+ArrowDown',
   mute: 'Mod+Alt+M',
+  clearQueue: 'Mod+Alt+Backspace',
+  focusMode: 'Shift+F',
   miniPlayer: 'Shift+M',
   diagnostics: 'D',
 });
@@ -56,6 +58,8 @@ const SHORTCUT_FIELDS = [
   { id: 'volumeUp', label: 'Volume Up' },
   { id: 'volumeDown', label: 'Volume Down' },
   { id: 'mute', label: 'Mute / Unmute' },
+  { id: 'clearQueue', label: 'Clear Queue' },
+  { id: 'focusMode', label: 'Toggle Focus View' },
   { id: 'miniPlayer', label: 'Toggle Mini Player' },
   { id: 'diagnostics', label: 'Toggle Diagnostics' },
 ];
@@ -261,6 +265,8 @@ const getCanonicalKeyToken = (token) => {
   if (lower === 'down' || lower === 'arrowdown') return 'ArrowDown';
   if (lower === 'esc' || lower === 'escape') return 'Escape';
   if (lower === 'enter' || lower === 'return') return 'Enter';
+  if (lower === 'backspace' || lower === 'deleteleft') return 'Backspace';
+  if (lower === 'delete' || lower === 'del' || lower === 'forwarddelete') return 'Delete';
   if (lower === 'slash' || lower === '/') return '/';
   if (/^[a-z]$/i.test(raw)) return raw.toUpperCase();
   if (/^\d$/.test(raw)) return raw;
@@ -332,6 +338,8 @@ const getEventKeyToken = (e) => {
   if (e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'ArrowUp' || e.code === 'ArrowDown') return e.code;
   if (e.code === 'Escape') return 'Escape';
   if (e.code === 'Enter') return 'Enter';
+  if (e.code === 'Backspace') return 'Backspace';
+  if (e.code === 'Delete') return 'Delete';
   if (e.code?.startsWith('Key')) return e.code.slice(3).toUpperCase();
   if (e.code?.startsWith('Digit')) return e.code.slice(5);
   return getCanonicalKeyToken(e.key);
@@ -479,7 +487,6 @@ function App() {
   const [isLooksPanelOpen, setIsLooksPanelOpen] = useState(false);
   const [uptime, setUptime] = useState("00:00:00");
   const [isLyricsExpanded, setIsLyricsExpanded] = useState(false);
-  const [isStatsExpanded, setIsStatsExpanded] = useState(false);
   const [typedBuffer, setTypedBuffer] = useState("");
   const [isMixtapeVaultOpen, setIsMixtapeVaultOpen] = useState(false);
   const [sharedScene, setSharedScene] = useState(null);
@@ -519,8 +526,11 @@ function App() {
   const [sleepDeadline, setSleepDeadline] = useState(null);
   const [sleepRemainingStr, setSleepRemainingStr] = useState('');
   const [isSleepTimerMenuOpen, setIsSleepTimerMenuOpen] = useState(false);
+  const sleepTimerMenuRef = useRef(null);
   const [localIp, setLocalIp] = useState('');
   const [isMiniPlayer, setIsMiniPlayer] = useState(false);
+  const [miniPlayerInfoMode, setMiniPlayerInfoMode] = useState('artist');
+  const [isMiniQueuePeekOpen, setIsMiniQueuePeekOpen] = useState(false);
   const [isSpotifyImportOpen, setIsSpotifyImportOpen] = useState(false);
   const [spotifyImportUrl, setSpotifyImportUrl] = useState('');
   const [spotifyImportProgress, setSpotifyImportProgress] = useState({ stage: 'idle', progress: 0, message: '' });
@@ -549,6 +559,7 @@ function App() {
   const [storagePolicy, setStoragePolicy] = useState({ cacheCapMb: 2048, maxCacheAgeDays: 30 });
   const [storageEstimate, setStorageEstimate] = useState({ cap: null, age: null, downloadsOnly: null });
   const [isStorageBusy, setIsStorageBusy] = useState(false);
+  const [isRuntimeRepairing, setIsRuntimeRepairing] = useState(false);
   const [engineStatus, setEngineStatus] = useState(null);
   const [offlineDownloads, setOfflineDownloads] = useState([]);
   const [isOfflineDownloadsBusy, setIsOfflineDownloadsBusy] = useState(false);
@@ -592,6 +603,7 @@ function App() {
   const lastBeatRingTimeRef = useRef(0);
   const mixtapeVaultRef = useRef(null);
   const vaultTelemetryRef = useRef({ lastStateAt: 0 });
+  const restoreVerticalStackAfterVideoRef = useRef(false);
   const currentTrackRef = useRef(null);
   const prevTrackRef = useRef(null); // Neural Memory Ref (NOVA
   const standaloneTrackLoadKeyRef = useRef('');
@@ -604,6 +616,7 @@ function App() {
   const prematureEndGuardRef = useRef({ trackId: null, retried: false });
   const manualTransportAdvanceRef = useRef({ trackKey: '', at: 0, action: '' });
   const warmupRetryRef = useRef(new Map());
+  const videoEndGuardRef = useRef({ trackKey: '', settled: false, lastNearEndAt: 0, lastObservedMs: 0, lastProgressAt: 0 });
   const isStandalone = !!window.aether;
   const [history, setHistory] = useState([]);
   const [isManualStop, setIsManualStop] = useState(false);
@@ -656,6 +669,8 @@ function App() {
   const exitVideoMode = useCallback((options = {}) => {
     const { preservePosition = true } = options;
     const vid = localVideoRef.current;
+    const shouldRestoreVerticalStack = restoreVerticalStackAfterVideoRef.current;
+    restoreVerticalStackAfterVideoRef.current = false;
 
     // Step 1: Capture handoff timestamp BEFORE touching anything
     const handoffMs = vid?.currentTime > 0
@@ -706,6 +721,10 @@ function App() {
     // Step 6: Re-arm buffering until the audio transport proves it is healthy again.
     setIsAudioBuffering(true);
     setVisualControlsPinned(false);
+    setIsLyricsExpanded(false);
+    if (shouldRestoreVerticalStack) {
+      setIsVerticalStack(true);
+    }
 
     setVideoMode(null);
   }, [stopVideoElement]);
@@ -729,7 +748,15 @@ function App() {
     setPendingResumeTime(null);
     setIsLyricsExpanded(false);
 
+    if (!currentMode) {
+      restoreVerticalStackAfterVideoRef.current = false;
+    }
+
     if (next === 'dual') {
+      if (isVerticalStack) {
+        restoreVerticalStackAfterVideoRef.current = true;
+        setIsVerticalStack(false);
+      }
       setShowVisualLyrics(false);
       setVisualControlsPinned(false);
     }
@@ -751,7 +778,7 @@ function App() {
     setIsAudioBuffering(true);
     setCinemaControlsVisible(true);
     setVideoMode(next);
-  }, [exitVideoMode, getActivePlaybackPositionMs, stopVideoElement]);
+  }, [exitVideoMode, getActivePlaybackPositionMs, isVerticalStack, stopVideoElement]);
 
   useEffect(() => {
     if (!isStandalone || !window.aether?.onYouTubeAuthRequired) return;
@@ -843,6 +870,7 @@ function App() {
   useEffect(() => {
     const vid = localVideoRef.current;
     if (!queue?.[0] || !isStandalone || !videoMode) {
+      videoEndGuardRef.current = { trackKey: '', settled: false, lastNearEndAt: 0, lastObservedMs: 0, lastProgressAt: 0 };
       if (vid) {
         vid.oncanplay = null;
         vid.onwaiting = null;
@@ -860,6 +888,7 @@ function App() {
     }
 
     const track = queue[0];
+    const trackActionKey = getTrackActionKey(track);
     const youtubeUrl = track?.youtubeId
       ? `https://www.youtube.com/watch?v=${track.youtubeId}`
       : track?.actualUrl || track?.url || '';
@@ -881,6 +910,21 @@ function App() {
         setIsAudioBuffering(true);
     }
 
+    videoEndGuardRef.current = {
+      trackKey: trackActionKey,
+      settled: false,
+      lastNearEndAt: 0,
+      lastObservedMs: 0,
+      lastProgressAt: Date.now(),
+    };
+
+    const settleVideoNaturalEnd = () => {
+      const guard = videoEndGuardRef.current;
+      if (!guard || guard.trackKey !== trackActionKey || guard.settled) return;
+      guard.settled = true;
+      advanceQueue('natural_end');
+    };
+
     // Handlers — re-attach every time track/mode changes, not on play/pause
     vid.oncanplay = () => {
         // Sync video position to where audio was (one-time on initial load only)
@@ -892,9 +936,27 @@ function App() {
     vid.onwaiting = () => setIsAudioBuffering(true);
     vid.onplaying = () => setIsAudioBuffering(false);
     vid.ontimeupdate = () => {
-        if (vid.currentTime > 0) setCurrentTime(Math.floor(vid.currentTime * 1000));
+        const currentMs = Math.max(0, Math.floor((vid.currentTime || 0) * 1000));
+        const guard = videoEndGuardRef.current;
+        if (guard?.trackKey === trackActionKey) {
+          if (currentMs > guard.lastObservedMs + 120) {
+            guard.lastObservedMs = currentMs;
+            guard.lastProgressAt = Date.now();
+          }
+          const durationMs = Number.isFinite(Number(vid.duration)) && Number(vid.duration) > 0
+            ? Math.round(Number(vid.duration) * 1000)
+            : Number(track.totalDurationMs || track.duration || 0);
+          const nearEndThresholdMs = durationMs > 0 ? Math.max(260, Math.min(900, durationMs * 0.015)) : 0;
+          const remainingMs = durationMs > 0 ? Math.max(0, durationMs - currentMs) : Infinity;
+          if (durationMs > 0 && remainingMs <= nearEndThresholdMs) {
+            guard.lastNearEndAt ||= Date.now();
+          } else {
+            guard.lastNearEndAt = 0;
+          }
+        }
+        if (currentMs > 0) setCurrentTime(currentMs);
     };
-    vid.onended = () => advanceQueue('natural_end');
+    vid.onended = () => settleVideoNaturalEnd();
     vid.onerror = () => {
       console.warn('[Aether/Video] Video playback error, falling back to audio mode', {
         title: track?.title,
@@ -904,7 +966,35 @@ function App() {
       exitVideoMode();
     };
 
+    const nearEndWatchdog = window.setInterval(() => {
+      const guard = videoEndGuardRef.current;
+      if (!vid || !guard || guard.trackKey !== trackActionKey || guard.settled) return;
+      const durationMs = Number.isFinite(Number(vid.duration)) && Number(vid.duration) > 0
+        ? Math.round(Number(vid.duration) * 1000)
+        : Number(track.totalDurationMs || track.duration || 0);
+      if (!Number.isFinite(durationMs) || durationMs <= 0) return;
+
+      const currentMs = Math.max(0, Math.floor((vid.currentTime || 0) * 1000));
+      const nearEndThresholdMs = Math.max(260, Math.min(900, durationMs * 0.015));
+      const remainingMs = Math.max(0, durationMs - currentMs);
+      const nearEndLongEnough = guard.lastNearEndAt > 0 && (Date.now() - guard.lastNearEndAt) > 700;
+      const stalledNearEnd = isPlayingRef.current && !vid.paused && remainingMs <= nearEndThresholdMs && (Date.now() - guard.lastProgressAt) > 900;
+
+      if (vid.ended || remainingMs <= 120 || nearEndLongEnough || stalledNearEnd) {
+        console.warn('[Aether/Video] Near-end watchdog advancing queue', {
+          title: track?.title,
+          currentMs,
+          durationMs,
+          remainingMs,
+          nearEndLongEnough,
+          stalledNearEnd,
+        });
+        settleVideoNaturalEnd();
+      }
+    }, 260);
+
     return () => {
+        window.clearInterval(nearEndWatchdog);
         if (vid) {
             vid.oncanplay = null;
             vid.onwaiting = null;
@@ -913,6 +1003,7 @@ function App() {
             vid.onended = null;
             vid.onerror = null;
         }
+        videoEndGuardRef.current = { trackKey: '', settled: false, lastNearEndAt: 0, lastObservedMs: 0, lastProgressAt: 0 };
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queue?.[0]?.id, queue?.[0]?.queueNonce, videoMode, streamPort, playbackResetNonce]);
@@ -951,15 +1042,6 @@ function App() {
     cinemaHideTimerRef.current = setTimeout(() => setCinemaControlsVisible(false), 3000);
   }, [videoMode, visualControlsPinned]);
 
-
-  // Escape exits Cinema Mode — must call exitVideoMode() for full handoff, not bare setVideoMode(null)
-  useEffect(() => {
-    if (videoMode !== 'cinema') return;
-    const handler = (e) => { if (e.key === 'Escape') exitVideoMode(); };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [videoMode, exitVideoMode]);
-
   // --- AETHER STUDIO CORE: NEURAL ENGINE STATE (NOVA ---
   const currentTrack = queue?.[0];
   const currentTrackSourceUrl = useMemo(() => {
@@ -975,7 +1057,10 @@ function App() {
   const canOpenCurrentSource = Boolean(isStandalone && currentTrackSourceUrl);
   const canDownloadCurrentTrack = Boolean(isStandalone && window.aether?.exportAudioToFile && currentTrackSourceUrl);
   const canUseUpdater = Boolean(isStandalone && window.aether?.getUpdateStatus && window.aether?.checkForUpdates && window.aether?.downloadUpdate && window.aether?.quitAndInstallUpdate);
-  const isMacPlatform = isStandalone ? window.aether?.platform === 'darwin' : /mac/i.test(navigator?.platform || '');
+  const platform = isStandalone ? window.aether?.platform : '';
+  const isMacPlatform = isStandalone ? platform === 'darwin' : /mac/i.test(navigator?.platform || '');
+  const isWindowsPlatform = isStandalone ? platform === 'win32' : /win/i.test(navigator?.platform || '');
+  const desktopTopInsetClass = isMacPlatform ? 'pt-7' : (isWindowsPlatform ? 'pt-[34px]' : 'pt-0');
   const defaultGlobalMediaShortcutsEnabled = isMacPlatform;
 
   const updateActionLabel = useMemo(() => {
@@ -1120,10 +1205,22 @@ function App() {
     skipReasonTimeoutRef.current = setTimeout(() => setSkipReasonToast(''), 2200);
   }, [currentTrack?.id, currentTrack?.title]);
 
+  const closeHeaderSurfaces = useCallback((except = null) => {
+    if (except !== 'tips') setIsTipsOverlayOpen(false);
+    if (except !== 'shortcuts') {
+      setIsShortcutSettingsOpen(false);
+      setShortcutSettingsError('');
+    }
+    if (except !== 'diagnostics') setIsDiagnosticsOpen(false);
+    if (except !== 'looks') setIsLooksPanelOpen(false);
+    if (except !== 'sleep') setIsSleepTimerMenuOpen(false);
+  }, []);
+
   const openTipsOverlay = useCallback(() => {
+    closeHeaderSurfaces('tips');
     setTipsDontShowAgain(hideFirstRunTips);
     setIsTipsOverlayOpen(true);
-  }, [hideFirstRunTips]);
+  }, [closeHeaderSurfaces, hideFirstRunTips]);
 
   const persistHideFirstRunTips = useCallback((nextHideFirstRunTips) => {
     const nextValue = Boolean(nextHideFirstRunTips);
@@ -1178,10 +1275,11 @@ function App() {
   }, [persistHideFirstRunTips, tipsDontShowAgain]);
 
   const openShortcutSettings = useCallback(() => {
+    closeHeaderSurfaces('shortcuts');
     setShortcutSettingsError('');
     setShortcutDraft(shortcuts);
     setIsShortcutSettingsOpen(true);
-  }, [shortcuts]);
+  }, [closeHeaderSurfaces, shortcuts]);
 
   const closeShortcutSettings = useCallback(() => {
     setIsShortcutSettingsOpen(false);
@@ -2110,6 +2208,7 @@ function App() {
       auraPreset,
       isVerticalStack,
       isFocusedMode,
+      miniPlayerInfoMode,
       isAutoplayEnabled,
       autoplayMoodMode,
       isDoodleMode,
@@ -2127,7 +2226,7 @@ function App() {
     } catch (e) {
       console.warn('[Aether/Session] Failed to persist UI prefs', e);
     }
-  }, [isStandalone, visualizerMode, auraPreset, isVerticalStack, isFocusedMode, isAutoplayEnabled, autoplayMoodMode, isDoodleMode, doodleIntensity, hideFirstRunTips]);
+  }, [isStandalone, visualizerMode, auraPreset, isVerticalStack, isFocusedMode, miniPlayerInfoMode, isAutoplayEnabled, autoplayMoodMode, isDoodleMode, doodleIntensity, hideFirstRunTips]);
 
   useEffect(() => {
     if (!sessionReadyRef.current) return;
@@ -2178,6 +2277,9 @@ function App() {
           }
           if (typeof savedUiPrefs.isVerticalStack === 'boolean') setIsVerticalStack(savedUiPrefs.isVerticalStack);
           if (typeof savedUiPrefs.isFocusedMode === 'boolean') setIsFocusedMode(savedUiPrefs.isFocusedMode);
+          if (typeof savedUiPrefs.miniPlayerInfoMode === 'string' && ['artist', 'lyric'].includes(savedUiPrefs.miniPlayerInfoMode)) {
+            setMiniPlayerInfoMode(savedUiPrefs.miniPlayerInfoMode);
+          }
           if (typeof savedUiPrefs.isAutoplayEnabled === 'boolean') setIsAutoplayEnabled(savedUiPrefs.isAutoplayEnabled);
           if (typeof savedUiPrefs.autoplayMoodMode === 'string' && AUTOPLAY_MOOD_MODES.some((m) => m.id === savedUiPrefs.autoplayMoodMode)) {
             setAutoplayMoodMode(savedUiPrefs.autoplayMoodMode);
@@ -2308,6 +2410,9 @@ function App() {
           }
           if (typeof savedUiPrefs.isVerticalStack === 'boolean') setIsVerticalStack(savedUiPrefs.isVerticalStack);
           if (typeof savedUiPrefs.isFocusedMode === 'boolean') setIsFocusedMode(savedUiPrefs.isFocusedMode);
+          if (typeof savedUiPrefs.miniPlayerInfoMode === 'string' && ['artist', 'lyric'].includes(savedUiPrefs.miniPlayerInfoMode)) {
+            setMiniPlayerInfoMode(savedUiPrefs.miniPlayerInfoMode);
+          }
           if (typeof savedUiPrefs.isAutoplayEnabled === 'boolean') setIsAutoplayEnabled(savedUiPrefs.isAutoplayEnabled);
           if (typeof savedUiPrefs.autoplayMoodMode === 'string' && AUTOPLAY_MOOD_MODES.some((m) => m.id === savedUiPrefs.autoplayMoodMode)) {
             setAutoplayMoodMode(savedUiPrefs.autoplayMoodMode);
@@ -4118,7 +4223,6 @@ function App() {
   useEffect(() => {
     const SEQUENCE = 'mixtape';
     const handleKeyDown = (e) => {
-      if (e.key === 'Escape' && isLyricsExpanded) { setIsLyricsExpanded(false); return; }
       const tag = document.activeElement?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
@@ -4134,7 +4238,7 @@ function App() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isLyricsExpanded]);
+  }, []);
 
   const updateDiscordRichPresence = async (track, playbackMs = 0) => {
     if (!discordSdkRef.current) return;
@@ -4225,6 +4329,35 @@ function App() {
       console.warn('[Aether/Diagnostics] engine status fetch failed', e);
     }
   }, [isStandalone]);
+
+  const handleImportCookies = useCallback(async () => {
+    if (!isStandalone || !window.aether?.importCookies) return;
+    try {
+      const res = await window.aether.importCookies();
+      if (res?.canceled) return;
+      await refreshEngineStatus();
+
+      if (res?.success) {
+        const audit = res?.cookieAudit;
+        const message = audit?.valid
+          ? `Cookies imported • ${audit.summary || 'format looks valid'}`
+          : `Cookies imported • ${audit?.summary || 'please verify the file format'}`;
+        setLastAdded(message);
+        setTimeout(() => setLastAdded(null), 2800);
+        if (audit?.valid) {
+          setOauthPrompt(null);
+        }
+        return;
+      }
+
+      setLastAdded(`Cookie import failed${res?.error ? `: ${String(res.error).slice(0, 42)}` : ''}`);
+      setTimeout(() => setLastAdded(null), 2800);
+    } catch (e) {
+      console.warn('[Aether/Cookies] import failed', e);
+      setLastAdded('Cookie import failed');
+      setTimeout(() => setLastAdded(null), 2500);
+    }
+  }, [isStandalone, refreshEngineStatus]);
 
   const applyStoragePolicy = useCallback(async (nextPolicy) => {
     if (!isStandalone || !window.aether?.updateStoragePolicy) return;
@@ -4551,27 +4684,148 @@ function App() {
     }
   };
 
+  const closeTopmostOverlay = useCallback(() => {
+    if (oauthPrompt) {
+      setOauthPrompt(null);
+      return true;
+    }
+    if (isShortcutSettingsOpen) {
+      closeShortcutSettings();
+      return true;
+    }
+    if (isTipsOverlayOpen) {
+      closeTipsOverlay();
+      return true;
+    }
+    if (isSharedSceneOpen) {
+      setIsSharedSceneOpen(false);
+      return true;
+    }
+    if (isLibraryOverlayOpen) {
+      setIsLibraryOverlayOpen(false);
+      setLibraryActionTarget(null);
+      return true;
+    }
+    if (isPlayerOverlayOpen) {
+      setIsPlayerOverlayOpen(false);
+      return true;
+    }
+    if (isViewingFullPlaylist) {
+      setIsViewingFullPlaylist(null);
+      return true;
+    }
+    if (isViewingFullQueue) {
+      setIsViewingFullQueue(false);
+      return true;
+    }
+    if (isViewingFullDiscovery) {
+      setIsViewingFullDiscovery(false);
+      return true;
+    }
+    if (isMixtapeVaultOpen) {
+      setIsMixtapeVaultOpen(false);
+      return true;
+    }
+    if (isManualLyricsRawEditorOpen) {
+      setIsManualLyricsRawEditorOpen(false);
+      return true;
+    }
+    if (isManualLyricsEditorOpen) {
+      setIsManualLyricsEditorOpen(false);
+      return true;
+    }
+    if (isLockModalOpen && !isLockBusy) {
+      setIsLockModalOpen(false);
+      return true;
+    }
+    if (isSpotifyImportOpen && !isSpotifyImporting) {
+      setIsSpotifyImportOpen(false);
+      return true;
+    }
+    if (isMiniQueuePeekOpen) {
+      setIsMiniQueuePeekOpen(false);
+      return true;
+    }
+    if (activeMenuTrack) {
+      setActiveMenuTrack(null);
+      return true;
+    }
+    if (isAutoplayMenuOpen) {
+      setIsAutoplayMenuOpen(false);
+      return true;
+    }
+    if (isSleepTimerMenuOpen || isLooksPanelOpen || isDiagnosticsOpen) {
+      closeHeaderSurfaces();
+      return true;
+    }
+    if (isLyricsExpanded) {
+      setIsLyricsExpanded(false);
+      return true;
+    }
+    if (videoMode === 'cinema') {
+      exitVideoMode();
+      return true;
+    }
+    return false;
+  }, [
+    activeMenuTrack,
+    closeHeaderSurfaces,
+    closeShortcutSettings,
+    closeTipsOverlay,
+    exitVideoMode,
+    isAutoplayMenuOpen,
+    isDiagnosticsOpen,
+    isLibraryOverlayOpen,
+    isLockBusy,
+    isLockModalOpen,
+    isLooksPanelOpen,
+    isLyricsExpanded,
+    isManualLyricsEditorOpen,
+    isManualLyricsRawEditorOpen,
+    isMiniQueuePeekOpen,
+    isMixtapeVaultOpen,
+    isPlayerOverlayOpen,
+    isSharedSceneOpen,
+    isShortcutSettingsOpen,
+    isSleepTimerMenuOpen,
+    isSpotifyImportOpen,
+    isSpotifyImporting,
+    isTipsOverlayOpen,
+    isViewingFullDiscovery,
+    isViewingFullPlaylist,
+    isViewingFullQueue,
+    oauthPrompt,
+    videoMode,
+  ]);
+
   useEffect(() => {
     const onKeyDown = (e) => {
-      if (e.key === 'Escape' && isDiagnosticsOpen) setIsDiagnosticsOpen(false);
-      if (e.key === 'Escape' && isManualLyricsEditorOpen) setIsManualLyricsEditorOpen(false);
-      if (e.key === 'Escape' && isLooksPanelOpen) setIsLooksPanelOpen(false);
+      if (e.key !== 'Escape') return;
+      if (!closeTopmostOverlay()) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === 'function') {
+        e.stopImmediatePropagation();
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isDiagnosticsOpen, isManualLyricsEditorOpen, isLooksPanelOpen]);
+  }, [closeTopmostOverlay]);
 
   useEffect(() => {
-    if (!isLooksPanelOpen) return;
+    if (!isLooksPanelOpen && !isSleepTimerMenuOpen) return;
     const onPointerDown = (event) => {
-      if (!looksPanelRef.current) return;
-      if (!looksPanelRef.current.contains(event.target)) {
+      const target = event.target;
+      if (isLooksPanelOpen && looksPanelRef.current && !looksPanelRef.current.contains(target)) {
         setIsLooksPanelOpen(false);
+      }
+      if (isSleepTimerMenuOpen && sleepTimerMenuRef.current && !sleepTimerMenuRef.current.contains(target)) {
+        setIsSleepTimerMenuOpen(false);
       }
     };
     window.addEventListener('pointerdown', onPointerDown);
     return () => window.removeEventListener('pointerdown', onPointerDown);
-  }, [isLooksPanelOpen]);
+  }, [isLooksPanelOpen, isSleepTimerMenuOpen]);
 
   useEffect(() => {
     if (!isStandalone) return;
@@ -4906,7 +5160,7 @@ function App() {
       setIsAutoplaySeeking(false);
     }
   };
-    const handleSetSleepTimer = useCallback((minutes) => {
+  const handleSetSleepTimer = useCallback((minutes) => {
       const nextVal = Number(minutes) || 0;
       setSleepTimerValue(nextVal);
       if (nextVal <= 0) {
@@ -5314,16 +5568,50 @@ function App() {
       if (isMiniPlayer) {
           await window.aether.resizeWindow(1160, 780, false);
           setIsMiniPlayer(false);
+          setIsMiniQueuePeekOpen(false);
       } else {
           exitVideoMode(); // exit video mode clean when going mini
-          await window.aether.resizeWindow(isMacPlatform ? 560 : 540, isMacPlatform ? 276 : 260, true);
+          await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+          await window.aether.resizeWindow(isMacPlatform ? 664 : 648, isMacPlatform ? 236 : 228, true);
           setIsMiniPlayer(true);
+          setIsMiniQueuePeekOpen(false);
       }
   }, [isMiniPlayer, isStandalone, isMacPlatform, exitVideoMode]);
 
+  const toggleFocusMode = useCallback(() => {
+    if (videoMode === 'dual') return;
+    setIsFocusedMode((prev) => !prev);
+  }, [videoMode]);
+
   const toggleDiagnostics = useCallback(() => {
-    setIsDiagnosticsOpen(prev => !prev);
-  }, []);
+    setIsDiagnosticsOpen((prev) => {
+      const next = !prev;
+      if (next) closeHeaderSurfaces('diagnostics');
+      return next;
+    });
+  }, [closeHeaderSurfaces]);
+
+  const toggleLooksPanel = useCallback(() => {
+    setIsLooksPanelOpen((prev) => {
+      const next = !prev;
+      if (next) closeHeaderSurfaces('looks');
+      return next;
+    });
+  }, [closeHeaderSurfaces]);
+
+  const toggleSleepTimerMenu = useCallback(() => {
+    setIsSleepTimerMenuOpen((prev) => {
+      const next = !prev;
+      if (next) closeHeaderSurfaces('sleep');
+      return next;
+    });
+  }, [closeHeaderSurfaces]);
+
+  useEffect(() => {
+    if (!isMiniPlayer || !currentTrack || queue.length <= 1) {
+      setIsMiniQueuePeekOpen(false);
+    }
+  }, [isMiniPlayer, currentTrack, queue.length]);
 
   const toggleWindowMaximize = useCallback(async () => {
     if (!isStandalone || !window.aether?.toggleWindowMaximize) return;
@@ -5386,6 +5674,32 @@ function App() {
     setTimeout(() => setLastAdded(null), 2200);
   }, [currentTrack?.actualUrl, currentTrack?.title, currentTrack?.url, getActivePlaybackPositionMs, isStandalone, stopVideoElement]);
 
+  const handleRunRuntimeRepair = useCallback(async () => {
+    if (!isStandalone) return;
+    setIsRuntimeRepairing(true);
+    try {
+      const repairResult = await window.aether?.repairRuntime?.();
+      if (currentTrack?.actualUrl || currentTrack?.url) {
+        handleResetPlaybackEngine();
+      }
+      await refreshEngineStatus();
+      await refreshStorageStats();
+      await refreshStorageEstimate();
+      await refreshOfflineDownloads();
+
+      const notes = Array.isArray(repairResult?.notes) ? repairResult.notes.filter(Boolean) : [];
+      const summary = notes[0] || 'Runtime repair complete';
+      setLastAdded(summary);
+      setTimeout(() => setLastAdded(null), 3200);
+    } catch (e) {
+      console.warn('[Aether/Diagnostics] runtime repair failed', e);
+      setLastAdded('Runtime repair failed');
+      setTimeout(() => setLastAdded(null), 2800);
+    } finally {
+      setIsRuntimeRepairing(false);
+    }
+  }, [currentTrack?.actualUrl, currentTrack?.url, handleResetPlaybackEngine, isStandalone, refreshEngineStatus, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats]);
+
   useEffect(() => {
     const isTypingTarget = (el) => {
       if (!el) return false;
@@ -5394,19 +5708,23 @@ function App() {
     };
 
     const onShortcut = (e) => {
-      if (isTipsOverlayOpen) {
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          closeTipsOverlay();
-        }
-        return;
-      }
-
-      if (isShortcutSettingsOpen) {
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          closeShortcutSettings();
-        }
+      const hasBlockingOverlayOpen = Boolean(
+        oauthPrompt
+        || isTipsOverlayOpen
+        || isShortcutSettingsOpen
+        || isLockModalOpen
+        || isSpotifyImportOpen
+        || isLibraryOverlayOpen
+        || isPlayerOverlayOpen
+        || isViewingFullQueue
+        || isViewingFullDiscovery
+        || isViewingFullPlaylist
+        || isSharedSceneOpen
+        || isMixtapeVaultOpen
+        || isManualLyricsEditorOpen
+        || isManualLyricsRawEditorOpen
+      );
+      if (hasBlockingOverlayOpen) {
         return;
       }
 
@@ -5457,6 +5775,16 @@ function App() {
         handleControl('mute');
         return;
       }
+      if (isShortcutEventMatch(e, shortcuts.clearQueue, isMacPlatform)) {
+        e.preventDefault();
+        handleControl('clear');
+        return;
+      }
+      if (isShortcutEventMatch(e, shortcuts.focusMode, isMacPlatform)) {
+        e.preventDefault();
+        toggleFocusMode();
+        return;
+      }
       if (isStandalone && isShortcutEventMatch(e, shortcuts.miniPlayer, isMacPlatform)) {
         e.preventDefault();
         toggleMiniPlayer();
@@ -5470,7 +5798,7 @@ function App() {
 
     window.addEventListener('keydown', onShortcut);
     return () => window.removeEventListener('keydown', onShortcut);
-  }, [isStandalone, isPlaying, isTipsOverlayOpen, isShortcutSettingsOpen, shortcuts, isMacPlatform, toggleMiniPlayer, toggleDiagnostics, handleControl, closeTipsOverlay, closeShortcutSettings]);
+  }, [handleControl, isLibraryOverlayOpen, isLockModalOpen, isMacPlatform, isManualLyricsEditorOpen, isManualLyricsRawEditorOpen, isMixtapeVaultOpen, isPlayerOverlayOpen, isPlaying, isShortcutSettingsOpen, isSharedSceneOpen, isSpotifyImportOpen, isStandalone, isTipsOverlayOpen, isViewingFullDiscovery, isViewingFullPlaylist, isViewingFullQueue, oauthPrompt, shortcuts, toggleDiagnostics, toggleFocusMode, toggleMiniPlayer]);
 
   if (loading) return (
     <div className="h-screen w-full bg-[#0a0a0a] flex flex-col items-center justify-center gap-6 p-6 text-center">
@@ -5536,166 +5864,232 @@ function App() {
     const miniProgressPct = miniDurationMs > 0 ? clamp01(currentTime / miniDurationMs) * 100 : 0;
     const miniTitle = currentTrack?.title || '';
     const miniArtist = currentTrack?.author || '';
-    const miniTitleMarquee = miniTitle.length > 32;
+    const miniTitleMarquee = miniTitle.length > 34;
     const miniProgressSafePct = Number.isFinite(miniProgressPct) ? miniProgressPct : 0;
+    const miniUpcomingQueue = queue.slice(1, 4);
+    const miniQueueCount = Math.max(0, queue.length - 1);
+    const miniShowingLyric = miniPlayerInfoMode === 'lyric' && Boolean(compactLyric);
+    const miniMetaEyebrow = miniShowingLyric ? 'Live lyric' : 'Artist';
+    const miniMetaLine = miniShowingLyric ? compactLyric : (miniArtist || 'Unknown artist');
 
      return (
-        <div className={`w-[100vw] h-[100vh] bg-[#040607] overflow-hidden drag relative ${isMacPlatform ? 'pt-7' : 'pt-0'}`}>
+        <div className={`w-[100vw] h-[100vh] bg-[#040607] overflow-hidden drag relative ${desktopTopInsetClass}`}>
           {/* Ambient glow from album art color */}
-          <div className="absolute -top-24 -left-20 w-72 h-72 rounded-full blur-[80px] opacity-30 pointer-events-none" style={{ background: `${themeColor}55` }} />
-          <div className="absolute -bottom-24 -right-20 w-80 h-80 rounded-full blur-[80px] opacity-20 pointer-events-none" style={{ background: `${themeColor}33` }} />
+          <div className="absolute -top-20 left-8 h-40 w-40 rounded-full blur-[78px] opacity-28 pointer-events-none" style={{ background: `${themeColor}50` }} />
+          <div className="absolute -bottom-12 right-8 h-36 w-36 rounded-full blur-[72px] opacity-20 pointer-events-none" style={{ background: `${themeColor}32` }} />
 
-          <div className="w-full h-full bg-[#090d12]/90 backdrop-blur-2xl flex flex-col relative z-10 overflow-hidden">
+          <div className="w-full h-full bg-[#090d12]/92 backdrop-blur-2xl flex flex-col relative z-10 overflow-hidden">
+            <div className="flex items-center justify-between gap-2 border-b border-white/[0.07] px-3.5 py-2 no-drag">
+              <div className="flex min-w-0 items-center gap-2.5">
+                <span className={`h-2 w-2 rounded-full transition-all flex-none ${isPlaying ? 'bg-brand-accent shadow-[0_0_10px_rgba(0,255,191,0.88)]' : 'bg-white/25'}`} />
+                <div className="min-w-0">
+                  <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent/80">Aether Dock</div>
+                </div>
+                <button
+                  onClick={() => miniQueueCount > 0 && setIsMiniQueuePeekOpen((prev) => !prev)}
+                  disabled={miniQueueCount === 0}
+                  className={`flex items-center gap-1 rounded-full border px-2 py-1 text-[9px] font-black uppercase tracking-[0.18em] transition-all ${miniQueueCount > 0 ? 'border-white/10 bg-white/[0.04] text-white/55 hover:border-brand-accent/40 hover:text-brand-accent' : 'border-white/6 bg-white/[0.03] text-white/25 cursor-default'}`}
+                  title={miniQueueCount > 0 ? 'Peek upcoming queue' : 'No queued tracks'}
+                >
+                  <ListMusic size={11} />
+                  <span>{miniQueueCount}</span>
+                </button>
+              </div>
 
-           {/* ── Header bar ── */}
-           <div className="flex items-center justify-between px-4 py-2.5 no-drag border-b border-white/[0.06] flex-none">
-             <div className="flex items-center gap-2">
-               <span className={`w-2 h-2 rounded-full transition-all ${isPlaying ? 'bg-brand-accent shadow-[0_0_8px_rgba(0,255,191,0.9)]' : 'bg-white/30'}`} />
-               <span className="text-[10px] font-black uppercase tracking-[0.25em] text-brand-accent/80">Aether</span>
-               {queue.length > 1 && <span className="text-[9px] font-bold text-white/35 tracking-widest uppercase">+{Math.max(0, queue.length - 1)} queued</span>}
-             </div>
-             <button
-               onClick={toggleMiniPlayer}
-               className="no-drag flex items-center gap-1.5 px-3 h-7 rounded-lg border border-white/10 bg-white/[0.04] hover:border-brand-accent/40 hover:bg-brand-accent/10 hover:text-brand-accent text-white/50 transition-all text-[10px] font-bold uppercase tracking-widest"
-               title="Expand to full studio"
-             >
-               <AppWindow size={11} />
-               <span>Studio</span>
-             </button>
-           </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setMiniPlayerInfoMode((prev) => (prev === 'artist' ? 'lyric' : 'artist'))}
+                  className={`flex h-8 w-8 items-center justify-center rounded-xl border transition-all no-drag ${miniShowingLyric ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/50 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                  title={miniShowingLyric ? 'Show artist details' : 'Show live lyric line'}
+                >
+                  <BookOpen size={13} />
+                </button>
+                <button
+                  onClick={toggleMiniPlayer}
+                  className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.04] px-3 h-8 text-[10px] font-black uppercase tracking-[0.2em] text-white/55 transition-all no-drag hover:border-brand-accent/40 hover:bg-brand-accent/8 hover:text-brand-accent"
+                  title="Expand to full studio"
+                >
+                  <AppWindow size={12} />
+                  <span>Studio</span>
+                </button>
+              </div>
+            </div>
 
-           {/* ── Main content ── */}
-           {currentTrack ? (
-             <div className="flex-1 flex gap-3 p-3 min-h-0">
+            <div className="relative flex-1 min-h-0">
+              {currentTrack ? (
+                <>
+                  {isMiniQueuePeekOpen && (
+                    <div className="absolute inset-x-3 top-3 z-20 rounded-[1.4rem] border border-white/10 bg-[#071015]/96 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-2xl no-drag">
+                      <div className="mb-2 flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-[9px] font-black uppercase tracking-[0.24em] text-brand-accent/75">Queue Peek</div>
+                          <div className="mt-1 text-[10px] text-white/38">{miniQueueCount} track{miniQueueCount === 1 ? '' : 's'} waiting in line</div>
+                        </div>
+                        <button
+                          onClick={() => setIsMiniQueuePeekOpen(false)}
+                          className="flex h-8 w-8 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-white/45 transition-all hover:border-white/25 hover:text-white"
+                          title="Close queue peek"
+                        >
+                          <X size={13} />
+                        </button>
+                      </div>
+                      <div className="space-y-2">
+                        {miniUpcomingQueue.length > 0 ? miniUpcomingQueue.map((track, index) => (
+                          <div key={`${track.id || track.title}-${index}`} className="flex items-center gap-3 rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-2">
+                            <div className="flex h-7 w-7 items-center justify-center rounded-xl border border-brand-accent/20 bg-brand-accent/10 text-[9px] font-black text-brand-accent">
+                              {index + 1}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="truncate text-[11px] font-black uppercase tracking-tight text-white/86">{track.title}</div>
+                              <div className="truncate text-[9px] uppercase tracking-[0.18em] text-brand-accent/60">{track.author || 'Unknown artist'}</div>
+                            </div>
+                          </div>
+                        )) : (
+                          <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] px-3 py-4 text-center text-[10px] uppercase tracking-[0.2em] text-white/35">
+                            Nothing queued yet
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
-               {/* Album Art */}
-               <div className="relative flex-none">
-                 <img
-                   src={getProxyUrl(currentTrack.thumbnail)}
-                   className="w-[88px] h-[88px] object-cover rounded-2xl shadow-[0_10px_30px_rgba(0,0,0,0.7)] border border-white/10"
-                   alt=""
-                 />
-                 {isAudioBuffering && (
-                   <div className="absolute inset-0 rounded-2xl bg-black/60 flex items-center justify-center">
-                     <Loader2 size={20} className="animate-spin text-brand-accent" />
-                   </div>
-                 )}
-               </div>
+                  <div className={`flex h-full flex-col justify-between px-3.5 py-3 transition-all duration-200 ${isMiniQueuePeekOpen ? 'opacity-35 blur-[2px]' : 'opacity-100'}`}>
+                    <div className="flex min-h-0 items-center gap-3">
+                      <button
+                        onClick={toggleMiniPlayer}
+                        className="relative h-[74px] w-[74px] flex-none overflow-hidden rounded-[1.3rem] border border-white/10 shadow-[0_12px_32px_rgba(0,0,0,0.45)] no-drag"
+                        title="Open in Studio"
+                      >
+                        <img
+                          src={getProxyUrl(currentTrack.thumbnail)}
+                          className="h-full w-full object-cover"
+                          alt=""
+                        />
+                        {isAudioBuffering && (
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/55">
+                            <Loader2 size={18} className="animate-spin text-brand-accent" />
+                          </div>
+                        )}
+                      </button>
 
-               {/* Right side */}
-               <div className="flex flex-col flex-1 min-w-0 justify-between">
+                      <div className="flex min-w-0 flex-1 flex-col gap-2">
+                        <button onClick={toggleMiniPlayer} className="min-w-0 text-left no-drag" title="Open in Studio">
+                          {miniTitleMarquee ? (
+                            <div className="overlay-marquee">
+                              <div className="overlay-marquee-track text-[15px] font-black uppercase tracking-tight text-white leading-tight">
+                                <span>{miniTitle}</span>
+                                <span aria-hidden="true">{miniTitle}</span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="truncate text-[15px] font-black uppercase tracking-tight text-white leading-tight">{miniTitle}</div>
+                          )}
+                          <div className="mt-1 flex min-w-0 items-center gap-2">
+                            <span className="rounded-full border border-brand-accent/18 bg-brand-accent/10 px-2 py-0.5 text-[8px] font-black uppercase tracking-[0.18em] text-brand-accent/76">
+                              {miniMetaEyebrow}
+                            </span>
+                            <div className={`min-w-0 truncate text-[11px] ${miniShowingLyric ? 'text-white/58 italic' : 'text-white/46'}`}>
+                              {miniMetaLine}
+                            </div>
+                          </div>
+                        </button>
 
-                 {/* Track info */}
-                 <div className="min-w-0">
-                   {miniTitleMarquee ? (
-                     <div className="overlay-marquee">
-                       <div className="overlay-marquee-track text-[14px] font-bold text-white leading-tight">
-                         <span>{miniTitle}</span>
-                         <span aria-hidden="true">{miniTitle}</span>
-                       </div>
-                     </div>
-                   ) : (
-                     <div className="text-[14px] font-bold text-white leading-tight truncate">{miniTitle}</div>
-                   )}
-                   <div className="text-[11px] text-white/50 truncate mt-0.5">{miniArtist}</div>
-                 </div>
+                        <div className="space-y-1.5 no-drag">
+                          <div
+                            className={`relative h-1.5 overflow-hidden rounded-full bg-white/10 ${miniDurationMs > 0 ? 'cursor-pointer' : 'cursor-default'}`}
+                            onClick={(e) => {
+                              if (miniDurationMs <= 0) return;
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              const pos = (e.clientX - rect.left) / rect.width;
+                              handleSeek(pos * miniDurationMs);
+                            }}
+                          >
+                            <div
+                              className="absolute inset-y-0 left-0 rounded-full transition-all"
+                              style={{ width: `${miniProgressSafePct}%`, background: themeColor, boxShadow: `0 0 10px ${themeColor}88` }}
+                            />
+                          </div>
+                          <div className="flex items-center justify-between gap-3 text-[9px] font-mono text-white/36">
+                            <span>{formatTime(currentTime)}</span>
+                            <span className="truncate uppercase tracking-[0.18em] text-white/22">{miniQueueCount > 0 ? `${miniQueueCount} up next` : 'Live audio'}</span>
+                            <span>{formatTime(miniDurationMs)}</span>
+                          </div>
+                        </div>
+                      </div>
 
-                 {/* Lyric pill */}
-                 {compactLyric && (
-                   <div className="text-[10px] italic text-white/55 leading-snug line-clamp-1 border-l-2 pl-2" style={{ borderColor: `${themeColor}88` }}>
-                     {compactLyric}
-                   </div>
-                 )}
+                      <div className="flex items-center gap-1.5 no-drag">
+                        <button
+                          onClick={() => handleControl('previous')}
+                          className="flex h-9 w-9 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent active:scale-95"
+                          title="Previous"
+                        >
+                          <Rewind size={15} fill="currentColor" />
+                        </button>
+                        <button
+                          onClick={() => handleControl(isPlaying ? 'pause' : 'resume')}
+                          className="flex h-12 w-12 items-center justify-center rounded-[1.1rem] text-black shadow-[0_0_18px_rgba(0,255,191,0.34)] transition-all hover:scale-[1.03] active:scale-95"
+                          style={{ background: themeColor }}
+                          title={isPlaying ? 'Pause' : 'Play'}
+                        >
+                          {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="ml-0.5" />}
+                        </button>
+                        <button
+                          onClick={() => handleControl('skip')}
+                          className="flex h-9 w-9 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent active:scale-95"
+                          title="Next"
+                        >
+                          <FastForward size={15} fill="currentColor" />
+                        </button>
+                      </div>
+                    </div>
 
-                 {/* Progress bar */}
-                 <div>
-                   <div
-                     className="h-1.5 w-full bg-white/10 rounded-full overflow-hidden relative no-drag cursor-pointer"
-                     onClick={(e) => {
-                       const rect = e.currentTarget.getBoundingClientRect();
-                       const pos = (e.clientX - rect.left) / rect.width;
-                       handleSeek(pos * miniDurationMs);
-                     }}
-                   >
-                     <div
-                       className="absolute inset-y-0 left-0 rounded-full transition-all"
-                       style={{ width: `${miniProgressSafePct}%`, background: themeColor, boxShadow: `0 0 8px ${themeColor}99` }}
-                     />
-                   </div>
-                   <div className="flex items-center justify-between mt-1 text-[9px] font-mono text-white/35">
-                     <span>{formatTime(currentTime)}</span>
-                     <span>{formatTime(miniDurationMs)}</span>
-                   </div>
-                 </div>
-               </div>
-             </div>
-           ) : (
-             <div className="flex-1 flex flex-col items-center justify-center gap-2 text-white/35">
-               <button className="absolute top-2 right-2 p-1.5 text-white/25 hover:text-brand-accent no-drag cursor-pointer transition-colors" onClick={toggleMiniPlayer} title="Expand">
-                 <AppWindow size={13} />
-               </button>
-               <Music size={20} className="text-brand-accent/50" />
-               <span className="text-[10px] uppercase tracking-widest">No signal</span>
-             </div>
-           )}
-
-           {/* ── Transport bar ── */}
-           {currentTrack && (
-             <div className="flex items-center justify-between px-4 pb-3 pt-1 no-drag flex-none">
-               <div className="flex items-center gap-2">
-                 <button
-                   onClick={() => handleControl('previous')}
-                   className="w-8 h-8 rounded-full bg-white/[0.05] border border-white/10 hover:border-brand-accent/40 hover:text-brand-accent text-white/60 transition-all active:scale-90 flex items-center justify-center"
-                   title="Previous"
-                 >
-                   <Rewind size={13} fill="currentColor" />
-                 </button>
-                 <button
-                   onClick={() => handleControl(isPlaying ? 'pause' : 'resume')}
-                   className="w-11 h-11 rounded-full text-black flex items-center justify-center transition-all active:scale-95 shadow-[0_0_18px_rgba(0,255,191,0.4)] hover:scale-105"
-                   style={{ background: themeColor }}
-                   title={isPlaying ? 'Pause' : 'Play'}
-                 >
-                   {isPlaying ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" className="ml-0.5" />}
-                 </button>
-                 <button
-                   onClick={() => handleControl('skip')}
-                   className="w-8 h-8 rounded-full bg-white/[0.05] border border-white/10 hover:border-brand-accent/40 hover:text-brand-accent text-white/60 transition-all active:scale-90 flex items-center justify-center"
-                   title="Next"
-                 >
-                   <FastForward size={13} fill="currentColor" />
-                 </button>
-               </div>
-               <div className="flex items-center gap-2 text-white/45">
-                 <button onClick={() => handleControl('mute')} className="hover:text-brand-accent transition-colors active:scale-90" title="Mute">
-                   {volume === 0 ? <VolumeX size={13} /> : <Volume2 size={13} />}
-                 </button>
-                 <input
-                   type="range"
-                   min="0" max="1" step="0.01"
-                   value={volume}
-                   onChange={(e) => {
-                     const next = parseFloat(e.target.value);
-                     setVolume(next);
-                     if (localAudioRef.current) localAudioRef.current.volume = next;
-                     if (isStandalone) window.aether?.store?.set('volume', next);
-                   }}
-                   className="w-20 h-1 no-drag mini-volume-slider"
-                   title="Volume"
-                 />
-               </div>
-             </div>
-           )}
-
+                    <div className="mt-3 flex items-center gap-2 px-0.5 no-drag">
+                      <button onClick={() => handleControl('mute')} className="flex h-8 w-8 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-white/50 transition-all hover:border-brand-accent/35 hover:text-brand-accent" title="Mute">
+                        {volume === 0 ? <VolumeX size={13} /> : <Volume2 size={13} />}
+                      </button>
+                      <input
+                        type="range"
+                        min="0" max="1" step="0.01"
+                        value={volume}
+                        onChange={(e) => {
+                          const next = parseFloat(e.target.value);
+                          setVolume(next);
+                          if (localAudioRef.current) localAudioRef.current.volume = next;
+                          if (isStandalone) window.aether?.store?.set('volume', next);
+                        }}
+                        className="mini-volume-slider h-1 w-full"
+                        title="Volume"
+                      />
+                      <div className="w-10 text-right text-[9px] font-black uppercase tracking-[0.16em] text-brand-accent/70">
+                        {Math.round(volume * 100)}%
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-white/35">
+                  <Music size={18} className="text-brand-accent/50" />
+                  <div className="text-[10px] font-black uppercase tracking-[0.24em]">No signal</div>
+                  <button
+                    onClick={toggleMiniPlayer}
+                    className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/55 transition-all hover:border-brand-accent/35 hover:text-brand-accent no-drag"
+                  >
+                    Open Studio
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
      );
   }
 
   const isAuraMode = visualizerMode === 'pulse';
+  const headerZClass = videoMode === 'cinema' ? 'z-[120]' : 'z-[220]';
+  const headerInsetClass = isMacPlatform ? 'pl-20' : 'pl-4';
   const topHeaderClass = isAuraMode
-    ? 'h-16 md:h-16 border-b border-white/[0.12] bg-[#07090c]/70 backdrop-blur-3xl shadow-[0_10px_40px_rgba(0,0,0,0.35)] z-50 px-4 pl-20 flex flex-row items-center justify-between gap-4 compact-header drag flex-none'
-    : 'h-16 md:h-16 border-b border-white/5 bg-[#0a0a0a]/90 backdrop-blur-3xl z-50 px-4 pl-20 flex flex-row items-center justify-between gap-4 compact-header drag flex-none';
+    ? `h-[72px] border-b border-white/[0.12] bg-[#07090c]/72 backdrop-blur-3xl shadow-[0_10px_40px_rgba(0,0,0,0.35)] ${headerZClass} px-4 md:px-6 ${headerInsetClass} flex flex-row items-center justify-between gap-4 drag flex-none relative`
+    : `h-[72px] border-b border-white/8 bg-[#0a0f12]/86 backdrop-blur-3xl ${headerZClass} px-4 md:px-6 ${headerInsetClass} flex flex-row items-center justify-between gap-4 drag flex-none relative`;
   const panelGlassClass = isAuraMode
     ? 'bg-white/[0.015] border-white/[0.12] backdrop-blur-[26px] shadow-[0_20px_80px_rgba(0,0,0,0.28)]'
     : 'bg-white/[0.03] border-white/5';
@@ -5726,17 +6120,41 @@ function App() {
   const diagnosticsApiBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
   const queuePollDisplay = isStandalone ? 'local' : `${diagnostics.lastQueueFetchMs ?? '—'}ms`;
   const queuePollTime = isStandalone ? 'direct engine' : formatDiagTime(diagnostics.lastQueueFetchAt);
+  const cookieAudit = engineStatus?.cookieAudit || null;
+  const cookieStatusLabel = !engineStatus
+    ? 'CHECKING'
+    : !engineStatus.cookiesReady
+      ? 'NOT LOADED'
+      : cookieAudit?.valid
+        ? 'VALID LOOKING'
+        : 'CHECK FILE';
+  const cookieStatusTone = !engineStatus
+    ? 'text-white/60'
+    : !engineStatus.cookiesReady
+      ? 'text-white/60'
+      : cookieAudit?.valid
+        ? 'text-brand-accent'
+        : 'text-yellow-400';
+  const cookieDetailLine = cookieAudit?.summary || engineStatus?.cookiesPath || 'anonymous requests only';
+  const repairActionLabel = isRuntimeRepairing ? 'Repairing…' : 'Repair Runtime';
   const doodleIntensityScale = doodleIntensity === 'subtle' ? 0.75 : doodleIntensity === 'dreamy' ? 1.35 : 1;
   const doodleIntensityBadge = doodlePresetConfig.badge;
+  const workspaceModeLabel = isFocusedMode ? 'Focus' : isVerticalStack ? 'Stack' : 'Studio';
+  const playbackModeLabel = videoMode === 'cinema' ? 'Cinema' : videoMode === 'dual' ? 'Dual Stage' : isPlaying ? 'Audio Live' : 'Ready';
+  const chromeTopOffset = isWindowsPlatform ? 114 : isMacPlatform ? 96 : 86;
+  const diagnosticsTopOffset = isWindowsPlatform ? 120 : isMacPlatform ? 102 : 92;
   const visualStageLyric = compactLyric || activeLyric || null;
   const visualStageNextLyric = nextLyric && nextLyric !== visualStageLyric ? nextLyric : null;
   const showVisualStage = Boolean(isStandalone && currentTrack && videoMode);
   const isDualVisualMode = showVisualStage && videoMode === 'dual';
   const isDualWorkspaceMode = isDualVisualMode && !isVerticalStack;
+  const isDualLayoutLocked = videoMode === 'dual';
+  const isImmersiveLyricsLocked = Boolean(showVisualStage);
   const showSecondaryColumn = !isFocusedMode && !isDualVisualMode;
   const visualStageHeaderVisible = videoMode !== 'cinema' || cinemaControlsVisible || visualControlsPinned;
   const visualStageFooterVisible = videoMode !== 'cinema' || cinemaControlsVisible || visualControlsPinned;
   const dualVisualStageWidth = 'clamp(320px, 34vw, 560px)';
+  const dualVisualStageZClass = videoMode === 'cinema' ? 'z-[260]' : 'z-[180]';
   const visualStageTitle = currentTrack?.title || '';
   const visualStageTitleMarquee = visualStageTitle.length > (videoMode === 'cinema' ? 42 : 24);
   const showVisualLyricOverlay = Boolean(showVisualLyrics && visualStageLyric && (videoMode === 'cinema' || videoMode === 'dual'));
@@ -5744,7 +6162,13 @@ function App() {
     ? (visualStageFooterVisible ? 'bottom-28 md:bottom-36' : 'bottom-0')
     : 'bottom-24';
   const showImmersiveLyricsOverlay = Boolean(isLyricsExpanded && !showVisualStage);
-  const leftWorkspaceClass = isVerticalStack ? '!w-full !max-w-full !flex-none' : (showSecondaryColumn ? 'w-[66.666%] h-full' : 'w-full px-0');
+  const leftWorkspaceClass = isVerticalStack
+    ? '!w-full !max-w-full !flex-none'
+    : showSecondaryColumn
+      ? 'w-[66.666%] h-full'
+      : isFocusedMode
+        ? 'w-full px-0 max-w-[1480px] mx-auto'
+        : 'w-full px-0';
   const playerCardClass = isDualWorkspaceMode
     ? 'p-5 md:p-6 gap-6 md:gap-8 min-h-[248px] lg:min-h-[266px]'
     : 'p-6 md:p-8 gap-8 md:gap-10 min-h-[300px]';
@@ -5759,39 +6183,41 @@ function App() {
   const lyricsHeaderEyebrow = isDualWorkspaceMode ? 'Split Immersive' : 'Subtitles';
 
   return (
-    <div className={`fixed inset-0 bg-transparent selection:bg-brand-accent selection:text-brand-dark flex flex-col h-screen overflow-hidden relative isolate ${isVerticalStack ? 'vertical-stack-mode' : ''} ${isDoodleMode ? `doodle-mode-active doodle-preset-${doodleIntensity}` : ''} ${isAuraMode ? `aura-mode-active aura-preset-${auraPreset}` : ''}`} style={auraFieldStyle}>
+    <div className={`fixed inset-0 bg-transparent selection:bg-brand-accent selection:text-brand-dark flex flex-col h-screen overflow-hidden relative isolate ${desktopTopInsetClass} ${isVerticalStack ? 'vertical-stack-mode' : ''} ${isDoodleMode ? `doodle-mode-active doodle-preset-${doodleIntensity}` : ''} ${isAuraMode ? `aura-mode-active aura-preset-${auraPreset}` : ''}`} style={auraFieldStyle}>
       <div className="fixed inset-0 bg-[#050505] z-[-2]" />
       {/* Background Mesh (Absolute to avoid flex interference) */}
       <div className="absolute inset-0 bg-mesh pointer-events-none z-[-1]" />
 
-      {/* Windows: Auto-hide titlebar overlay on maximize */}
-      {isStandalone && window.aether?.platform === 'win32' && (
-        <div
-          className="fixed top-0 left-0 right-0 z-[500] group"
-          style={{ height: '4px' }}
-        >
-          {/* The 4px invisible trip-wire — hover expands it */}
-          <div
-            className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-all duration-200"
-            style={{ height: '34px', background: 'rgba(5,5,5,0.96)', backdropFilter: 'blur(20px)' }}
-          >
-            <div className="h-full flex items-center justify-between px-4 drag">
-              <div className="flex items-center gap-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-brand-accent/60" />
-                <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40 select-none">Aether</span>
-              </div>
-              <div className="flex items-center gap-1 no-drag">
-                <button
-                  onClick={() => window.aether?.toggleMaximize?.()}
-                  className="w-7 h-7 rounded flex items-center justify-center text-white/40 hover:text-white hover:bg-white/10 transition-all text-xs"
-                  title="Restore"
-                >⊡</button>
-                <button
-                  onClick={() => window.aether?.minimize?.()}
-                  className="w-7 h-7 rounded flex items-center justify-center text-white/40 hover:text-white hover:bg-white/10 transition-all text-xs"
-                  title="Minimize"
-                >─</button>
-              </div>
+      {isStandalone && isWindowsPlatform && (
+        <div className="fixed inset-x-0 top-0 z-[260] h-[34px] border-b border-white/8 bg-[#071015]/88 backdrop-blur-2xl drag">
+          <div className="flex h-full items-center justify-between px-3">
+            <div className="flex items-center gap-2 select-none">
+              <div className="h-1.5 w-1.5 rounded-full bg-brand-accent/65" />
+              <span className="text-[10px] font-black uppercase tracking-[0.22em] text-white/38">Aether</span>
+            </div>
+
+            <div className="flex items-center gap-1 no-drag">
+              <button
+                onClick={() => window.aether?.minimize?.()}
+                className="flex h-7 w-7 items-center justify-center rounded-lg text-white/45 transition-all hover:bg-white/10 hover:text-white"
+                title="Minimize"
+              >
+                <span className="translate-y-[-1px] text-sm leading-none">-</span>
+              </button>
+              <button
+                onClick={() => window.aether?.toggleWindowMaximize?.()}
+                className="flex h-7 w-7 items-center justify-center rounded-lg text-white/45 transition-all hover:bg-white/10 hover:text-white"
+                title={isMaximized ? 'Restore' : 'Maximize'}
+              >
+                {isMaximized ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+              </button>
+              <button
+                onClick={() => window.aether?.closeWindow?.()}
+                className="flex h-7 w-7 items-center justify-center rounded-lg text-white/45 transition-all hover:bg-red-500/20 hover:text-red-300"
+                title="Close"
+              >
+                <X size={12} />
+              </button>
             </div>
           </div>
         </div>
@@ -5888,69 +6314,36 @@ function App() {
 
       {/* APP HEADER */}
       <header className={topHeaderClass}>
-          {/* TOP ROW: CORE + MINI USER (Horizontal on ALL devices) */}
-          <div className="w-full flex items-center justify-between lg:w-auto lg:gap-6 lg:min-w-[240px]">
-            {/* NEURAL CORE */}
-            <div className="flex items-center gap-3">
-               <div className="w-10 h-10 glass-card flex items-center justify-center border-brand-accent/30 relative overflow-hidden group no-drag">
-                 <img src="aether-logo.png" alt="Aether" className="w-6 h-6 object-contain group-hover:scale-110 transition-transform" onError={(e) => e.target.src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiMwMGZmYmYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cG9seWdvbiBwb2ludHM9IjEzIDIgMyAxNCAxMiAxNCAxMSAyMiAyMSAxMCAxMiAxMCAxMyAyIj48L3BvbHlnb24+PC9zdmc+'} />
-                 <div className="absolute inset-0 bg-brand-accent/5 opacity-0 group-hover:opacity-100 transition-opacity" />
-               </div>
-               <div className="flex flex-col">
-                  <span className="text-[10px] font-black tracking-tighter text-white/90">AETHER</span>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[7px] font-mono text-brand-accent/60 font-black tracking-[0.2em] uppercase">{BUILD_VERSION}</span>
-                    {/* <span className="text-[7px] font-mono text-brand-accent/80 font-black tracking-[0.16em] uppercase px-1.5 py-[1px] rounded-full border border-brand-accent/30 bg-brand-accent/10">{UX_VERSION}</span> */}
-                    <span className="text-[7px] font-mono text-brand-accent/80 font-black tracking-[0.16em] uppercase px-1.5 py-[1px] rounded-full border border-brand-accent/30 bg-brand-accent/10">β</span>
-                  </div>
-                </div>
-            </div>
-            
-
-            <div className="hidden xl:flex items-center gap-3 pl-4 border-l border-white/5 h-8 no-drag text-[9px]">
-               <div className="flex items-center gap-3 border-l border-white/10 pl-3">
-                  <button 
-                    onClick={() => setIsStatsExpanded(!isStatsExpanded)}
-                    className={`flex items-center gap-1 px-2 py-1 rounded-full transition-all border text-[8px] ${isStatsExpanded ? 'bg-brand-accent/10 border-brand-accent/30' : 'bg-white/5 border-white/10 hover:border-brand-accent/50 group'}`}
-                  >
-                    <Activity size={10} className={isStatsExpanded ? 'text-brand-accent animate-pulse' : 'text-brand-text-dim group-hover:text-brand-accent'} />
-                    <span className={`font-black uppercase tracking-tighter ${isStatsExpanded ? 'text-brand-accent' : 'text-brand-text-dim'}`}>
-                      {isStatsExpanded ? 'HUD' : 'Stats'}
-                    </span>
-                  </button>
-
-                  <AnimatePresence>
-                    {isStatsExpanded && (
-                      <motion.div 
-                        initial={{ opacity: 0, x: -10, scale: 0.95 }}
-                        animate={{ opacity: 1, x: 0, scale: 1 }}
-                        exit={{ opacity: 0, x: -10, scale: 0.95 }}
-                        className="flex items-center gap-3 py-1 px-3 bg-white/[0.03] border border-white/5 rounded-lg text-[7px]"
-                      >
-                        <div className="flex flex-col">
-                           <div className="font-mono text-brand-text-dim uppercase tracking-tighter leading-none mb-0.5">CPU</div>
-                           <div className="font-black font-mono text-brand-accent leading-none">{systemStats?.appCpu || '0.0'}%</div>
-                        </div>
-                        <div className="w-[1px] h-2 bg-white/10" />
-                        <div className="flex flex-col">
-                           <div className="font-mono text-brand-text-dim uppercase tracking-tighter leading-none mb-0.5">RAM</div>
-                            <div className="font-black font-mono text-brand-accent leading-none">{systemStats?.appMem || '0'}MB</div>
-                         </div>
-                       </motion.div>
-                    )}
-                  </AnimatePresence>
-               </div>
-            </div>
+        <div className="flex min-w-0 items-center gap-3 lg:min-w-[250px]">
+          <div className="relative flex h-11 w-11 items-center justify-center overflow-hidden rounded-[1.35rem] border border-brand-accent/25 bg-white/[0.04] shadow-[0_0_28px_rgba(0,255,191,0.08)] no-drag">
+            <img src="aether-logo.png" alt="Aether" className="h-6 w-6 object-contain" onError={(e) => e.target.src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiMwMGZmYmYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cG9seWdvbiBwb2ludHM9IjEzIDIgMyAxNCAxMiAxNCAxMSAyMiAyMSAxMCAxMiAxMCAxMyAyIj48L3BvbHlnb24+PC9zdmc+'} />
+            <div className="absolute inset-0 bg-brand-accent/6 opacity-70" />
           </div>
 
-          {/* SEARCH ROW: Dedicated full-width row on mobile */}
-          <div className="w-full md:flex-1 flex justify-center md:max-w-[760px] md:px-6 lg:px-8 order-3 md:order-2 ultra-compact-hide no-drag">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-black uppercase tracking-[0.08em] text-white/92">Aether</span>
+              <span className="rounded-full border border-brand-accent/30 bg-brand-accent/10 px-1.5 py-[2px] text-[7px] font-black uppercase tracking-[0.18em] text-brand-accent/80">
+                {BUILD_VERSION}
+              </span>
+              <span className="rounded-full border border-white/10 bg-white/[0.03] px-1.5 py-[2px] text-[7px] font-black uppercase tracking-[0.18em] text-white/45">
+                beta
+              </span>
+            </div>
+            <div className="mt-1 flex min-w-0 items-center gap-2 text-[8px] font-black uppercase tracking-[0.22em] text-white/38">
+              <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-white/52">{workspaceModeLabel}</span>
+              <span className="truncate text-brand-accent/70">{playbackModeLabel}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="w-full md:flex-1 flex justify-center md:max-w-[760px] md:px-4 lg:px-8 order-3 md:order-2 ultra-compact-hide no-drag">
             <form onSubmit={handleSearch} className="relative w-full group no-drag">
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-brand-text-dim group-focus-within:text-brand-accent z-10 transition-colors" size={18} />
               <input 
                 type="text" 
                 placeholder="Search music..." 
-                className={`w-full rounded-full pl-12 pr-12 h-12 text-base md:text-[15px] outline-none transition-all ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/5 border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'}`}
+                className={`w-full rounded-full pl-12 pr-12 h-12 text-base md:text-[15px] outline-none transition-all ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/[0.04] border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'}`}
                 value={searchQuery}
                 onChange={(e) => {
                   setSearchQuery(e.target.value);
@@ -5959,171 +6352,185 @@ function App() {
               />
               {isSearching && <div className="absolute right-5 top-1/2 -translate-y-1/2"><Loader2 className="animate-spin text-brand-accent" size={16} /></div>}
             </form>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 min-w-fit order-3 no-drag">
+          <button
+            onClick={openShortcutSettings}
+            className="w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag bg-white/[0.04] border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50"
+            title="Shortcut Settings"
+          >
+            <Keyboard size={16} />
+          </button>
+
+          {!hideFirstRunTips && (
+            <button
+              onClick={openTipsOverlay}
+              className="w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag bg-white/[0.04] border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50"
+              title="Tips & Shortcuts"
+            >
+              <AppWindow size={16} />
+            </button>
+          )}
+
+          <button
+            onClick={toggleDiagnostics}
+            className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${isDiagnosticsOpen ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : 'bg-white/[0.04] border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
+            title={isDiagnosticsOpen ? 'Hide Diagnostics' : 'Show Diagnostics'}
+          >
+            <Monitor size={16} />
+          </button>
+
+          <div className="relative" ref={looksPanelRef}>
+            <button
+              onClick={toggleLooksPanel}
+              className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${isLooksPanelOpen ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/[0.04] border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
+              title="Visual presets"
+            >
+              <Sparkles size={14} />
+            </button>
+
+            {isLooksPanelOpen && (
+              <div className="absolute right-0 mt-2 z-[340] w-64 rounded-2xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-3 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
+                <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Visualizer</div>
+                <div className="grid grid-cols-2 gap-1.5 mb-3">
+                  <button
+                    onClick={() => setVisualizerMode('bars')}
+                    className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${visualizerMode === 'bars' ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                  >
+                    Bars
+                  </button>
+                  <button
+                    onClick={() => setVisualizerMode('pulse')}
+                    className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${visualizerMode === 'pulse' ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                  >
+                    Aura
+                  </button>
+                </div>
+
+                <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Aura Preset</div>
+                <div className="grid grid-cols-3 gap-1.5 mb-3">
+                  {AURA_PRESETS.map((preset) => (
+                    <button
+                      key={preset.id}
+                      onClick={() => {
+                        setAuraPreset(preset.id);
+                        setLastAdded(`Aura preset • ${preset.label}`);
+                        setTimeout(() => setLastAdded(null), 1500);
+                      }}
+                      className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${auraPreset === preset.id ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Doodle Preset</div>
+                <div className="grid grid-cols-3 gap-1.5 mb-3">
+                  {DOODLE_PRESETS.map((preset) => (
+                    <button
+                      key={preset.id}
+                      onClick={() => {
+                        setDoodleIntensity(preset.id);
+                        setLastAdded(`Doodle preset • ${preset.label}`);
+                        setTimeout(() => setLastAdded(null), 1500);
+                      }}
+                      className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${doodleIntensity === preset.id ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                    >
+                      {preset.badge}
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  onClick={() => {
+                    const next = !isDoodleMode;
+                    setIsDoodleMode(next);
+                    setLastAdded(next ? 'Doodle mode enabled' : 'Doodle mode disabled');
+                    setTimeout(() => setLastAdded(null), 1600);
+                  }}
+                  className={`w-full px-3 py-2 rounded-xl border text-[10px] font-black uppercase tracking-[0.14em] transition-colors ${isDoodleMode ? 'bg-brand-accent/15 border-brand-accent/40 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                >
+                  {isDoodleMode ? `Doodle ON • ${doodleIntensityBadge}` : 'Enable Doodle'}
+                </button>
+              </div>
+            )}
           </div>
 
-          {/* MODES & SUITE */}
-          <div className="flex items-center justify-end gap-3 min-w-fit order-3 no-drag">
-               <button
-                 onClick={openShortcutSettings}
-                 className="w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50"
-                 title="Shortcut Settings"
-               >
-                 <Keyboard size={16} />
-               </button>
+          <div className="relative" ref={sleepTimerMenuRef}>
+            <button
+              onClick={toggleSleepTimerMenu}
+              className={`h-10 px-3 rounded-2xl flex items-center gap-2 transition-all border no-drag ${sleepTimerValue > 0 ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/[0.04] border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
+              title={sleepTimerValue > 0 ? `Sleep timer active • ${sleepRemainingStr || `${sleepTimerValue}m`}` : 'Sleep timer'}
+            >
+              <Clock size={14} />
+              <span className="hidden xl:inline text-[10px] font-black uppercase tracking-widest">{sleepTimerValue > 0 ? (sleepRemainingStr || `${sleepTimerValue}m`) : 'Sleep'}</span>
+            </button>
 
-               {!hideFirstRunTips && (
-                 <button
-                   onClick={openTipsOverlay}
-                   className="w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50"
-                   title="Tips & Shortcuts"
-                 >
-                   <AppWindow size={16} />
-                 </button>
-               )}
-
-               <button
-                 onClick={toggleDiagnostics}
-                 className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${isDiagnosticsOpen ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
-                 title={isDiagnosticsOpen ? 'Hide Diagnostics' : 'Show Diagnostics'}
-               >
-                 <Monitor size={16} />
-               </button>
-
-               <div className="relative" ref={looksPanelRef}>
-                 <button
-                   onClick={() => setIsLooksPanelOpen((prev) => !prev)}
-                   className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${isLooksPanelOpen ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
-                   title="Visual presets"
-                 >
-                   <Sparkles size={14} />
-                 </button>
-
-                 {isLooksPanelOpen && (
-                   <div className="absolute right-0 mt-2 z-[320] w-64 rounded-2xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-3 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
-                     <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Visualizer</div>
-                     <div className="grid grid-cols-2 gap-1.5 mb-3">
-                       <button
-                         onClick={() => setVisualizerMode('bars')}
-                         className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${visualizerMode === 'bars' ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                       >
-                         Bars
-                       </button>
-                       <button
-                         onClick={() => setVisualizerMode('pulse')}
-                         className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${visualizerMode === 'pulse' ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                       >
-                         Aura
-                       </button>
-                     </div>
-
-                     <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Aura Preset</div>
-                     <div className="grid grid-cols-3 gap-1.5 mb-3">
-                       {AURA_PRESETS.map((preset) => (
-                         <button
-                           key={preset.id}
-                           onClick={() => {
-                             setAuraPreset(preset.id);
-                             setLastAdded(`Aura preset • ${preset.label}`);
-                             setTimeout(() => setLastAdded(null), 1500);
-                           }}
-                           className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${auraPreset === preset.id ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                         >
-                           {preset.label}
-                         </button>
-                       ))}
-                     </div>
-
-                     <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Doodle Preset</div>
-                     <div className="grid grid-cols-3 gap-1.5 mb-3">
-                       {DOODLE_PRESETS.map((preset) => (
-                         <button
-                           key={preset.id}
-                           onClick={() => {
-                             setDoodleIntensity(preset.id);
-                             setLastAdded(`Doodle preset • ${preset.label}`);
-                             setTimeout(() => setLastAdded(null), 1500);
-                           }}
-                           className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${doodleIntensity === preset.id ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                         >
-                           {preset.badge}
-                         </button>
-                       ))}
-                     </div>
-
-                     <button
-                       onClick={() => {
-                         const next = !isDoodleMode;
-                         setIsDoodleMode(next);
-                         setLastAdded(next ? 'Doodle mode enabled ✨' : 'Doodle mode disabled');
-                         setTimeout(() => setLastAdded(null), 1600);
-                       }}
-                       className={`w-full px-3 py-2 rounded-xl border text-[10px] font-black uppercase tracking-[0.14em] transition-colors ${isDoodleMode ? 'bg-brand-accent/15 border-brand-accent/40 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                     >
-                       {isDoodleMode ? `Doodle ON • ${doodleIntensityBadge}` : 'Enable Doodle'}
-                     </button>
-                   </div>
-                 )}
-               </div>
-
-               <div className="relative">
-                 <button
-                   onClick={() => setIsSleepTimerMenuOpen(prev => !prev)}
-                   className={`h-10 px-3 rounded-2xl flex items-center gap-2 transition-all border no-drag ${sleepTimerValue > 0 ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
-                   title={sleepTimerValue > 0 ? `Sleep timer active • ${sleepRemainingStr || `${sleepTimerValue}m`}` : 'Sleep timer'}
-                 >
-                   <Clock size={14} />
-                   <span className="text-[10px] font-black uppercase tracking-widest">{sleepTimerValue > 0 ? (sleepRemainingStr || `${sleepTimerValue}m`) : 'Sleep'}</span>
-                 </button>
-
-                 {isSleepTimerMenuOpen && (
-                   <div className="absolute right-0 mt-2 z-[320] w-44 rounded-2xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-2 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
-                     {[15, 30, 60, 120].map((minutes) => (
-                       <button
-                         key={`sleep-${minutes}`}
-                         onClick={() => handleSetSleepTimer(minutes)}
-                         className={`w-full text-left px-3 py-2 rounded-xl text-sm transition-colors ${sleepTimerValue === minutes ? 'text-brand-accent bg-brand-accent/10' : 'text-white/75 hover:text-brand-accent hover:bg-white/5'}`}
-                       >
-                         Sleep in {minutes} min
-                       </button>
-                     ))}
-                     <div className="my-1 border-t border-white/10" />
-                     <button
-                       onClick={() => handleSetSleepTimer(0)}
-                       className="w-full text-left px-3 py-2 rounded-xl text-sm text-red-300 hover:bg-red-500/10 transition-colors"
-                     >
-                       Turn off
-                     </button>
-                   </div>
-                 )}
-               </div>
-
-               {isStandalone && (
-                 <button
-                   onClick={() => { setLockError(''); setIsLockModalOpen(true); }}
-                   className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${lockStatus.enabled ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
-                   title="App Lock"
-                 >
-                   <Lock size={16} />
-                 </button>
-               )}
-
-               <button 
-                 onClick={() => setIsFocusedMode(!isFocusedMode)}
-                 className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${isFocusedMode ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
-                 title={isFocusedMode ? "Full Studio" : "Focused Mode"}
-               >
-                 <BookOpen size={16} />
-               </button>
-
-               <button 
-                 onClick={() => setIsVerticalStack(!isVerticalStack)}
-                 className={`flex items-center gap-3 px-4 py-2 rounded-2xl transition-all border font-black uppercase tracking-widest text-[10px] no-drag ${isVerticalStack ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : 'bg-white/5 border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50 hover:bg-brand-accent/5'}`}
-               >
-                 <ListMusic size={14} className={isVerticalStack ? 'animate-pulse' : ''} />
-                 <span className="hidden sm:inline">{isVerticalStack ? 'Grid View' : 'Vertical Stack'}</span>
-               </button>
+            {isSleepTimerMenuOpen && (
+              <div className="absolute right-0 mt-2 z-[340] w-44 rounded-2xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-2 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
+                {[15, 30, 60, 120].map((minutes) => (
+                  <button
+                    key={`sleep-${minutes}`}
+                    onClick={() => handleSetSleepTimer(minutes)}
+                    className={`w-full text-left px-3 py-2 rounded-xl text-sm transition-colors ${sleepTimerValue === minutes ? 'text-brand-accent bg-brand-accent/10' : 'text-white/75 hover:text-brand-accent hover:bg-white/5'}`}
+                  >
+                    Sleep in {minutes} min
+                  </button>
+                ))}
+                <div className="my-1 border-t border-white/10" />
+                <button
+                  onClick={() => handleSetSleepTimer(0)}
+                  className="w-full text-left px-3 py-2 rounded-xl text-sm text-red-300 hover:bg-red-500/10 transition-colors"
+                >
+                  Turn off
+                </button>
+              </div>
+            )}
           </div>
-        </header>
+
+          {isStandalone && (
+            <button
+              onClick={() => {
+                closeHeaderSurfaces();
+                setLockError('');
+                setIsLockModalOpen(true);
+              }}
+              className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${lockStatus.enabled ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/[0.04] border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
+              title="App Lock"
+            >
+              <Lock size={16} />
+            </button>
+          )}
+
+          <button
+            onClick={toggleFocusMode}
+            disabled={isDualLayoutLocked}
+            className={`h-10 px-3 rounded-2xl flex items-center gap-2 transition-all border no-drag ${isDualLayoutLocked ? 'bg-white/[0.03] border-white/8 text-white/20 cursor-not-allowed' : isFocusedMode ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : 'bg-white/[0.04] border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
+            title={isDualLayoutLocked ? 'Focus view is locked while Dual View is active' : (isFocusedMode ? 'Exit Focus View' : 'Enter Focus View')}
+          >
+            <Target size={15} />
+            <span className="hidden xl:inline text-[10px] font-black uppercase tracking-[0.18em]">{isFocusedMode ? 'Focus' : 'Focus'}</span>
+          </button>
+
+          <div className={`hidden md:flex items-center gap-1 rounded-2xl border p-1 no-drag ${isDualLayoutLocked ? 'border-white/8 bg-white/[0.03]' : 'border-white/10 bg-white/[0.04]'}`} title={isDualLayoutLocked ? 'Layout switching is unavailable while Dual View is active' : 'Workspace layout'}>
+            <button
+              onClick={() => setIsVerticalStack(false)}
+              disabled={isDualLayoutLocked}
+              className={`rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${!isVerticalStack ? 'bg-brand-accent text-black shadow-[0_0_16px_rgba(0,255,191,0.28)]' : isDualLayoutLocked ? 'text-white/20 cursor-not-allowed' : 'text-white/45 hover:text-brand-accent'}`}
+            >
+              Studio
+            </button>
+            <button
+              onClick={() => setIsVerticalStack(true)}
+              disabled={isDualLayoutLocked}
+              className={`rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${isVerticalStack ? 'bg-brand-accent text-black shadow-[0_0_16px_rgba(0,255,191,0.28)]' : isDualLayoutLocked ? 'text-white/20 cursor-not-allowed' : 'text-white/45 hover:text-brand-accent'}`}
+            >
+              Stack
+            </button>
+          </div>
+        </div>
+      </header>
 
       <AnimatePresence>
         {isShortcutSettingsOpen && (
@@ -6131,7 +6538,7 @@ function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[312] flex items-center justify-center p-4"
+            className="fixed inset-0 z-[340] flex items-start justify-center p-4 pt-6 md:items-center md:pt-4"
             onClick={closeShortcutSettings}
           >
             <div className="absolute inset-0 bg-black/85 backdrop-blur-md" />
@@ -6139,10 +6546,10 @@ function App() {
               initial={{ scale: 0.96, y: 14 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.96, y: 10 }}
-              className="relative z-10 w-[min(94vw,860px)] max-h-[88vh] overflow-y-auto rounded-3xl border border-brand-accent/25 bg-[#090b0f]/95 p-5 md:p-7 shadow-[0_0_90px_rgba(0,255,191,0.15)]"
+              className="relative z-10 flex w-[min(96vw,920px)] max-h-[min(92vh,calc(100vh-2rem))] flex-col overflow-hidden rounded-[2rem] border border-brand-accent/25 bg-[#090b0f]/95 shadow-[0_0_90px_rgba(0,255,191,0.15)]"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="flex items-start justify-between gap-4">
+              <div className="flex items-start justify-between gap-4 border-b border-white/10 bg-black/20 px-5 py-5 md:px-6 md:py-6">
                 <div>
                   <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/35">Settings</div>
                   <div className="text-2xl md:text-3xl font-black text-brand-accent uppercase tracking-tight">Shortcut Settings</div>
@@ -6153,47 +6560,49 @@ function App() {
                 </button>
               </div>
 
-              <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-3">
-                {SHORTCUT_FIELDS.map((field) => (
-                  <label key={field.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-white/75 text-sm">
-                    <div className="text-[11px] uppercase tracking-[0.2em] text-white/50 mb-2">{field.label}</div>
-                    <input
-                      value={shortcutDraft[field.id] || ''}
-                      onChange={(e) => {
-                        const value = e.target.value;
-                        setShortcutSettingsError('');
-                        setShortcutDraft((prev) => ({ ...prev, [field.id]: value }));
-                      }}
-                      className="w-full rounded-xl border border-white/15 bg-black/30 px-3 py-2 text-white outline-none focus:border-brand-accent/50"
-                      placeholder="Mod+Alt+Space"
-                    />
-                    <div className="mt-1 text-[11px] text-white/40">Current: {toReadableShortcut(shortcuts[field.id], isMacPlatform)}</div>
-                  </label>
-                ))}
-              </div>
-
-              <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                <label className="flex items-start gap-3 text-sm text-white/75">
-                  <input
-                    type="checkbox"
-                    checked={globalMediaShortcutsEnabled}
-                    onChange={(e) => setGlobalMediaShortcutsEnabled(e.target.checked)}
-                    className="mt-0.5 w-4 h-4 accent-brand-accent"
-                  />
-                  <span>
-                    Enable global media shortcuts (play/pause, next, previous)
-                    <span className="block text-[11px] text-white/45 mt-1">This affects system-wide key capture and may conflict with OS/app controls. Restart app after change.</span>
-                  </span>
-                </label>
-              </div>
-
-              {shortcutSettingsError && (
-                <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-                  {shortcutSettingsError}
+              <div className="flex-1 overflow-y-auto px-5 py-4 md:px-6 md:py-5 custom-scrollbar-heavy">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {SHORTCUT_FIELDS.map((field) => (
+                    <label key={field.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-white/75 text-sm">
+                      <div className="text-[11px] uppercase tracking-[0.2em] text-white/50 mb-2">{field.label}</div>
+                      <input
+                        value={shortcutDraft[field.id] || ''}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setShortcutSettingsError('');
+                          setShortcutDraft((prev) => ({ ...prev, [field.id]: value }));
+                        }}
+                        className="w-full rounded-xl border border-white/15 bg-black/30 px-3 py-2 text-white outline-none focus:border-brand-accent/50"
+                        placeholder="Mod+Alt+Space"
+                      />
+                      <div className="mt-1 text-[11px] text-white/40">Current: {toReadableShortcut(shortcuts[field.id], isMacPlatform)}</div>
+                    </label>
+                  ))}
                 </div>
-              )}
 
-              <div className="mt-5 flex items-center justify-between gap-2 flex-wrap">
+                <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                  <label className="flex items-start gap-3 text-sm text-white/75">
+                    <input
+                      type="checkbox"
+                      checked={globalMediaShortcutsEnabled}
+                      onChange={(e) => setGlobalMediaShortcutsEnabled(e.target.checked)}
+                      className="mt-0.5 w-4 h-4 accent-brand-accent"
+                    />
+                    <span>
+                      Enable global media shortcuts (play/pause, next, previous)
+                      <span className="block text-[11px] text-white/45 mt-1">This affects system-wide key capture and may conflict with OS/app controls. Restart app after change.</span>
+                    </span>
+                  </label>
+                </div>
+
+                {shortcutSettingsError && (
+                  <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                    {shortcutSettingsError}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between gap-3 flex-wrap border-t border-white/10 bg-black/20 px-5 py-4 md:px-6 md:py-5">
                 <div className="flex items-center gap-2 flex-wrap">
                   <button
                     onClick={resetShortcutSettingsToDefaults}
@@ -6269,6 +6678,8 @@ function App() {
                     <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.volumeUp, isMacPlatform)}</span> — Volume up</li>
                     <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.volumeDown, isMacPlatform)}</span> — Volume down</li>
                     <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.mute, isMacPlatform)}</span> — Mute / Unmute</li>
+                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.clearQueue, isMacPlatform)}</span> — Clear queue</li>
+                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.focusMode, isMacPlatform)}</span> — Toggle focus view</li>
                     <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.miniPlayer, isMacPlatform)}</span> — Toggle mini player</li>
                     <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.diagnostics, isMacPlatform)}</span> — Open diagnostics panel</li>
                   </ul>
@@ -6279,7 +6690,8 @@ function App() {
                   <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Main Buttons</div>
                   <ul className="mt-3 space-y-2 text-white/75">
                     <li><span className="text-brand-accent font-black">Search bar</span> — find songs quickly</li>
-                    <li><span className="text-brand-accent font-black">Vertical Stack</span> — switch layout view</li>
+                    <li><span className="text-brand-accent font-black">Studio / Stack</span> — switch workspace layout</li>
+                    <li><span className="text-brand-accent font-black">Focus</span> — hide side panels for a cleaner stage</li>
                     <li><span className="text-brand-accent font-black">Diagnostics</span> — debug network/playback issues</li>
                     <li><span className="text-brand-accent font-black">Vault overlay</span> — save/import/export playlists</li>
                     <li><span className="text-brand-accent font-black">Smart Mix</span> — generate instant context playlist</li>
@@ -6326,7 +6738,8 @@ function App() {
             initial={{ opacity: 0, y: -8, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -6, scale: 0.98 }}
-            className="fixed right-4 md:right-6 top-20 z-[140] w-[min(92vw,420px)] max-h-[78vh] overflow-y-auto glass-card bg-[#07090c]/90 border border-white/10 backdrop-blur-2xl rounded-3xl p-4 md:p-5 shadow-[0_20px_60px_rgba(0,0,0,0.45)]"
+            className="fixed right-4 md:right-6 z-[240] w-[min(92vw,420px)] max-h-[78vh] overflow-y-auto glass-card bg-[#07090c]/90 border border-white/10 backdrop-blur-2xl rounded-3xl p-4 md:p-5 shadow-[0_20px_60px_rgba(0,0,0,0.45)]"
+            style={{ top: diagnosticsTopOffset }}
           >
             <div className="flex items-center justify-between mb-3">
               <div className="text-[10px] tracking-[0.24em] uppercase font-black text-brand-accent">Diagnostics</div>
@@ -6342,6 +6755,15 @@ function App() {
               >
                 Reset Engine
               </button>
+              {isStandalone && (
+                <button
+                  onClick={handleRunRuntimeRepair}
+                  disabled={isRuntimeRepairing}
+                  className="px-3 py-1.5 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 text-[10px] font-black uppercase tracking-[0.16em] hover:border-brand-accent/35 hover:text-brand-accent transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {repairActionLabel}
+                </button>
+              )}
               <button
                 onClick={() => setSkipEvents([])}
                 className="px-3 py-1.5 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 text-[10px] font-black uppercase tracking-[0.16em] hover:border-white/30 transition-all"
@@ -6373,6 +6795,18 @@ function App() {
               <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
                 <div className="text-white/40 uppercase mb-1">Queue</div>
                 <div className="font-black text-brand-accent">{Math.max(0, queue.length - 1)} pending</div>
+              </div>
+              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                <div className="text-white/40 uppercase mb-1">App CPU</div>
+                <div className="font-black text-brand-accent">{systemStats?.appCpu ?? 0}%</div>
+              </div>
+              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                <div className="text-white/40 uppercase mb-1">App Memory</div>
+                <div className="font-black text-brand-accent">{systemStats?.appMem ?? 0}MB</div>
+              </div>
+              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                <div className="text-white/40 uppercase mb-1">Workspace Mode</div>
+                <div className="font-black text-white/80">{workspaceModeLabel} • {playbackModeLabel}</div>
               </div>
               <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
                 <div className="text-white/40 uppercase mb-1">Current Node</div>
@@ -6436,10 +6870,36 @@ function App() {
                   </div>
                   <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
                     <div className="text-white/40 uppercase mb-1">Cookies Session</div>
-                    <div className={`font-black ${engineStatus?.cookiesReady ? 'text-brand-accent' : 'text-white/60'}`}>
-                      {engineStatus ? (engineStatus.cookiesReady ? 'LOADED' : 'NOT LOADED') : 'CHECKING'}
+                    <div className={`font-black ${cookieStatusTone}`}>
+                      {cookieStatusLabel}
                     </div>
                     <div className="text-white/40 mt-1 truncate">{engineStatus?.cookiesPath || 'anonymous requests only'}</div>
+                    <div className="text-white/45 mt-1">{cookieDetailLine}</div>
+                    {cookieAudit?.pathLooksLikeYouTube && (
+                      <div className="text-[10px] text-white/35 mt-1">
+                        {cookieAudit.youtubeEntryCount} YouTube/Google cookie entr{cookieAudit.youtubeEntryCount === 1 ? 'y' : 'ies'} detected. Format checks only; account ownership can’t be proven here.
+                      </div>
+                    )}
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        onClick={handleImportCookies}
+                        className="px-2 py-1 rounded-lg border border-brand-accent/30 text-brand-accent bg-brand-accent/10 hover:bg-brand-accent/20 transition-all"
+                      >
+                        Upload Cookies
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (isStandalone && window.aether?.openExternal) {
+                            window.aether.openExternal('https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies');
+                          } else {
+                            window.open('https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies', '_blank');
+                          }
+                        }}
+                        className="px-2 py-1 rounded-lg border border-white/15 text-white/70 bg-white/[0.03] hover:border-white/30 transition-all"
+                      >
+                        Cookie Guide
+                      </button>
+                    </div>
                   </div>
                   <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
                     <div className="text-white/40 uppercase mb-1">Storage</div>
@@ -6926,12 +7386,12 @@ function App() {
                   }} className="hidden md:flex px-5 py-2.5 glass-card text-[10px] font-black hover:border-brand-accent transition-all uppercase tracking-widest active:scale-95 border-white/10">Rotate</button>}
                   <button 
                     onClick={() => {
-                      if (isDualWorkspaceMode) return;
+                      if (isImmersiveLyricsLocked) return;
                       setIsLyricsExpanded(!isLyricsExpanded);
                     }}
-                    disabled={isDualWorkspaceMode}
-                    className={`flex items-center justify-center p-2 w-8 h-8 rounded-xl border transition-all text-brand-accent group flex-none ${isDualWorkspaceMode ? 'bg-brand-accent/12 border-brand-accent/30 text-brand-accent/80 cursor-default' : 'bg-white/5 border-white/10 hover:bg-white/10 hover:border-brand-accent active:scale-90'}`}
-                    title={isDualWorkspaceMode ? 'Dual view already uses immersive lyrics on the left' : 'Immersive Output'}
+                    disabled={isImmersiveLyricsLocked}
+                    className={`flex items-center justify-center p-2 w-8 h-8 rounded-xl border transition-all text-brand-accent group flex-none ${isImmersiveLyricsLocked ? 'bg-brand-accent/12 border-brand-accent/30 text-brand-accent/80 cursor-default' : 'bg-white/5 border-white/10 hover:bg-white/10 hover:border-brand-accent active:scale-90'}`}
+                    title={isImmersiveLyricsLocked ? 'Immersive lyrics are unavailable while the visual stage is active' : 'Immersive Output'}
                   >
                     <Maximize2 size={16} />
                   </button>
@@ -7228,7 +7688,7 @@ function App() {
                 <button onClick={handleGenerateSmartMix} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Generate Smart Mix"><Zap size={10} /></button>
                 <button onClick={handleCleanVault} disabled={isVaultCleaning} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors disabled:opacity-40 flex items-center justify-center" title="Clean Vault (dedupe + remove unavailable + normalize metadata)"><RefreshCw size={10} className={isVaultCleaning ? 'animate-spin' : ''} /></button>
                 <button onClick={() => setIsLibraryOverlayOpen(true)} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Open Vault Overlay"><ListMusic size={10} /></button>
-                <button onClick={() => { setSpotifyImportUrl(''); setSpotifyImportProgress({ stage: 'idle', progress: 0, message: '' }); setSpotifyImportLogs([]); setIsSpotifyImportOpen(true); }} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Import Spotify Playlist"><Music size={10} /></button>
+                <button onClick={() => { closeHeaderSurfaces(); setSpotifyImportUrl(''); setSpotifyImportProgress({ stage: 'idle', progress: 0, message: '' }); setSpotifyImportLogs([]); setIsSpotifyImportOpen(true); }} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Import Spotify Playlist"><Music size={10} /></button>
                 <button onClick={handleImportVault} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Import Vault (.aether)"><Upload size={10} /></button>
               </div>
             </div>
@@ -7665,7 +8125,7 @@ function App() {
               initial={{ y: 12, scale: 0.98, opacity: 0 }}
               animate={{ y: 0, scale: 1, opacity: 1 }}
               exit={{ y: 10, scale: 0.98, opacity: 0 }}
-              className="relative z-10 w-full max-w-lg rounded-[2rem] border border-white/10 bg-[#0a0a0a]/95 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-2xl overflow-hidden"
+              className="relative z-10 flex w-full max-w-lg max-h-[min(88vh,760px)] flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-[#0a0a0a]/95 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
             >
               <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
                 <div>
@@ -7680,7 +8140,7 @@ function App() {
                 </button>
               </div>
 
-              <div className="p-5 space-y-4">
+              <div className="flex-1 overflow-y-auto p-5 space-y-4">
                 {lockStatus.enabled ? (
                   <>
                     <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
@@ -7800,7 +8260,7 @@ function App() {
               initial={{ y: 16, scale: 0.97, opacity: 0 }}
               animate={{ y: 0, scale: 1, opacity: 1 }}
               exit={{ y: 10, scale: 0.98, opacity: 0 }}
-              className="relative z-10 w-full max-w-xl rounded-[2rem] border border-white/10 bg-[#0a0a0a]/95 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-2xl overflow-hidden"
+              className="relative z-10 flex w-full max-w-xl max-h-[min(88vh,760px)] flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-[#0a0a0a]/95 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
             >
               <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
                 <div>
@@ -7816,7 +8276,7 @@ function App() {
                 </button>
               </div>
 
-              <div className="p-5 space-y-4">
+              <div className="flex-1 overflow-y-auto p-5 space-y-4">
                 <div>
                   <label className="block text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Playlist URL</label>
                   <input
@@ -7881,7 +8341,7 @@ function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md p-4"
+            className="fixed inset-0 z-[320] flex items-center justify-center bg-black/80 backdrop-blur-md p-4"
             onClick={() => setIsMixtapeVaultOpen(false)}
           >
             <motion.div
@@ -7998,7 +8458,7 @@ function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[180] flex items-center justify-center bg-black/80 backdrop-blur-md p-4"
+            className="fixed inset-0 z-[320] flex items-center justify-center bg-black/80 backdrop-blur-md p-4"
             onClick={() => setIsSharedSceneOpen(false)}
           >
             <motion.div
@@ -8372,14 +8832,7 @@ function App() {
 
                     <div className="flex flex-col w-full gap-3">
                       <button 
-                        onClick={async () => {
-                          if (isStandalone && window.aether?.importCookies) {
-                            const res = await window.aether.importCookies();
-                            if (res?.success) {
-                              setOauthPrompt(null);
-                            }
-                          }
-                        }}
+                        onClick={handleImportCookies}
                         className="w-full py-4 rounded-xl bg-brand-accent text-brand-dark font-black tracking-[0.2em] uppercase hover:bg-white hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-3"
                       >
                        <Upload size={18} /> Upload cookies.txt
@@ -8711,12 +9164,12 @@ function App() {
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.985 }}
             transition={{ duration: 0.28, ease: 'easeOut' }}
-            className={`fixed z-[1000] pointer-events-none transition-all duration-500 ease-out ${videoMode === 'cinema' ? 'inset-0' : ''}`}
+            className={`fixed ${dualVisualStageZClass} pointer-events-none transition-all duration-500 ease-out ${videoMode === 'cinema' ? 'inset-0' : ''}`}
             style={videoMode === 'cinema'
               ? undefined
               : isVerticalStack
                 ? { left: 16, right: 16, bottom: 16, height: '40vh' }
-                : { top: 80, right: 16, bottom: 16, width: dualVisualStageWidth }}
+                : { top: chromeTopOffset, right: 16, bottom: 16, width: dualVisualStageWidth }}
             onMouseMove={videoMode === 'cinema' ? handleCinemaMouseMove : undefined}
             onClick={videoMode === 'cinema' ? handleCinemaMouseMove : undefined}
           >
