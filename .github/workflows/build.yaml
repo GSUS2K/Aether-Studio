@@ -75,27 +75,9 @@ jobs:
     - name: Install frontend deps
       run: cd frontend && npm install --ignore-scripts
 
-    # Install yt-dlp manually (avoid GitHub API rate limit)
-    - name: Install yt-dlp manually (macOS)
-      if: matrix.os == 'macos-latest'
-      run: |
-        mkdir -p desktop/bin
-        curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos -o desktop/bin/yt-dlp_macos
-        chmod +x desktop/bin/yt-dlp_macos
-
-    - name: Install yt-dlp manually (Linux)
-      if: matrix.os == 'ubuntu-latest'
-      run: |
-        mkdir -p desktop/bin
-        curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o desktop/bin/yt-dlp
-        chmod +x desktop/bin/yt-dlp
-
-    - name: Install yt-dlp manually (Windows)
-      if: matrix.os == 'windows-latest'
-      shell: pwsh
-      run: |
-        New-Item -ItemType Directory -Force -Path desktop/bin | Out-Null
-        Invoke-WebRequest -Uri https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe -OutFile desktop/bin/yt-dlp.exe
+    # Prepare yt-dlp + ffmpeg for packaging
+    - name: Prepare bundled media binaries
+      run: npm run prepare-binaries
 
     # Build React frontend
     - name: Build frontend

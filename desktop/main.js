@@ -486,20 +486,30 @@ const getBundledPath = (relPath) => {
     return finalPath;
 };
 
+const getUserDataBinaryPath = (binaryName) => path.join(app.getPath('userData'), 'bin', binaryName);
+
 // --- BULLETPROOF NATIVE BINARY EXTRACTOR ---
 // Sidesteps read-only /Applications restrictions and Python deprecations
 const unpackNativeEngine = (binaryName) => {
-    const sourcePath = path.join(__dirname, '..', `desktop/bin/${binaryName}`);
-    const userData = app.getPath('userData');
-    const targetExecutable = path.join(userData, binaryName);
+    const sourcePath = getBundledPath(`desktop/bin/${binaryName}`);
+    const targetExecutable = getUserDataBinaryPath(binaryName);
     
     try {
         if (fs.existsSync(sourcePath)) {
-            // Read from compiled ASAR, inject into user space, force execute
+            fs.mkdirSync(path.dirname(targetExecutable), { recursive: true });
+            // Read from bundled resources, inject into user space, force execute
             const asm = fs.readFileSync(sourcePath);
             fs.writeFileSync(targetExecutable, asm);
-            try { fs.chmodSync(targetExecutable, 0o755); } catch (e) {
-                fs.appendFileSync(path.join(app.getPath('desktop'), 'AetherDebug.log'), `\n[Chmod Fault]\n${e.message}\n`);
+            if (process.platform !== 'win32') {
+                try { fs.chmodSync(targetExecutable, 0o755); } catch (e) {
+                    fs.appendFileSync(path.join(app.getPath('desktop'), 'AetherDebug.log'), `\n[Chmod Fault]\n${e.message}\n`);
+                }
+            }
+            if (process.platform === 'win32') {
+                try {
+                    // Copying into userData usually strips Mark-of-the-Web; this helps avoid manual Unblock-File.
+                    fs.utimesSync(targetExecutable, new Date(), new Date());
+                } catch {}
             }
             return targetExecutable;
         } else {
@@ -512,6 +522,32 @@ const unpackNativeEngine = (binaryName) => {
     return getBundledPath(`desktop/bin/${binaryName}`);
 };
 
+const resolveFfmpegPath = () => {
+    const envPath = process.env.FFMPEG_PATH;
+    if (envPath && fs.existsSync(envPath)) return envPath;
+
+    const candidates = [];
+    if (process.platform === 'win32') {
+        candidates.push(unpackNativeEngine('ffmpeg.exe'));
+        candidates.push(getBundledPath('desktop/bin/ffmpeg.exe'));
+        candidates.push(getBinaryPath('ffmpeg-static/ffmpeg.exe'));
+    } else if (process.platform === 'darwin') {
+        const darwinBinaryName = process.arch === 'arm64' ? 'ffmpeg_darwin_arm64' : 'ffmpeg_darwin_x64';
+        candidates.push(unpackNativeEngine(darwinBinaryName));
+        candidates.push(getBundledPath(`desktop/bin/${darwinBinaryName}`));
+        candidates.push(unpackNativeEngine('ffmpeg'));
+        candidates.push(getBundledPath('desktop/bin/ffmpeg'));
+        candidates.push(getBinaryPath('ffmpeg-static/ffmpeg'));
+    } else {
+        candidates.push(unpackNativeEngine('ffmpeg'));
+        candidates.push(getBundledPath('desktop/bin/ffmpeg'));
+        candidates.push(getBinaryPath('ffmpeg-static/ffmpeg'));
+    }
+
+    const found = candidates.find((p) => p && fs.existsSync(p));
+    return found || (process.platform === 'win32' ? null : 'ffmpeg');
+};
+
 const resolveYtDlpPath = () => {
     const envPath = process.env.YOUTUBE_DL_PATH;
     if (envPath && fs.existsSync(envPath)) return envPath;
@@ -519,17 +555,16 @@ const resolveYtDlpPath = () => {
     const candidates = [];
 
     if (process.platform === 'win32') {
+        candidates.push(unpackNativeEngine('yt-dlp.exe'));
         candidates.push(getBundledPath('desktop/bin/yt-dlp.exe'));
         candidates.push(getBinaryPath('@distube/yt-dlp/bin/yt-dlp.exe'));
     } else if (process.platform === 'darwin') {
-        const bundledMacSource = path.join(__dirname, '..', 'desktop/bin/yt-dlp_macos');
-        if (fs.existsSync(bundledMacSource)) {
-            candidates.push(unpackNativeEngine('yt-dlp_macos'));
-        }
+        candidates.push(unpackNativeEngine('yt-dlp_macos'));
         candidates.push(getBundledPath('desktop/bin/yt-dlp_macos'));
         candidates.push(getBundledPath('desktop/bin/yt-dlp'));
         candidates.push(getBinaryPath('@distube/yt-dlp/bin/yt-dlp'));
     } else {
+        candidates.push(unpackNativeEngine('yt-dlp'));
         candidates.push(getBundledPath('desktop/bin/yt-dlp'));
         candidates.push(getBinaryPath('@distube/yt-dlp/bin/yt-dlp'));
     }
@@ -693,7 +728,7 @@ const ensureYtDlpPathWithTimeout = async (timeoutMs = 8000) => {
     }
     return !!ready;
 };
-const ffmpegPath = process.env.FFMPEG_PATH || (process.platform === 'win32' ? getBinaryPath('ffmpeg-static/ffmpeg.exe') : getBinaryPath('ffmpeg-static/ffmpeg'));
+const ffmpegPath = resolveFfmpegPath();
 console.log(`[Aether] ytdlpPath: ${ytdlpPath}, ffmpegPath: ${ffmpegPath}`);
 
 const offlineEngine = new OfflineEngine(app.getPath('userData'));
