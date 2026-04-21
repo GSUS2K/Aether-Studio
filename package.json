@@ -1,7 +1,7 @@
 {
   "name": "aether",
   "productName": "Aether",
-  "version": "2026.4.23",
+  "version": "2026.4.24",
   "description": "Standalone Aether Desktop Application",
   "main": "desktop/main.js",
   "scripts": {
@@ -68,7 +68,8 @@
     "nsis": {
       "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh"
     },
     "files": [
       "desktop/**/*",

@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('aether', {
   resizeWindow: (width, height, alwaysOnTop) => ipcRenderer.invoke('aether:window-resize', { width, height, alwaysOnTop }),
   toggleMaximize: () => ipcRenderer.invoke('aether:window-toggle-maximize'),
   minimize: () => ipcRenderer.invoke('aether:window-minimize'),
+  closeWindow: () => ipcRenderer.invoke('aether:window-close'),
   toggleWindowMaximize: () => ipcRenderer.invoke('aether:window-toggle-maximize'),
   onMaximized: (callback) => ipcRenderer.on('aether:maximized-state', (event, state) => callback(state)),
   openExternal: (url) => ipcRenderer.invoke('aether:open-external', url),

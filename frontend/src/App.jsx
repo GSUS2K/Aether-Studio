@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, Component } from 'react';
 // NOTE: Many async operations and state changes below may be subject to race conditions if triggered rapidly.
 // Consider debouncing or locking for critical flows (e.g., downloads, updates, queue changes).
-import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, VolumeX, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles, Clapperboard, Columns2 } from 'lucide-react';
+import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, VolumeX, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles, Clapperboard, Columns2, Repeat } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'framer-motion';
 import { setupDiscordSdk } from './discord';
@@ -452,6 +452,7 @@ function App() {
   const lyricsFetchRequestRef = useRef(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
+  const [neuralRecommendations, setNeuralRecommendations] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [hasCompletedSearch, setHasCompletedSearch] = useState(false);
   const [addingIds, setAddingIds] = useState(new Set());
@@ -502,6 +503,8 @@ function App() {
     const [isViewingFullDiscovery, setIsViewingFullDiscovery] = useState(false);
     const [isViewingFullPlaylist, setIsViewingFullPlaylist] = useState(null);
   const [isLibraryOverlayOpen, setIsLibraryOverlayOpen] = useState(false);
+  const [isSoundCapsuleOpen, setIsSoundCapsuleOpen] = useState(false);
+  const [soundCapsuleData, setSoundCapsuleData] = useState(null);
   const [libraryActionTarget, setLibraryActionTarget] = useState(null);
   const [isPlayerOverlayOpen, setIsPlayerOverlayOpen] = useState(false);
   const [isShortcutSettingsOpen, setIsShortcutSettingsOpen] = useState(false);
@@ -529,6 +532,7 @@ function App() {
   const sleepTimerMenuRef = useRef(null);
   const [localIp, setLocalIp] = useState('');
   const [isMiniPlayer, setIsMiniPlayer] = useState(false);
+  const [repeatMode, setRepeatMode] = useState('off');
   const [miniPlayerInfoMode, setMiniPlayerInfoMode] = useState('artist');
   const [isMiniQueuePeekOpen, setIsMiniQueuePeekOpen] = useState(false);
   const [isSpotifyImportOpen, setIsSpotifyImportOpen] = useState(false);
@@ -625,6 +629,8 @@ function App() {
   const [pendingResumeTime, setPendingResumeTime] = useState(null);
   const [oauthPrompt, setOauthPrompt] = useState(null);
   const [videoMode, setVideoMode] = useState(null); // null | 'dual' | 'cinema'
+  const [isVideoReady, setIsVideoReady] = useState(false);
+  const [dualFocusMode, setDualFocusMode] = useState(null); // null | 'video' | 'lyrics'
   const videoModeRef = useRef(null); // synchronous mirror — safe to read in audio callbacks
   const isPlayingRef = useRef(false); // live mirror of isPlaying for video handler closures
   const currentTimeRef = useRef(0);   // live mirror of currentTime for video handler closures
@@ -688,7 +694,13 @@ function App() {
     videoModeRef.current = null;
 
     // Step 4: Seed audio resumption time from where video left off
+    const durationMs = currentTrackRef.current?.totalDurationMs || currentTrackRef.current?.duration || 0;
     if (preservePosition && handoffMs !== null) {
+      if (durationMs > 0 && handoffMs >= durationMs - 3000) {
+        // If we exit video basically at the end, don't try to seek the raw audio pipe—just finish gracefully.
+        advanceQueueRef.current('natural_end');
+        return;
+      }
       currentTimeRef.current = handoffMs;
       pendingResumeTimeRef.current = handoffMs;
       setPendingResumeTime(handoffMs);
@@ -718,16 +730,17 @@ function App() {
     standaloneTrackLoadKeyRef.current = '';
     setPlaybackResetNonce((prev) => prev + 1);
 
-    // Step 6: Re-arm buffering until the audio transport proves it is healthy again.
-    setIsAudioBuffering(true);
-    setVisualControlsPinned(false);
-    setIsLyricsExpanded(false);
-    if (shouldRestoreVerticalStack) {
-      setIsVerticalStack(true);
-    }
+    // Step 6: Clear stale buffering state from the video engine
+    setIsAudioBuffering(false);
 
+    setIsVideoReady(false);
     setVideoMode(null);
-  }, [stopVideoElement]);
+  }, []);
+
+  // Reset isVideoReady on track change
+  useEffect(() => {
+    setIsVideoReady(false);
+  }, [queue?.[0]?.url, queue?.[0]?.youtubeId]);
 
   const switchVideoMode = useCallback((nextMode) => {
     const next = nextMode || null;
@@ -922,7 +935,7 @@ function App() {
       const guard = videoEndGuardRef.current;
       if (!guard || guard.trackKey !== trackActionKey || guard.settled) return;
       guard.settled = true;
-      advanceQueue('natural_end');
+      advanceQueueRef.current('natural_end');
     };
 
     // Handlers — re-attach every time track/mode changes, not on play/pause
@@ -932,6 +945,7 @@ function App() {
         if (vid.currentTime === 0 && targetSec > 2) vid.currentTime = targetSec;
         if (isPlayingRef.current) vid.play().catch(() => {});
         setIsAudioBuffering(false);
+        setIsVideoReady(true);
     };
     vid.onwaiting = () => setIsAudioBuffering(true);
     vid.onplaying = () => setIsAudioBuffering(false);
@@ -1060,7 +1074,7 @@ function App() {
   const platform = isStandalone ? window.aether?.platform : '';
   const isMacPlatform = isStandalone ? platform === 'darwin' : /mac/i.test(navigator?.platform || '');
   const isWindowsPlatform = isStandalone ? platform === 'win32' : /win/i.test(navigator?.platform || '');
-  const desktopTopInsetClass = isMacPlatform ? 'pt-7' : (isWindowsPlatform ? 'pt-[34px]' : 'pt-0');
+  const windowChromeInsetClass = isMacPlatform ? 'pt-7' : (isWindowsPlatform ? (isMaximized ? 'pt-0' : 'pt-[34px]') : 'pt-0');
   const defaultGlobalMediaShortcutsEnabled = isMacPlatform;
 
   const updateActionLabel = useMemo(() => {
@@ -1190,17 +1204,30 @@ function App() {
     setSpotifyImportLogs(prev => [...prev.slice(-19), msg]);
   }, []);
 
+  const appendRecentEvent = useCallback((label, detail = '', meta = {}) => {
+    const event = {
+      at: Date.now(),
+      label: String(label || 'event'),
+      detail: String(detail || meta?.detail || '').trim(),
+      tone: String(meta?.tone || 'neutral'),
+      title: String(meta?.title || currentTrack?.title || '').trim(),
+    };
+    setSkipEvents((prev) => [...prev.slice(-49), event]);
+  }, [currentTrack?.title]);
+
   const noteSkipReason = useCallback((reason, meta = {}) => {
     console.log('[Aether/SkipReason]', reason, meta);
     setSkipReasonToast(reason);
     const event = {
       at: Date.now(),
-      reason,
-      source: meta?.source || 'unknown',
+      label: reason,
+      detail: meta?.title || currentTrack?.title || 'Unknown',
+      tone: 'transport',
       title: meta?.title || currentTrack?.title || 'Unknown',
+      source: meta?.source || 'unknown',
       trackId: meta?.trackId || currentTrack?.id || null,
     };
-    setSkipEvents(prev => [...prev.slice(-29), event]);
+    setSkipEvents(prev => [...prev.slice(-49), event]);
     if (skipReasonTimeoutRef.current) clearTimeout(skipReasonTimeoutRef.current);
     skipReasonTimeoutRef.current = setTimeout(() => setSkipReasonToast(''), 2200);
   }, [currentTrack?.id, currentTrack?.title]);
@@ -1328,7 +1355,7 @@ function App() {
 
   const copyVaultSceneEmbed = useCallback(async () => {
     const totalDurationMs = currentTrack?.totalDurationMs || currentTrack?.duration || 0;
-    const currentMs = Math.max(0, Math.floor(currentTime || 0));
+    const currentMs = getActivePlaybackPositionMs();
     const lyricLine = (() => {
       if (!Array.isArray(lyrics) || lyrics.length === 0) return 'No lyric locked yet';
       const line = [...lyrics].reverse().find((l) => l.time <= currentMs);
@@ -1377,14 +1404,16 @@ function App() {
         document.execCommand('copy');
         fallback.remove();
       }
+      appendRecentEvent('scene_link', `${payload.t} @ ${formatTime(currentMs)}`, { tone: 'success', title: payload.t });
       setLastAdded('Scene link copied');
       setTimeout(() => setLastAdded(null), 2200);
     } catch (err) {
       console.warn('[Aether/Vault] Failed to copy scene embed', err);
+      appendRecentEvent('scene_link_failed', err?.message || 'Scene link unavailable', { tone: 'error', title: payload.t });
       setLastAdded('Scene link unavailable');
       setTimeout(() => setLastAdded(null), 2200);
     }
-  }, [currentTime, currentTrack?.actualUrl, currentTrack?.author, currentTrack?.duration, currentTrack?.thumbnail, currentTrack?.title, currentTrack?.youtubeId, isPlaying, lyrics, themeColor, visualizerMode, vaultPulse.bass, vaultPulse.energy, vaultPulse.highs, vaultPulse.mids]);
+  }, [appendRecentEvent, currentTrack?.actualUrl, currentTrack?.author, currentTrack?.duration, currentTrack?.thumbnail, currentTrack?.title, currentTrack?.youtubeId, formatTime, getActivePlaybackPositionMs, isPlaying, lyrics, themeColor, visualizerMode, vaultPulse.bass, vaultPulse.energy, vaultPulse.highs, vaultPulse.mids]);
 
   const refreshLockStatus = useCallback(async () => {
     if (!isStandalone || !window.aether?.getLockStatus) return;
@@ -1533,7 +1562,7 @@ function App() {
         }
 
         if (Array.isArray(savedSkipEvents)) {
-          setSkipEvents(savedSkipEvents.slice(-30));
+          setSkipEvents(savedSkipEvents.slice(-50));
         }
         if (savedLockPrefs && typeof savedLockPrefs === 'object') {
           if (typeof savedLockPrefs.idleMinutes === 'number' && isFinite(savedLockPrefs.idleMinutes)) {
@@ -1551,9 +1580,9 @@ function App() {
   useEffect(() => {
     try {
       if (isStandalone && window.aether?.store?.set) {
-        window.aether.store.set(SKIP_EVENTS_STORAGE_KEY, skipEvents.slice(-30));
+        window.aether.store.set(SKIP_EVENTS_STORAGE_KEY, skipEvents.slice(-50));
       } else {
-        localStorage.setItem(SKIP_EVENTS_STORAGE_KEY, JSON.stringify(skipEvents.slice(-30)));
+        localStorage.setItem(SKIP_EVENTS_STORAGE_KEY, JSON.stringify(skipEvents.slice(-50)));
       }
     } catch (e) {
       console.warn('[Aether/Prefs] Failed to persist skip events', e);
@@ -1908,7 +1937,8 @@ function App() {
     setLyricOffsetPresets(next);
     setIsLyricPresetSaved(true);
     await persistLyricPresets(next);
-  }, [currentTrackPresetKey, lyricOffsetPresets, lyricOffsetMs, persistLyricPresets]);
+    appendRecentEvent('sync_saved', `${parseLyricOffsetValue(lyricOffsetMs)}ms`, { tone: 'success', title: currentTrack?.title || currentTrackTitle });
+  }, [appendRecentEvent, currentTrack?.title, currentTrackPresetKey, currentTrackTitle, lyricOffsetPresets, lyricOffsetMs, persistLyricPresets]);
 
   const handleResetLyricPreset = useCallback(async () => {
     if (!currentTrackPresetKey) {
@@ -1922,7 +1952,8 @@ function App() {
     setLyricOffsetMs(0);
     setIsLyricPresetSaved(false);
     await persistLyricPresets(next);
-  }, [currentTrackPresetKey, lyricOffsetPresets, persistLyricPresets]);
+    appendRecentEvent('sync_reset', 'Subtitle sync reset to 0ms', { tone: 'warning', title: currentTrack?.title || currentTrackTitle });
+  }, [appendRecentEvent, currentTrack?.title, currentTrackPresetKey, currentTrackTitle, lyricOffsetPresets, persistLyricPresets]);
 
   const normalizeTrackIdentity = useCallback((track) => {
     if (!track) return '';
@@ -2093,6 +2124,20 @@ function App() {
     setLyricOffsetMs(presetValue);
     setIsLyricPresetSaved(hasPreset);
   }, [currentTrackPresetKey, lyricOffsetPresets]);
+
+  useEffect(() => {
+    if (!currentTrackPresetKey) {
+      setIsLyricPresetSaved(false);
+      return;
+    }
+    const hasPreset = Object.prototype.hasOwnProperty.call(lyricOffsetPresets, currentTrackPresetKey);
+    if (!hasPreset) {
+      setIsLyricPresetSaved(false);
+      return;
+    }
+    const presetValue = parseLyricOffsetValue(lyricOffsetPresets[currentTrackPresetKey]);
+    setIsLyricPresetSaved(parseLyricOffsetValue(lyricOffsetMs) === presetValue);
+  }, [currentTrackPresetKey, lyricOffsetMs, lyricOffsetPresets]);
 
   useEffect(() => {
     if (isStandalone || !currentTrack?.title) return;
@@ -2622,23 +2667,16 @@ function App() {
             // Apply pending resume time only once (from video exit handoff)
             if (resumeMs > 0) {
               const resumeSec = resumeMs / 1000;
-              const canSeek = !!isLocalDownloaded || (() => {
-                try {
-                  const seekable = localAudioRef.current?.seekable;
-                  return !!(seekable && seekable.length > 0 && seekable.end(seekable.length - 1) >= Math.max(0, resumeSec - 1));
-                } catch { return false; }
-              })();
-              if (canSeek) {
-                localAudioRef.current.currentTime = resumeSec;
-                setCurrentTime(Math.floor(resumeSec * 1000));
-                currentTimeRef.current = Math.floor(resumeSec * 1000);
-                pendingResumeTimeRef.current = null;
-                setPendingResumeTime(null);
-                // Resume playback after seek
-                if (isPlaying) localAudioRef.current.play().catch(() => {});
-              } else {
-                setIsAudioBuffering(true);
-              }
+              // We trust HTML5's seek capability to trigger Range headers or native fast-forward
+              // dropping strict buffer limits allows continuous streaming if the backend allows it.
+              localAudioRef.current.currentTime = resumeSec;
+              setCurrentTime(Math.floor(resumeSec * 1000));
+              currentTimeRef.current = Math.floor(resumeSec * 1000);
+              pendingResumeTimeRef.current = null;
+              setPendingResumeTime(null);
+              setIsAudioBuffering(false);
+              // Resume playback after seek
+              if (isPlaying) localAudioRef.current.play().catch(() => {});
             } else {
               setIsAudioBuffering(false);
             }
@@ -2705,12 +2743,12 @@ function App() {
                 localAudioRef.current.src = recoveryUrl;
                 if (!videoModeRef.current) localAudioRef.current.play().catch((e) => {
                   console.error('[Aether/Audio] Recovery failed', e);
-                  advanceQueue('premature_recover_failed');
+                  advanceQueueRef.current('premature_recover_failed');
                 });
                 return;
             }
             console.log("[Aether/Audio] Terminated Naturally. Handing to Shared Advance.");
-            advanceQueue('natural_end');
+            advanceQueueRef.current('natural_end');
         };
         localAudioRef.current.onerror = (e) => {
             if (videoModeRef.current) {
@@ -4342,6 +4380,7 @@ function App() {
         const message = audit?.valid
           ? `Cookies imported • ${audit.summary || 'format looks valid'}`
           : `Cookies imported • ${audit?.summary || 'please verify the file format'}`;
+        appendRecentEvent('cookies_imported', audit?.summary || 'Cookie session updated', { tone: audit?.valid ? 'success' : 'warning' });
         setLastAdded(message);
         setTimeout(() => setLastAdded(null), 2800);
         if (audit?.valid) {
@@ -4350,14 +4389,44 @@ function App() {
         return;
       }
 
+      appendRecentEvent('cookies_failed', res?.error || 'Cookie import failed', { tone: 'error' });
       setLastAdded(`Cookie import failed${res?.error ? `: ${String(res.error).slice(0, 42)}` : ''}`);
       setTimeout(() => setLastAdded(null), 2800);
     } catch (e) {
       console.warn('[Aether/Cookies] import failed', e);
+      appendRecentEvent('cookies_failed', e?.message || 'Cookie import failed', { tone: 'error' });
       setLastAdded('Cookie import failed');
       setTimeout(() => setLastAdded(null), 2500);
     }
-  }, [isStandalone, refreshEngineStatus]);
+  }, [appendRecentEvent, isStandalone, refreshEngineStatus]);
+
+  const handleCopyDiagnosticsValue = useCallback(async (value, successLabel = 'Copied to clipboard') => {
+    const text = String(value || '').trim();
+    if (!text) return;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.setAttribute('readonly', 'true');
+        textArea.style.position = 'absolute';
+        textArea.style.left = '-9999px';
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+      }
+      setLastAdded(successLabel);
+      appendRecentEvent('copied', successLabel, { tone: 'success' });
+      setTimeout(() => setLastAdded(null), 1800);
+    } catch (error) {
+      console.warn('[Aether/Diagnostics] clipboard copy failed', error);
+      appendRecentEvent('copy_failed', error?.message || 'Clipboard copy failed', { tone: 'error' });
+      setLastAdded('Clipboard copy failed');
+      setTimeout(() => setLastAdded(null), 1800);
+    }
+  }, [appendRecentEvent]);
 
   const applyStoragePolicy = useCallback(async (nextPolicy) => {
     if (!isStandalone || !window.aether?.updateStoragePolicy) return;
@@ -4495,8 +4564,9 @@ function App() {
     // Immersive mode should stay locked and centered unless user explicitly pauses elsewhere.
     if (isLyricsExpanded) {
       setIsAutoScrollPaused(false);
+      closeHeaderSurfaces();
     }
-  }, [isLyricsExpanded]);
+  }, [isLyricsExpanded, closeHeaderSurfaces]);
 
   useLayoutEffect(() => {
     let raf1;
@@ -4945,6 +5015,24 @@ function App() {
     setHasCompletedSearch(false);
   }, [searchQuery, searchResults.length, hasCompletedSearch]);
 
+  // -- NEURAL DISCOVERY (AUTO-FETCH) --
+  useEffect(() => {
+    if (!currentTrack || !isStandalone || !window.aether?.search) return;
+    const fetchNeural = async () => {
+      try {
+        const query = currentTrack.author || currentTrack.title?.split('-')?.[0] || 'music';
+        const res = await window.aether.search(query);
+        if (Array.isArray(res)) {
+          const filtered = res.filter(t => t.id !== currentTrack.id && t.youtubeId !== currentTrack.youtubeId);
+          setNeuralRecommendations(filtered.slice(0, 15));
+        }
+      } catch (e) {
+        console.error('[Aether] Neural fetch failed', e);
+      }
+    };
+    fetchNeural();
+  }, [currentTrack?.title, currentTrack?.author, currentTrack?.id, currentTrack?.youtubeId, isStandalone]);
+
   const warmupTrack = async (track) => {
     if (!window.aether?.download || !track || isWarmupUnavailable) return;
     const derivedYoutubeId = track.youtubeId || extractYouTubeId(track.actualUrl || track.url || track.id);
@@ -5304,6 +5392,46 @@ function App() {
     setCurrentTime(clampedMs);
   }, []);
 
+  const logSoundCapsulePlayback = useCallback(async (track) => {
+    if (!track || !isStandalone || !window.aether?.store) return;
+    try {
+      const data = await window.aether.store.get('sound-capsule') || { tracks: {}, artists: {}, totalMinutes: 0, hourlyTrends: {}, weeklyTrends: {}, genres: {} };
+      const now = new Date();
+      const hour = now.getHours();
+      const day = now.getDay();
+      
+      const tId = track.id || track.youtubeId;
+      if (tId) {
+        if (!data.tracks[tId]) data.tracks[tId] = { count: 0, title: track.title, author: track.author, thumbnail: track.thumbnail };
+        data.tracks[tId].count++;
+        data.tracks[tId].lastListened = now.toISOString();
+      }
+
+      const author = track.author?.trim();
+      if (author) {
+        if (!data.artists[author]) data.artists[author] = { count: 0 };
+        data.artists[author].count++;
+      }
+
+      // Trends
+      data.hourlyTrends[hour] = (data.hourlyTrends[hour] || 0) + 1;
+      data.weeklyTrends[day] = (data.weeklyTrends[day] || 0) + 1;
+
+      // Inferred Genre (Signal lookup)
+      const titleLower = track.title?.toLowerCase() || '';
+      const authorLower = track.author?.toLowerCase() || '';
+      const genreSignals = ['lofi', 'jazz', 'rock', 'pop', 'synthwave', 'techno', 'ambient', 'classic', 'metal', 'rap', 'hiphop', 'trap', 'house', 'dubstep', 'relax', 'study'];
+      genreSignals.forEach(signal => {
+        if (titleLower.includes(signal) || authorLower.includes(signal)) {
+            data.genres[signal] = (data.genres[signal] || 0) + 1;
+        }
+      });
+
+      data.totalMinutes += Math.round(Number(currentTimeRef.current || 0) / 60000);
+      await window.aether.store.set('sound-capsule', data);
+    } catch(e) { console.error('[Aether] Sound capsule write failed', e); }
+  }, [isStandalone]);
+
   // Consolidate queue advancement logic
   const advanceQueue = useCallback((reason) => {
     const track = queue?.[0];
@@ -5321,21 +5449,62 @@ function App() {
         action: transportGuard.action,
         title: track?.title,
       });
-      return;
+      // Do not hard-block; if we are actually stuck at the end, we still need to clear it.
+      if (Math.abs(currentTimeRef.current - (track.totalDurationMs || track.duration || 0)) < 5000) {
+        console.log('[Aether/Queue] Override: Forced natural end at EOF boundary.');
+      } else {
+        return;
+      }
     }
 
     console.log(`[Aether/Queue] Advancing: ${reason} for ${track.title}`);
     noteSkipReason(reason, { trackId: track.id, title: track.title });
+
+    if (reason === 'natural_end' || currentTimeRef.current > 30000 || (track.totalDurationMs && currentTimeRef.current > track.totalDurationMs * 0.5)) {
+      logSoundCapsulePlayback(track);
+    }
+
+    if (reason === 'natural_end' && repeatMode === 'track') {
+      pendingResumeTimeRef.current = null;
+      setPendingResumeTime(null);
+      currentTimeRef.current = 0;
+      setCurrentTime(0);
+      manualTransportAdvanceRef.current = null;
+      if (localAudioRef.current && !videoModeRef.current) {
+        try {
+          localAudioRef.current.currentTime = 0;
+          if (isPlaying) localAudioRef.current.play().catch(() => {});
+        } catch {}
+      }
+      appendRecentEvent('repeat_track', track.title || 'Current track', { tone: 'neutral' });
+      return;
+    }
+
+    if (reason === 'natural_end' && repeatMode === 'queue' && queue.length === 1) {
+      pendingResumeTimeRef.current = null;
+      setPendingResumeTime(null);
+      currentTimeRef.current = 0;
+      setCurrentTime(0);
+      manualTransportAdvanceRef.current = null;
+      if (localAudioRef.current && !videoModeRef.current) {
+        try {
+          localAudioRef.current.currentTime = 0;
+          if (isPlaying) localAudioRef.current.play().catch(() => {});
+        } catch {}
+      }
+      appendRecentEvent('repeat_queue', `Repeating loop: ${track.title}`, { tone: 'neutral' });
+      return;
+    }
     
+    // Standard Queue Advancement
     setQueue(prev => {
-      const normalized = Array.isArray(prev) ? prev.filter(item => item && typeof item === 'object') : [];
-      const removed = normalized[0] || null;
+      if (!Array.isArray(prev) || prev.length === 0) return [];
+      const removed = prev[0];
       const removedKey = getTrackActionKey(removed);
-      let next = normalized.slice(1);
+      let next = prev.slice(1);
       
-      // Skip adjacent duplicates with same key
-      while (next.length > 0 && removedKey && getTrackActionKey(next[0]) === removedKey) {
-        next = next.slice(1);
+      if (repeatMode === 'queue' && removed) {
+        next = [...next, removed];
       }
 
       if (next.length === 0) {
@@ -5351,7 +5520,12 @@ function App() {
     currentTimeRef.current = 0;
     setCurrentTime(0);
     manualTransportAdvanceRef.current = null;
-  }, [queue, getTrackActionKey, isAutoplayEnabled, triggerAutoplay, noteSkipReason]);
+  }, [appendRecentEvent, getTrackActionKey, isAutoplayEnabled, isPlaying, noteSkipReason, queue, repeatMode, triggerAutoplay]);
+
+  const advanceQueueRef = useRef(advanceQueue);
+  useEffect(() => {
+    advanceQueueRef.current = advanceQueue;
+  }, [advanceQueue]);
 
   const handleControl = useCallback(async (action) => {
     console.log("[Aether/Control] Signal Bridge Active:", action);
@@ -5415,7 +5589,7 @@ function App() {
             at: Date.now(),
             action: 'skip',
           };
-          advanceQueue('manual_skip');
+          advanceQueueRef.current('manual_skip');
         }
         
         // CLEAR/STOP: Empty queue and stop playback
@@ -5454,6 +5628,15 @@ function App() {
         if (localAudioRef.current) {
           localAudioRef.current.pause();
         }
+      }
+      if (action === 'shuffle') {
+          console.log("[Aether/Control] Network Shuffle triggered");
+          setQueue(q => {
+             if (!Array.isArray(q) || q.length <= 1) return q;
+             const current = q[0];
+             const rest = [...q.slice(1)].sort(() => Math.random() - 0.5);
+             return [current, ...rest];
+          });
       }
       if (action === 'clear' || action === 'stop') {
         setQueue([]);
@@ -5569,14 +5752,17 @@ function App() {
           await window.aether.resizeWindow(1160, 780, false);
           setIsMiniPlayer(false);
           setIsMiniQueuePeekOpen(false);
+          appendRecentEvent('mini_player', 'Returned to studio layout', { tone: 'neutral' });
       } else {
-          exitVideoMode(); // exit video mode clean when going mini
-          await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+          if (videoModeRef.current || localVideoRef.current) {
+            switchVideoMode('dual'); // Compress into album bounding box, don't sever connection
+          }
           await window.aether.resizeWindow(isMacPlatform ? 664 : 648, isMacPlatform ? 236 : 228, true);
           setIsMiniPlayer(true);
           setIsMiniQueuePeekOpen(false);
+          appendRecentEvent('mini_player', 'Dock view enabled', { tone: 'neutral' });
       }
-  }, [isMiniPlayer, isStandalone, isMacPlatform, exitVideoMode]);
+  }, [appendRecentEvent, exitVideoMode, isMacPlatform, isMiniPlayer, isStandalone]);
 
   const toggleFocusMode = useCallback(() => {
     if (videoMode === 'dual') return;
@@ -5606,6 +5792,14 @@ function App() {
       return next;
     });
   }, [closeHeaderSurfaces]);
+
+  const cycleRepeatMode = useCallback(() => {
+    setRepeatMode((prev) => {
+      const next = prev === 'off' ? 'track' : prev === 'track' ? 'queue' : 'off';
+      appendRecentEvent('repeat_mode', next === 'off' ? 'Repeat disabled' : next === 'track' ? 'Repeating current track' : 'Repeating queue', { tone: 'neutral' });
+      return next;
+    });
+  }, [appendRecentEvent]);
 
   useEffect(() => {
     if (!isMiniPlayer || !currentTrack || queue.length <= 1) {
@@ -5670,9 +5864,10 @@ function App() {
     }
 
     setPlaybackResetNonce((prev) => prev + 1);
+    appendRecentEvent('engine_reset', `${activeMode} transport`, { tone: 'warning', title: currentTrack?.title || 'Playback' });
     setLastAdded(`Engine reset • ${activeMode} transport`);
     setTimeout(() => setLastAdded(null), 2200);
-  }, [currentTrack?.actualUrl, currentTrack?.title, currentTrack?.url, getActivePlaybackPositionMs, isStandalone, stopVideoElement]);
+  }, [appendRecentEvent, currentTrack?.actualUrl, currentTrack?.title, currentTrack?.url, getActivePlaybackPositionMs, isStandalone, stopVideoElement]);
 
   const handleRunRuntimeRepair = useCallback(async () => {
     if (!isStandalone) return;
@@ -5689,16 +5884,18 @@ function App() {
 
       const notes = Array.isArray(repairResult?.notes) ? repairResult.notes.filter(Boolean) : [];
       const summary = notes[0] || 'Runtime repair complete';
+      appendRecentEvent('runtime_repair', summary, { tone: 'success' });
       setLastAdded(summary);
       setTimeout(() => setLastAdded(null), 3200);
     } catch (e) {
       console.warn('[Aether/Diagnostics] runtime repair failed', e);
+      appendRecentEvent('runtime_repair_failed', e?.message || 'Runtime repair failed', { tone: 'error' });
       setLastAdded('Runtime repair failed');
       setTimeout(() => setLastAdded(null), 2800);
     } finally {
       setIsRuntimeRepairing(false);
     }
-  }, [currentTrack?.actualUrl, currentTrack?.url, handleResetPlaybackEngine, isStandalone, refreshEngineStatus, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats]);
+  }, [appendRecentEvent, currentTrack?.actualUrl, currentTrack?.url, handleResetPlaybackEngine, isStandalone, refreshEngineStatus, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats]);
 
   useEffect(() => {
     const isTypingTarget = (el) => {
@@ -5873,7 +6070,7 @@ function App() {
     const miniMetaLine = miniShowingLyric ? compactLyric : (miniArtist || 'Unknown artist');
 
      return (
-        <div className={`w-[100vw] h-[100vh] bg-[#040607] overflow-hidden drag relative ${desktopTopInsetClass}`}>
+        <div className={`w-[100vw] h-[100vh] bg-[#040607] overflow-hidden drag relative ${windowChromeInsetClass}`}>
           {/* Ambient glow from album art color */}
           <div className="absolute -top-20 left-8 h-40 w-40 rounded-full blur-[78px] opacity-28 pointer-events-none" style={{ background: `${themeColor}50` }} />
           <div className="absolute -bottom-12 right-8 h-36 w-36 rounded-full blur-[72px] opacity-20 pointer-events-none" style={{ background: `${themeColor}32` }} />
@@ -6124,28 +6321,86 @@ function App() {
   const cookieStatusLabel = !engineStatus
     ? 'CHECKING'
     : !engineStatus.cookiesReady
-      ? 'NOT LOADED'
-      : cookieAudit?.valid
-        ? 'VALID LOOKING'
-        : 'CHECK FILE';
+      ? 'NO FILE'
+      : cookieAudit?.readyForYoutube
+        ? 'READY FOR YOUTUBE'
+        : cookieAudit?.valid
+          ? 'FORMAT OK'
+          : 'CHECK FILE';
   const cookieStatusTone = !engineStatus
     ? 'text-white/60'
     : !engineStatus.cookiesReady
       ? 'text-white/60'
-      : cookieAudit?.valid
+      : cookieAudit?.readyForYoutube
         ? 'text-brand-accent'
+        : cookieAudit?.valid
+          ? 'text-white/80'
+          : 'text-yellow-400';
+  const cookieSummaryLine = !engineStatus
+    ? 'Checking cookie session…'
+    : !engineStatus.cookiesReady
+      ? 'Anonymous requests only until a Netscape cookies.txt file is imported.'
+      : cookieAudit?.summary || 'Cookie file detected.';
+  const cookieAssuranceLine = !engineStatus?.cookiesReady
+    ? 'Used only when YouTube asks for sign-in or confirmation.'
+    : cookieAudit?.note || 'Local format scan only.';
+  const ytDlpStatusLabel = !engineStatus
+    ? 'CHECKING'
+    : engineStatus.ytDlpReady
+      ? 'READY'
+      : engineStatus.ytDlpPath
+        ? 'FOUND, VERIFYING'
+        : 'UNAVAILABLE';
+  const ytDlpStatusTone = !engineStatus
+    ? 'text-white/60'
+    : engineStatus.ytDlpReady
+      ? 'text-brand-accent'
+      : engineStatus.ytDlpPath
+        ? 'text-white/80'
         : 'text-yellow-400';
-  const cookieDetailLine = cookieAudit?.summary || engineStatus?.cookiesPath || 'anonymous requests only';
+  const ytDlpDetailLine = !engineStatus
+    ? 'Resolving yt-dlp binary…'
+    : engineStatus.ytDlpReady
+      ? 'Direct fetch engine answered a version check.'
+      : engineStatus.ytDlpPath
+        ? 'Binary is present but has not passed a health check yet.'
+        : 'No working yt-dlp binary found yet.';
+  const ffmpegStatusLabel = !engineStatus
+    ? 'CHECKING'
+    : engineStatus.ffmpegReady
+      ? 'READY'
+      : 'MISSING';
+  const ffmpegStatusTone = !engineStatus
+    ? 'text-white/60'
+    : engineStatus.ffmpegReady
+      ? 'text-brand-accent'
+      : 'text-yellow-400';
+  const ffmpegDetailLine = !engineStatus
+    ? 'Resolving ffmpeg…'
+    : engineStatus.ffmpegReady
+      ? 'Remux and extraction pipeline is ready.'
+      : 'FFmpeg is not resolved yet.';
+  const showVisualStage = Boolean(isStandalone && currentTrack && videoMode);
+  const showImmersiveLyricsOverlay = Boolean(isLyricsExpanded && !showVisualStage);
+  const showWindowsTitleStrip = Boolean(isStandalone && isWindowsPlatform && !isMaximized && !showImmersiveLyricsOverlay);
+  const showWindowsHeaderWindowControls = Boolean(isStandalone && isWindowsPlatform && isMaximized && !showImmersiveLyricsOverlay);
+  const desktopTopInsetClass = showImmersiveLyricsOverlay
+    ? 'pt-0'
+    : windowChromeInsetClass;
+  const diagnosticPathBlockClass = 'mt-2 rounded-xl border border-white/8 bg-black/25 px-2.5 py-2 text-[10px] leading-4 font-mono text-white/55 whitespace-pre-wrap break-all';
   const repairActionLabel = isRuntimeRepairing ? 'Repairing…' : 'Repair Runtime';
   const doodleIntensityScale = doodleIntensity === 'subtle' ? 0.75 : doodleIntensity === 'dreamy' ? 1.35 : 1;
   const doodleIntensityBadge = doodlePresetConfig.badge;
   const workspaceModeLabel = isFocusedMode ? 'Focus' : isVerticalStack ? 'Stack' : 'Studio';
   const playbackModeLabel = videoMode === 'cinema' ? 'Cinema' : videoMode === 'dual' ? 'Dual Stage' : isPlaying ? 'Audio Live' : 'Ready';
-  const chromeTopOffset = isWindowsPlatform ? 114 : isMacPlatform ? 96 : 86;
-  const diagnosticsTopOffset = isWindowsPlatform ? 120 : isMacPlatform ? 102 : 92;
+  const repeatModeLabel = repeatMode === 'track' ? 'Repeat Track' : repeatMode === 'queue' ? 'Repeat Queue' : 'Repeat Off';
+  const repeatModeBadge = repeatMode === 'track' ? '1' : repeatMode === 'queue' ? 'Q' : null;
+  const hasLyricPreset = Boolean(currentTrackPresetKey && Object.prototype.hasOwnProperty.call(lyricOffsetPresets, currentTrackPresetKey));
+  const lyricPresetActionLabel = isLyricPresetSaved ? 'Saved' : hasLyricPreset ? 'Update' : 'Save';
+  const chromeTopOffset = isWindowsPlatform ? (showWindowsTitleStrip ? 114 : 84) : isMacPlatform ? 96 : 86;
+  const diagnosticsTopOffset = isWindowsPlatform ? (showWindowsTitleStrip ? 120 : 88) : isMacPlatform ? 102 : 92;
   const visualStageLyric = compactLyric || activeLyric || null;
   const visualStageNextLyric = nextLyric && nextLyric !== visualStageLyric ? nextLyric : null;
-  const showVisualStage = Boolean(isStandalone && currentTrack && videoMode);
   const isDualVisualMode = showVisualStage && videoMode === 'dual';
   const isDualWorkspaceMode = isDualVisualMode && !isVerticalStack;
   const isDualLayoutLocked = videoMode === 'dual';
@@ -6161,7 +6416,6 @@ function App() {
   const visualLyricOverlayBottomClass = videoMode === 'cinema'
     ? (visualStageFooterVisible ? 'bottom-28 md:bottom-36' : 'bottom-0')
     : 'bottom-24';
-  const showImmersiveLyricsOverlay = Boolean(isLyricsExpanded && !showVisualStage);
   const leftWorkspaceClass = isVerticalStack
     ? '!w-full !max-w-full !flex-none'
     : showSecondaryColumn
@@ -6181,6 +6435,7 @@ function App() {
     ? 'relative z-10 flex flex-col items-center gap-14 lg:gap-20 py-[18vh] text-center w-full mx-auto'
     : 'flex flex-col gap-6 py-4 text-center';
   const lyricsHeaderEyebrow = isDualWorkspaceMode ? 'Split Immersive' : 'Subtitles';
+  const sharedModalCloseButtonClass = 'w-10 h-10 rounded-xl border border-white/15 bg-white/[0.03] text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center';
 
   return (
     <div className={`fixed inset-0 bg-transparent selection:bg-brand-accent selection:text-brand-dark flex flex-col h-screen overflow-hidden relative isolate ${desktopTopInsetClass} ${isVerticalStack ? 'vertical-stack-mode' : ''} ${isDoodleMode ? `doodle-mode-active doodle-preset-${doodleIntensity}` : ''} ${isAuraMode ? `aura-mode-active aura-preset-${auraPreset}` : ''}`} style={auraFieldStyle}>
@@ -6188,36 +6443,15 @@ function App() {
       {/* Background Mesh (Absolute to avoid flex interference) */}
       <div className="absolute inset-0 bg-mesh pointer-events-none z-[-1]" />
 
-      {isStandalone && isWindowsPlatform && (
-        <div className="fixed inset-x-0 top-0 z-[260] h-[34px] border-b border-white/8 bg-[#071015]/88 backdrop-blur-2xl drag">
-          <div className="flex h-full items-center justify-between px-3">
-            <div className="flex items-center gap-2 select-none">
-              <div className="h-1.5 w-1.5 rounded-full bg-brand-accent/65" />
-              <span className="text-[10px] font-black uppercase tracking-[0.22em] text-white/38">Aether</span>
-            </div>
-
-            <div className="flex items-center gap-1 no-drag">
-              <button
-                onClick={() => window.aether?.minimize?.()}
-                className="flex h-7 w-7 items-center justify-center rounded-lg text-white/45 transition-all hover:bg-white/10 hover:text-white"
-                title="Minimize"
-              >
-                <span className="translate-y-[-1px] text-sm leading-none">-</span>
-              </button>
-              <button
-                onClick={() => window.aether?.toggleWindowMaximize?.()}
-                className="flex h-7 w-7 items-center justify-center rounded-lg text-white/45 transition-all hover:bg-white/10 hover:text-white"
-                title={isMaximized ? 'Restore' : 'Maximize'}
-              >
-                {isMaximized ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
-              </button>
-              <button
-                onClick={() => window.aether?.closeWindow?.()}
-                className="flex h-7 w-7 items-center justify-center rounded-lg text-white/45 transition-all hover:bg-red-500/20 hover:text-red-300"
-                title="Close"
-              >
-                <X size={12} />
-              </button>
+      {showWindowsTitleStrip && (
+        <div className="fixed inset-x-0 top-0 z-[260] h-[34px] border-b border-white/8 bg-[#0a0f12]/92 backdrop-blur-3xl drag">
+          <div className="flex h-full items-center px-4 pr-[140px] select-none">
+            <div className="flex items-center gap-2">
+              <div className="h-1.5 w-1.5 rounded-full bg-brand-accent/65 shadow-[0_0_14px_rgba(0,255,191,0.4)]" />
+              <span className="text-[10px] font-black uppercase tracking-[0.22em] text-white/42">Aether</span>
+              <span className="rounded-full border border-white/10 bg-white/[0.03] px-1.5 py-[1px] text-[7px] font-black uppercase tracking-[0.2em] text-brand-accent/70">
+                Studio
+              </span>
             </div>
           </div>
         </div>
@@ -6313,6 +6547,7 @@ function App() {
       )}
 
       {/* APP HEADER */}
+      {!showImmersiveLyricsOverlay && (
       <header className={topHeaderClass}>
         <div className="flex min-w-0 items-center gap-3 lg:min-w-[250px]">
           <div className="relative flex h-11 w-11 items-center justify-center overflow-hidden rounded-[1.35rem] border border-brand-accent/25 bg-white/[0.04] shadow-[0_0_28px_rgba(0,255,191,0.08)] no-drag">
@@ -6343,8 +6578,9 @@ function App() {
               <input 
                 type="text" 
                 placeholder="Search music..." 
-                className={`w-full rounded-full pl-12 pr-12 h-12 text-base md:text-[15px] outline-none transition-all ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/[0.04] border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'}`}
+                className={`w-full rounded-full pl-12 pr-12 h-12 text-base md:text-[15px] outline-none transition-all ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/[0.04] border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'} disabled:opacity-30 disabled:cursor-not-allowed`}
                 value={searchQuery}
+                disabled={videoMode === 'dual'}
                 onChange={(e) => {
                   setSearchQuery(e.target.value);
                   setHasCompletedSearch(false);
@@ -6355,6 +6591,20 @@ function App() {
         </div>
 
         <div className="flex items-center justify-end gap-2 min-w-fit order-3 no-drag">
+          <button
+            onClick={async () => {
+              if (window.aether?.store) {
+                const data = await window.aether.store.get('sound-capsule');
+                setSoundCapsuleData(data || { tracks: {}, artists: {}, totalMinutes: 0 });
+              }
+              setIsSoundCapsuleOpen(true);
+            }}
+            className="h-10 px-4 rounded-2xl flex items-center justify-center gap-2 transition-all border no-drag bg-white/[0.04] border-brand-accent/20 text-brand-accent hover:bg-brand-accent/20 hover:border-brand-accent/50 shadow-[0_0_15px_rgba(0,255,191,0.15)] group"
+            title="Open Sound Capsule Analytics"
+          >
+            <Activity size={16} className="group-hover:animate-pulse" />
+            <span className="text-[10px] font-black uppercase tracking-[0.2em] hidden md:block">Capsule</span>
+          </button>
           <button
             onClick={openShortcutSettings}
             className="w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag bg-white/[0.04] border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50"
@@ -6529,8 +6779,138 @@ function App() {
               Stack
             </button>
           </div>
+
+          {showWindowsHeaderWindowControls && (
+            <div className="ml-1 flex items-center gap-1 rounded-2xl border border-white/10 bg-white/[0.04] p-1 no-drag">
+              <button
+                onClick={() => window.aether?.minimize?.()}
+                className="flex h-8 w-8 items-center justify-center rounded-xl text-white/45 transition-all hover:bg-white/10 hover:text-white"
+                title="Minimize"
+              >
+                <span className="translate-y-[-1px] text-sm leading-none">-</span>
+              </button>
+              <button
+                onClick={toggleWindowMaximize}
+                className="flex h-8 w-8 items-center justify-center rounded-xl text-white/45 transition-all hover:bg-white/10 hover:text-white"
+                title="Restore"
+              >
+                <Minimize2 size={12} />
+              </button>
+              <button
+                onClick={() => window.aether?.closeWindow?.()}
+                className="flex h-8 w-8 items-center justify-center rounded-xl text-white/45 transition-all hover:bg-red-500/20 hover:text-red-300"
+                title="Close"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          )}
         </div>
       </header>
+      )}
+
+      <AnimatePresence>
+        {isSoundCapsuleOpen && soundCapsuleData && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.96 }}
+            className="fixed inset-0 z-[350] flex items-center justify-center p-4 md:p-8"
+          >
+            <div className="absolute inset-0 bg-black/85 backdrop-blur-2xl" onClick={() => setIsSoundCapsuleOpen(false)} />
+            <div className="w-full max-w-2xl max-h-[88vh] glass-card bg-[#090b0f]/96 border border-brand-accent/20 rounded-[2.2rem] relative z-10 overflow-hidden flex flex-col shadow-[0_28px_100px_rgba(0,0,0,0.55)]">
+               <div className="flex items-center justify-between gap-4 p-5 md:p-6 border-b border-white/8 bg-black/25 backdrop-blur-md">
+                   <div className="flex items-center gap-4 min-w-0">
+                     <div className="w-11 h-11 rounded-2xl bg-brand-accent/10 border border-brand-accent/25 flex items-center justify-center shrink-0">
+                       <Activity size={18} className="text-brand-accent" />
+                     </div>
+                     <div className="min-w-0">
+                       <div className="text-[9px] font-black uppercase tracking-[0.32em] text-white/30">LIFETIME ANALYTICS</div>
+                       <div className="text-xl md:text-2xl font-black uppercase tracking-tight text-brand-accent truncate">Sound Capsule</div>
+                     </div>
+                   </div>
+                   <button onClick={() => setIsSoundCapsuleOpen(false)} className="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close"><X size={18} /></button>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-6 md:p-8 flex flex-col gap-8 custom-scrollbar">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="glass-card bg-brand-accent/5 border border-brand-accent/20 rounded-[1.5rem] p-6 text-center flex flex-col items-center justify-center shadow-neon">
+                      <div className="text-[10px] font-black uppercase tracking-[0.25em] text-white/40 mb-2">Total Listening Time</div>
+                      <div className="text-4xl font-black text-brand-accent drop-shadow-[0_0_12px_rgba(0,255,191,0.5)]">{soundCapsuleData.totalMinutes}</div>
+                      <div className="text-[11px] font-bold text-white/30 mt-1 uppercase tracking-widest">Minutes</div>
+                    </div>
+                    <div className="glass-card bg-brand-accent/5 border border-brand-accent/20 rounded-[1.5rem] p-6 text-center flex flex-col items-center justify-center">
+                      <div className="text-[10px] font-black uppercase tracking-[0.25em] text-white/40 mb-2">Total Plays</div>
+                      <div className="text-4xl font-black text-brand-accent">{Object.values(soundCapsuleData.tracks).reduce((a,b)=>a+b.count,0)}</div>
+                      <div className="text-[11px] font-bold text-white/30 mt-1 uppercase tracking-widest">Tracks</div>
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <div className="text-[11px] font-black uppercase tracking-[0.25em] text-brand-accent mb-4 border-b border-brand-accent/10 pb-2">Top Artists</div>
+                    <div className="flex flex-wrap gap-2">
+                      {Object.entries(soundCapsuleData.artists || {}).sort((a,b)=>b[1].count-a[1].count).slice(0, 10).map(([name, data], idx) => (
+                        <div key={name} className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-2 hover:bg-white/10 transition-colors">
+                          <span className="text-brand-accent font-black text-[10px]">#{idx + 1}</span>
+                          <span className="text-white font-black text-xs uppercase tracking-widest truncate max-w-[120px]">{name}</span>
+                          <span className="text-brand-accent/30 text-[9px] ml-1 font-black">{data.count} PLAY{data.count!==1?'S':''}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <div className="text-[11px] font-black uppercase tracking-[0.25em] text-brand-accent mb-4 border-b border-brand-accent/10 pb-2">Peak Listening</div>
+                      <div className="space-y-2">
+                        {(() => {
+                           const trends = soundCapsuleData.hourlyTrends || {};
+                           const sorted = Object.entries(trends).sort((a,b) => b[1] - a[1]);
+                           if (sorted.length === 0) return <div className="text-[10px] text-white/30 uppercase tracking-widest">Collecting signal...</div>;
+                           return sorted.slice(0, 3).map(([h, count]) => {
+                             const hour = parseInt(h);
+                             const label = hour === 0 ? 'Midnight' : hour === 12 ? 'Noon' : hour > 12 ? `${hour-12} PM` : `${hour} AM`;
+                             return (
+                               <div key={h} className="flex items-center justify-between bg-white/[0.02] border border-white/5 rounded-lg p-2 px-3">
+                                 <span className="text-[11px] text-white/80 font-bold uppercase">{label}</span>
+                                 <span className="text-[9px] text-brand-accent font-black tracking-widest">{count} PLAYS</span>
+                               </div>
+                             );
+                           });
+                        })()}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] font-black uppercase tracking-[0.25em] text-brand-accent mb-4 border-b border-brand-accent/10 pb-2">Genre Pulse</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {Object.entries(soundCapsuleData.genres || {}).sort((a,b)=>b[1]-a[1]).slice(0, 8).map(([genre, count]) => (
+                           <span key={genre} className="px-2 py-1 bg-brand-accent/10 border border-brand-accent/20 text-brand-accent text-[8px] font-black uppercase tracking-widest rounded-md">
+                             {genre}
+                           </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-[11px] font-black uppercase tracking-[0.25em] text-brand-accent mb-4 border-b border-brand-accent/10 pb-2">Your Anthems</div>
+                    <div className="flex flex-col gap-2">
+                      {Object.entries(soundCapsuleData.tracks || {}).sort((a,b)=>b[1].count-a[1].count).slice(0, 15).map(([id, t], idx) => (
+                        <div key={id} className="flex items-center gap-4 bg-white/5 border border-white/10 rounded-2xl p-3 hover:bg-white/10 hover:border-brand-accent/30 transition-all group">
+                          <img src={getProxyUrl(t.thumbnail)} className="w-12 h-12 rounded-xl object-cover shadow-md group-hover:scale-105 transition-transform" alt="" />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[10px] text-brand-accent font-black mb-1 tracking-widest">#{idx + 1} • {t.count} PLAYS</div>
+                            <div className="text-sm font-black text-white truncate uppercase tracking-tight">{t.title}</div>
+                            <div className="text-[10px] text-white/40 uppercase tracking-widest mt-0.5 truncate">{t.author}</div>
+                          </div>
+                          {t.lastListened && <div className="text-[8px] font-mono text-white/20 whitespace-nowrap hidden sm:block">Recently: {new Date(t.lastListened).toLocaleDateString()}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {isShortcutSettingsOpen && (
@@ -6704,7 +7084,7 @@ function App() {
                 <input
                   type="checkbox"
                   checked={tipsDontShowAgain}
-                  onChange={(e) => setTipsDontShowAgain(e.target.checked)}
+                  onChange={(e) => setTipsDontShowAgain(e.checked)}
                   className="w-4 h-4 accent-brand-accent"
                 />
                 Don’t show this again on app startup
@@ -6768,7 +7148,7 @@ function App() {
                 onClick={() => setSkipEvents([])}
                 className="px-3 py-1.5 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 text-[10px] font-black uppercase tracking-[0.16em] hover:border-white/30 transition-all"
               >
-                Clear Skip Log
+                Clear Events
               </button>
               {canUseUpdater && updateInfo?.enabled && (
                 <button
@@ -6849,44 +7229,75 @@ function App() {
               </div>
               <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
                 <div className="text-white/40 uppercase mb-1">API Base</div>
-                <div className="font-black text-white/70 truncate">{diagnosticsApiBase}</div>
+                <div className="font-black text-white/70">{diagnosticsApiBase}</div>
+                <div className={diagnosticPathBlockClass}>{diagnosticsApiBase}</div>
+                <button
+                  onClick={() => handleCopyDiagnosticsValue(diagnosticsApiBase, 'API base copied')}
+                  className="mt-2 inline-flex items-center rounded-lg border border-white/12 bg-white/[0.03] px-2 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-white/60 hover:border-brand-accent/30 hover:text-brand-accent transition-all"
+                >
+                  Copy
+                </button>
               </div>
 
               {isStandalone && (
                 <>
-                  <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                  <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
                     <div className="text-white/40 uppercase mb-1">YT-DLP</div>
-                    <div className={`font-black ${engineStatus?.ytDlpReady ? 'text-brand-accent' : 'text-yellow-400'}`}>
-                      {engineStatus ? (engineStatus.ytDlpReady ? 'READY' : 'UNAVAILABLE') : 'CHECKING'}
+                    <div className={`font-black ${ytDlpStatusTone}`}>
+                      {ytDlpStatusLabel}
                     </div>
-                    <div className="text-white/40 mt-1 truncate">{engineStatus?.ytDlpPath || 'bootstrap pending'}</div>
+                    <div className="text-white/45 mt-1">{ytDlpDetailLine}</div>
+                    <div className={diagnosticPathBlockClass}>{engineStatus?.ytDlpPath || 'bootstrap pending'}</div>
+                    {engineStatus?.ytDlpPath && (
+                      <button
+                        onClick={() => handleCopyDiagnosticsValue(engineStatus.ytDlpPath, 'yt-dlp path copied')}
+                        className="mt-2 inline-flex items-center rounded-lg border border-white/12 bg-white/[0.03] px-2 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-white/60 hover:border-brand-accent/30 hover:text-brand-accent transition-all"
+                      >
+                        Copy Path
+                      </button>
+                    )}
                   </div>
-                  <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                  <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
                     <div className="text-white/40 uppercase mb-1">FFmpeg</div>
-                    <div className={`font-black ${engineStatus?.ffmpegReady ? 'text-brand-accent' : 'text-yellow-400'}`}>
-                      {engineStatus ? (engineStatus.ffmpegReady ? 'READY' : 'MISSING') : 'CHECKING'}
+                    <div className={`font-black ${ffmpegStatusTone}`}>
+                      {ffmpegStatusLabel}
                     </div>
-                    <div className="text-white/40 mt-1 truncate">{engineStatus?.ffmpegPath || 'not resolved'}</div>
+                    <div className="text-white/45 mt-1">{ffmpegDetailLine}</div>
+                    <div className={diagnosticPathBlockClass}>{engineStatus?.ffmpegPath || 'not resolved'}</div>
+                    {engineStatus?.ffmpegPath && (
+                      <button
+                        onClick={() => handleCopyDiagnosticsValue(engineStatus.ffmpegPath, 'FFmpeg path copied')}
+                        className="mt-2 inline-flex items-center rounded-lg border border-white/12 bg-white/[0.03] px-2 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-white/60 hover:border-brand-accent/30 hover:text-brand-accent transition-all"
+                      >
+                        Copy Path
+                      </button>
+                    )}
                   </div>
-                  <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                  <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
                     <div className="text-white/40 uppercase mb-1">Cookies Session</div>
                     <div className={`font-black ${cookieStatusTone}`}>
                       {cookieStatusLabel}
                     </div>
-                    <div className="text-white/40 mt-1 truncate">{engineStatus?.cookiesPath || 'anonymous requests only'}</div>
-                    <div className="text-white/45 mt-1">{cookieDetailLine}</div>
-                    {cookieAudit?.pathLooksLikeYouTube && (
-                      <div className="text-[10px] text-white/35 mt-1">
-                        {cookieAudit.youtubeEntryCount} YouTube/Google cookie entr{cookieAudit.youtubeEntryCount === 1 ? 'y' : 'ies'} detected. Format checks only; account ownership can’t be proven here.
-                      </div>
+                    <div className="text-white/45 mt-1">{cookieSummaryLine}</div>
+                    <div className="text-[10px] text-white/35 mt-1">{cookieAssuranceLine}</div>
+                    {engineStatus?.cookiesPath && (
+                      <div className={diagnosticPathBlockClass}>{engineStatus.cookiesPath}</div>
                     )}
-                    <div className="mt-2 flex flex-wrap gap-2">
+                    <div className="mt-3 flex flex-wrap gap-2">
                       <button
                         onClick={handleImportCookies}
-                        className="px-2 py-1 rounded-lg border border-brand-accent/30 text-brand-accent bg-brand-accent/10 hover:bg-brand-accent/20 transition-all"
+                        className="px-2.5 py-1.5 rounded-lg border border-brand-accent/30 text-brand-accent bg-brand-accent/10 hover:bg-brand-accent/20 transition-all"
                       >
                         Upload Cookies
                       </button>
+                      {engineStatus?.cookiesPath && (
+                        <button
+                          onClick={() => handleCopyDiagnosticsValue(engineStatus.cookiesPath, 'Cookie path copied')}
+                          className="px-2.5 py-1.5 rounded-lg border border-white/15 text-white/70 bg-white/[0.03] hover:border-brand-accent/30 hover:text-brand-accent transition-all"
+                        >
+                          Copy Path
+                        </button>
+                      )}
                       <button
                         onClick={() => {
                           if (isStandalone && window.aether?.openExternal) {
@@ -6895,7 +7306,7 @@ function App() {
                             window.open('https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies', '_blank');
                           }
                         }}
-                        className="px-2 py-1 rounded-lg border border-white/15 text-white/70 bg-white/[0.03] hover:border-white/30 transition-all"
+                        className="px-2.5 py-1.5 rounded-lg border border-white/15 text-white/70 bg-white/[0.03] hover:border-white/30 transition-all"
                       >
                         Cookie Guide
                       </button>
@@ -7037,19 +7448,25 @@ function App() {
                 </div>
               )}
 
-              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
-                <div className="text-white/40 uppercase mb-1">Recent Skip Events</div>
-                <div className="space-y-1 max-h-24 overflow-auto pr-1">
+              <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                <div className="flex items-center justify-between gap-3 mb-2">
+                  <div className="text-white/40 uppercase">Recent Events</div>
+                  <div className="text-[10px] text-white/30">{skipEvents.length} / 50</div>
+                </div>
+                <div className="space-y-1.5 max-h-32 overflow-auto pr-1">
                   {skipEvents.length === 0 ? (
-                    <div className="text-white/35">No skip events captured.</div>
+                    <div className="text-white/35">No recent events captured yet.</div>
                   ) : (
-                    skipEvents.slice(-6).reverse().map((event, idx) => (
-                      <div key={`${event.at || 0}-${idx}`} className="text-white/70 truncate">
-                        <span className="text-brand-accent">{new Date(event.at || Date.now()).toLocaleTimeString()}</span>
-                        {' • '}
-                        <span>{event.reason}</span>
-                        {' • '}
-                        <span className="text-white/45">{event.title || 'Unknown'}</span>
+                    skipEvents.slice(-8).reverse().map((event, idx) => (
+                      <div key={`${event.at || 0}-${idx}`} className="rounded-xl border border-white/8 bg-black/20 px-2.5 py-2 text-white/70">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-brand-accent text-[10px]">{new Date(event.at || Date.now()).toLocaleTimeString()}</span>
+                          <span className={`text-[9px] uppercase tracking-[0.16em] ${event.tone === 'error' ? 'text-red-300' : event.tone === 'success' ? 'text-brand-accent' : event.tone === 'warning' ? 'text-yellow-300' : 'text-white/35'}`}>
+                            {event.tone || 'event'}
+                          </span>
+                        </div>
+                        <div className="mt-1 font-black text-white/85 break-words">{event.label || event.reason || 'event'}</div>
+                        <div className="mt-1 text-white/45 break-words">{event.detail || event.title || 'No details'}</div>
                       </div>
                     ))
                   )}
@@ -7093,6 +7510,14 @@ function App() {
                       <div className="mt-1 text-[10px] font-black uppercase tracking-[0.26em] text-brand-accent/70 truncate">{currentTrack.author}</div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={cycleRepeatMode}
+                        className={`relative flex h-10 w-10 items-center justify-center rounded-2xl border transition-all active:scale-95 ${repeatMode === 'off' ? 'border-white/10 bg-white/[0.04] text-white/60 hover:border-brand-accent/30 hover:text-brand-accent' : 'border-brand-accent/30 bg-brand-accent/12 text-brand-accent shadow-[0_0_16px_rgba(0,255,191,0.16)]'}`}
+                        title={repeatModeLabel}
+                      >
+                        <Repeat size={16} />
+                        {repeatModeBadge && <span className="absolute right-1.5 top-1.5 text-[8px] font-black leading-none">{repeatModeBadge}</span>}
+                      </button>
                       <button onClick={() => handleControl('previous')} className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/60 transition-all hover:border-brand-accent/30 hover:text-brand-accent active:scale-95" title="Previous">
                         <Rewind size={18} fill="currentColor" />
                       </button>
@@ -7199,9 +7624,14 @@ function App() {
                 )}
               <div className="flex flex-col md:flex-row gap-8 lg:gap-12 flex-1 relative z-10 w-full">
                  {/* LEFT: THUMBNAIL + VOLUME */}
-                 <div className="flex flex-col gap-6 items-center flex-none">
-                    <div className="w-48 h-48 md:w-56 md:h-56 lg:w-60 lg:h-60 relative group flex-none">
-                        <img src={getProxyUrl(currentTrack.thumbnail)} className="w-full h-full object-cover rounded-[2.5rem] shadow-2xl border border-white/10 group-hover:scale-105 transition-transform duration-700" alt="" />
+                 <div
+                    className="flex flex-col gap-6 items-center flex-none transition-all duration-500"
+                    style={videoMode === null && dualFocusMode === 'lyrics' ? { filter: 'blur(4px)', opacity: 0.5, transform: 'scale(0.96)' } : {}}
+                    onMouseEnter={() => setDualFocusMode('video')}
+                    onMouseLeave={() => setDualFocusMode(null)}
+                 >
+                    <div className="w-48 h-48 md:w-56 md:h-56 lg:w-60 lg:h-60 relative group flex-none rounded-[2.5rem] overflow-hidden drop-shadow-2xl">
+                        <img src={getProxyUrl(currentTrack.thumbnail)} className="absolute inset-0 w-full h-full object-cover shadow-2xl border border-white/10 group-hover:scale-105 transition-transform duration-700" alt="" />
                         <div className="absolute inset-0 bg-brand-accent/10 opacity-0 group-hover:opacity-100 transition-opacity rounded-[2.5rem] flex items-center justify-center">
                             <Activity className="text-brand-accent animate-pulse" size={32} />
                         </div>
@@ -7229,6 +7659,10 @@ function App() {
                            </div>
                            <div className="flex items-center gap-1 no-drag ml-auto">
                              <button disabled={queue.length === 0} onClick={() => handleControl('clear')} className="p-2 text-white/20 hover:text-red-500 transition-colors disabled:opacity-25 disabled:cursor-not-allowed" title="Clear Queue"><Trash2 size={14} /></button>
+                             <button onClick={cycleRepeatMode} className={`relative p-2 transition-colors ${repeatMode === 'off' ? 'text-white/20 hover:text-brand-accent' : 'text-brand-accent'}`} title={repeatModeLabel}>
+                               <Repeat size={14} />
+                               {repeatModeBadge && <span className="absolute right-0 top-0 text-[8px] font-black">{repeatModeBadge}</span>}
+                             </button>
                              <button onClick={() => {
                                if (!canOpenCurrentSource) return;
                                window.aether?.openExternal(currentTrackSourceUrl);
@@ -7329,7 +7763,12 @@ function App() {
           {/* LYRICS PANEL - FLEX-1 TO FILL GAP */}
           <div
             className={`glass-card overflow-hidden flex flex-col transition-all duration-300 min-h-0 ${panelGlassClass} ${panelInteractiveClass} ${lyricsPanelHeightClass}`}
-            style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
+            style={{
+              ...(isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : {}),
+              ...(dualFocusMode === 'video' ? { filter: 'blur(4px)', opacity: 0.5, transform: 'scale(0.96)' } : {})
+            }}
+            onMouseEnter={() => setDualFocusMode('lyrics')}
+            onMouseLeave={() => setDualFocusMode(null)}
           >
             <div className={`border-b border-white/5 ${panelHeaderClass} ${isVerticalStack ? 'px-3 py-2' : 'px-5 py-4'}`}>
               <div className="flex items-start justify-between gap-3 min-w-0">
@@ -7369,9 +7808,9 @@ function App() {
                   <button
                     onClick={handleSaveLyricPreset}
                     className={`hidden md:flex items-center gap-1 px-3 py-2 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all ${isLyricPresetSaved ? 'bg-brand-accent/15 border-brand-accent/40 text-brand-accent' : 'bg-white/5 border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/40'}`}
-                    title="Save current sync offset for this track"
+                    title={hasLyricPreset ? 'Update saved sync offset for this track' : 'Save current sync offset for this track'}
                   >
-                    <Save size={10} /> {isLyricPresetSaved ? 'Saved' : 'Save'}
+                    <Save size={10} /> {lyricPresetActionLabel}
                   </button>
                   <button
                     onClick={handleResetLyricPreset}
@@ -7387,7 +7826,8 @@ function App() {
                   <button 
                     onClick={() => {
                       if (isImmersiveLyricsLocked) return;
-                      setIsLyricsExpanded(!isLyricsExpanded);
+                      if (!isLyricsExpanded) closeHeaderSurfaces();
+                      setIsLyricsExpanded((prev) => !prev);
                     }}
                     disabled={isImmersiveLyricsLocked}
                     className={`flex items-center justify-center p-2 w-8 h-8 rounded-xl border transition-all text-brand-accent group flex-none ${isImmersiveLyricsLocked ? 'bg-brand-accent/12 border-brand-accent/30 text-brand-accent/80 cursor-default' : 'bg-white/5 border-white/10 hover:bg-white/10 hover:border-brand-accent active:scale-90'}`}
@@ -7431,15 +7871,16 @@ function App() {
                 <div className={lyricsListClass}>
                   {lyrics.map((line, idx) => {
                     const isActive = idx === activeLyricIndex;
+                    const distance = Math.abs(idx - activeLyricIndex);
                     const lyricLineClass = isDualWorkspaceMode
-                      ? `max-w-[min(92%,760px)] px-3 md:px-5 text-2xl sm:text-3xl lg:text-5xl font-black leading-tight w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] transition-all duration-700 transform-gpu origin-center ${isActive ? 'text-brand-accent scale-[1.1] opacity-100 drop-shadow-[0_0_32px_rgba(0,255,191,0.42)]' : 'text-white/25 opacity-40 scale-100'}`
-                      : `text-base sm:text-lg lg:text-xl font-bold transition-all duration-700 transform leading-snug py-1.5 relative ${isActive ? 'text-brand-accent scale-105 opacity-100 drop-shadow-[0_0_15px_rgba(0,255,191,0.5)]' : 'text-white/50 opacity-80 hover:opacity-100 transition-opacity cursor-default'}`;
+                      ? `max-w-[min(92%,760px)] px-3 md:px-5 text-2xl sm:text-3xl lg:text-5xl font-black leading-tight w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] transition-all duration-700 transform-gpu origin-center ${isActive ? 'text-brand-accent scale-[1.1] opacity-100 drop-shadow-[0_0_32px_rgba(0,255,191,0.42)]' : distance === 1 ? 'text-white/48 opacity-60 scale-[1.03]' : distance === 2 ? 'text-white/28 opacity-30 scale-100 blur-[0.8px]' : 'text-white/18 opacity-16 scale-[0.98] blur-[1.4px]'}`
+                      : `text-base sm:text-lg lg:text-xl font-bold transition-all duration-700 transform leading-snug py-1.5 relative ${isActive ? 'text-brand-accent scale-105 opacity-100 drop-shadow-[0_0_15px_rgba(0,255,191,0.5)]' : distance === 1 ? 'text-white/75 opacity-90' : distance === 2 ? 'text-white/45 opacity-65 blur-[0.4px]' : 'text-white/28 opacity-45 blur-[1px]'} cursor-default`;
                     return (
                       <div 
                         key={idx} 
                         ref={isActive ? activeLyricRef : null} 
                         className={lyricLineClass}
-                        style={isDualWorkspaceMode ? { textWrap: 'balance' } : undefined}
+                        style={isDualWorkspaceMode ? { textWrap: 'balance', transitionDelay: `${Math.min(distance, 3) * 18}ms` } : { transitionDelay: `${Math.min(distance, 3) * 14}ms` }}
                       >
                         {line.text}
                         {/* AURA MODE: Lyric pulse underline - live shimmering sync to bass */}
@@ -7503,29 +7944,20 @@ function App() {
                  <button
                     onClick={() => {
                         if (queue.length > 1) {
-                            console.log("[Aether/Shuffle] Shuffling queue...");
+                            console.log("[Aether/Shuffle] Shuffling buffer...");
                             setQueue(prev => {
-                                const q = [...prev];
-                                for (let i = q.length - 1; i > 0; i--) {
-                                    const j = Math.floor(Math.random() * (i + 1));
-                                    [q[i], q[j]] = [q[j], q[i]];
-                                }
-                                return q;
+                               if (!Array.isArray(prev) || prev.length <= 1) return prev;
+                               const current = prev[0];
+                               const rest = [...prev.slice(1)].sort(() => Math.random() - 0.5);
+                               return [current, ...rest];
                             });
-                            // Properly reset audio element
-                            if (localAudioRef.current) {
-                                localAudioRef.current.currentTime = 0;
-                                localAudioRef.current.pause();
-                            }
-                            setCurrentTime(0);
-                            setIsPlaying(true);
                             if (!isStandalone) {
                                 axios.post(`${API_BASE}/api/control/${DEFAULT_GUILD_ID}`, { action: 'shuffle' }).catch(()=>{});
                             }
                         }
                     }}
                     className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-white/10 hover:text-white"
-                    title="Shuffle Queue & Play Random"
+                    title="Shuffle Queue Buffer"
                  >
                     <Shuffle size={10} />
                  </button>
@@ -7629,7 +8061,7 @@ function App() {
             </div>
             <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 pb-6">
               <AnimatePresence>
-                {searchResults.map((t) => (
+                {(searchQuery ? searchResults : neuralRecommendations).map((t) => (
                    <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} key={t.id} className="glass-card p-4 flex items-center gap-4 hover:border-brand-accent group overflow-hidden relative transition-all active:scale-[0.98] border-white/5">
                      <img src={getProxyUrl(t.thumbnail)} className="w-14 h-14 rounded-2xl object-cover z-10" alt="" />
                      <div className="flex-1 min-w-0 z-10">
@@ -7648,7 +8080,7 @@ function App() {
                     </motion.div>
                 ))}
               </AnimatePresence>
-                {!isSearching && searchResults.length === 0 && !hasCompletedSearch && (
+                {!isSearching && searchResults.length === 0 && neuralRecommendations.length === 0 && !hasCompletedSearch && (
                 <div className="h-full flex flex-col items-center justify-center gap-4 opacity-10 text-center py-4">
                    <div className="relative">
                       <Search size={32} strokeWidth={1} />
@@ -7717,6 +8149,14 @@ function App() {
                                 <button onClick={() => movePlaylist(name, -1)} className="text-brand-accent/20 hover:text-brand-accent p-1" title={`Move ${name} up`}><ChevronLeft size={12} /></button>
                                 <button onClick={() => movePlaylist(name, 1)} className="text-brand-accent/20 hover:text-brand-accent p-1" title={`Move ${name} down`}><ChevronRight size={12} /></button>
                                    <button onClick={() => handlePlaylistAddAll(name)} className="text-brand-accent/30 hover:text-brand-accent p-1" title={`Inject ${name} to Queue`}><Plus size={12} /></button>
+                                   <button onClick={() => {
+                                        const list = [...(playlists[name] || [])];
+                                        const shuffled = list.sort(() => Math.random() - 0.5);
+                                        setQueue(shuffled);
+                                        seekActivePlaybackTo(0);
+                                        setIsPlaying(true);
+                                        closeHeaderSurfaces();
+                                    }} className="text-brand-accent/30 hover:text-brand-accent p-1" title={`Shuffle & Play ${name}`}><Shuffle size={12} /></button>
                                    <button onClick={() => setIsViewingFullPlaylist(name)} className="text-brand-accent/30 hover:text-brand-accent p-1" title={`View ${name} Fullscreen`}><Maximize2 size={12} /></button>
                                   <button onClick={() => handleDeletePlaylist(name)} className="text-red-500/20 hover:text-red-500 p-1"><Trash2 size={12} /></button>
                                 </div>
@@ -8014,50 +8454,48 @@ function App() {
             initial={{ opacity: 0, scale: 1.1 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 1.1 }}
-            className="fixed inset-0 z-[200] bg-brand-dark/95 backdrop-blur-[20px] bg-black/80 flex flex-col p-4 pt-10 md:p-8 overflow-hidden overflow-x-hidden"
+            className={`fixed inset-0 z-[280] overflow-hidden backdrop-blur-[28px] ${isAuraMode ? 'bg-[#03100d]/92' : 'bg-[#030506]/96'}`}
           >
-            {/* Immersive Top Navigation Bar - Perfect Absolute Grid */}
-            <div className="w-full grid grid-cols-[1fr_auto_1fr] items-center z-[300] pr-2 md:pr-4 flex-none gap-2">
-               {/* Left Spacer Column: Absorbs macOS traffic light area */}
-               <div className="w-full h-full pl-16 md:pl-0" />
-               
-               {/* Center Immersive Pill: Natively true-centered by CSS Grid */}
-               <div className="flex justify-center min-w-0">
-                 <div className="flex items-center gap-2 md:gap-3 glass-card px-3 md:px-4 py-1.5 border-brand-accent/20 bg-brand-accent/5 backdrop-blur-md shadow-neon overflow-hidden shrink min-w-0 max-w-[200px] md:max-w-[300px]">
-                   <div className="w-1.5 h-1.5 rounded-full bg-brand-accent animate-pulse shadow-[0_0_15px_rgba(0,255,191,0.5)] shrink-0" />
-                   <span className="label-caps mb-0 text-brand-accent tracking-[0.2em] md:tracking-[0.4em] text-[8px] md:text-[9px] font-black truncate min-w-0">Immersive Output</span>
-                 </div>
-               </div>
-               
-               {/* Right Minimize Button: Forced inside bounds via flex-end */}
-               <div className="w-full flex justify-end pr-2 sm:pr-4">
-                 <button 
-                   onClick={() => setIsLyricsExpanded(false)}
-                   className="flex-none flex items-center justify-center !w-10 !h-10 md:!w-12 md:!h-12 glass-card hover:border-brand-accent transition-all border-white/20 group active:scale-90 shadow-neon-strong !rounded-full bg-black/40 aspect-square"
-                   title="Return to Studio"
-                   style={{ minWidth: "40px", maxWidth: "48px" }}
-                 >
-                   <Minimize2 size={18} className="text-brand-accent transition-transform group-hover:rotate-180" />
-                 </button>
-               </div>
+            <div className="absolute inset-0 pointer-events-none" style={{ animation: isAuraMode ? 'aura-liquid-spin 20s linear infinite' : 'none' }}>
+              <div className={`absolute inset-0 ${isAuraMode ? 'bg-[radial-gradient(circle_at_top,rgba(0,255,191,0.16),transparent_34%)]' : 'bg-[radial-gradient(circle_at_top,rgba(0,255,191,0.08),transparent_38%)]'}`} />
+              {isAuraMode && (
+                <>
+                  <div className="absolute left-[8%] top-[12%] h-44 w-44 rounded-full bg-brand-accent/18 blur-[90px]" />
+                  <div className="absolute right-[10%] top-[18%] h-40 w-40 rounded-full bg-emerald-300/12 blur-[90px]" />
+                  <div className="absolute bottom-[14%] left-1/2 h-56 w-56 -translate-x-1/2 rounded-full bg-brand-accent/12 blur-[110px]" />
+                </>
+              )}
+              <div className="absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-black/45 to-transparent" />
+              <div className="absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-black/55 to-transparent" />
             </div>
 
-            <div className="w-full flex-1 flex flex-col px-0 md:px-8 mt-6 min-h-0 relative">
-               <div className="flex-shrink-0 flex flex-col items-center mb-6 z-50">
-                  <div className="w-full px-4 md:px-12 py-6 md:py-10 glass-card border-brand-accent/20 rounded-3xl md:rounded-[3rem] bg-brand-dark/60 shadow-neon-strong relative flex flex-col items-center overflow-hidden">
-                    <div className="w-full flex items-center overflow-hidden relative" style={{ WebkitMaskImage: 'linear-gradient(to right, transparent, black 10%, black 90%, transparent)' }}>
-                       <div className="animate-marquee-loop flex gap-[10vw] items-center text-base sm:text-lg md:text-2xl lg:text-4xl font-black uppercase tracking-[0.3em] text-white w-max">
-                         <span>{currentTrack?.title}</span>
-                         <span>{currentTrack?.title}</span>
-                         <span>{currentTrack?.title}</span>
-                         <span>{currentTrack?.title}</span>
-                       </div>
-                    </div>
-                    <p className="text-brand-accent font-black tracking-[0.5em] uppercase opacity-70 text-[10px] mt-6">{currentTrack?.author}</p>
-                 </div>
-               </div>
+            <div className="pointer-events-none absolute inset-x-0 top-4 z-[315] flex justify-center px-5 md:top-6">
+              <div className={`w-full max-w-[min(82vw,980px)] rounded-[2rem] border px-5 py-4 md:px-8 md:py-6 ${isAuraMode ? 'border-brand-accent/25 bg-[#06100d]/62 shadow-[0_18px_70px_rgba(0,255,191,0.12)]' : 'border-white/10 bg-black/20 shadow-[0_16px_40px_rgba(0,0,0,0.3)]'} backdrop-blur-2xl`}>
+                <div className="w-full overflow-hidden" style={{ WebkitMaskImage: 'linear-gradient(to right, transparent, black 8%, black 92%, transparent)' }}>
+                  <div className="animate-marquee-loop flex w-max items-center gap-[10vw] text-base font-black uppercase tracking-[0.26em] text-white sm:text-lg md:text-2xl lg:text-3xl">
+                    <span>{currentTrack?.title || 'Immersive Output'}</span>
+                    <span>{currentTrack?.title || 'Immersive Output'}</span>
+                    <span>{currentTrack?.title || 'Immersive Output'}</span>
+                  </div>
+                </div>
+                <div className="mt-3 text-center text-[10px] font-black uppercase tracking-[0.42em] text-brand-accent/80 md:text-[11px]">
+                  {currentTrack?.author || 'Unknown Artist'}
+                </div>
+              </div>
+            </div>
 
-               <div className="flex-1 overflow-y-scroll overflow-x-hidden flex flex-col px-4 md:px-10 custom-scrollbar-heavy w-full relative" ref={expandedContainerRef} style={{ minHeight: "0px" }}>
+            <div className="absolute right-4 top-4 z-[320] md:right-6 md:top-6">
+              <button 
+                onClick={() => setIsLyricsExpanded(false)}
+                className="flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/35 text-brand-accent shadow-[0_18px_42px_rgba(0,0,0,0.4)] backdrop-blur-xl transition-all hover:border-brand-accent/45 hover:bg-brand-accent/10 active:scale-90"
+                title="Return to Studio"
+              >
+                <Minimize2 size={18} />
+              </button>
+            </div>
+
+            <div className="relative z-10 flex h-full w-full min-h-0 flex-col">
+               <div className="flex-1 overflow-y-scroll overflow-x-hidden flex flex-col px-4 pb-10 pt-32 md:px-10 md:pb-14 md:pt-36 custom-scrollbar-heavy w-full relative" ref={expandedContainerRef} style={{ minHeight: "0px", perspective: '1200px' }}>
                   <motion.div
                     aria-hidden
                     className="pointer-events-none absolute left-1/2 top-1/2 z-0 -translate-x-1/2 -translate-y-1/2 rounded-full"
@@ -8074,20 +8512,24 @@ function App() {
                     }}
                   />
 
-                  <div className="flex flex-col gap-24 lg:gap-32 py-[45vh] items-center text-center w-full mx-auto cursor-default">
+                  <div className="flex flex-col gap-24 lg:gap-32 py-[38vh] items-center justify-center text-center w-full mx-auto cursor-default" style={{ transformStyle: 'preserve-3d', transform: 'rotateX(8deg)' }}>
                     {lyrics.map((line, idx) => {
                       const isActive = idx === activeLyricIndex;
+                      const distance = Math.abs(idx - activeLyricIndex);
                       const lyricLineLayoutClass = 'text-3xl sm:text-5xl lg:text-6xl max-w-[min(74vw,920px)]';
+                      const lyricStateClass = isActive
+                        ? 'scale-[1.16] opacity-100 text-[#00ffbf] drop-shadow-[0_0_48px_rgba(0,255,191,0.78)] karaoke-text-fill'
+                        : distance === 1
+                          ? 'scale-105 opacity-55 text-white/55 blur-[0.2px]'
+                          : distance === 2
+                            ? 'scale-100 opacity-26 text-white/24 blur-[1px]'
+                            : 'scale-[0.96] opacity-12 text-white/12 blur-[2px]';
                       return (
                         <div
                           key={idx} 
                           ref={isActive ? expandedActiveRef : null} 
-                          className={`${lyricLineLayoutClass} px-4 md:px-6 font-black transition-all duration-700 transform-gpu origin-center leading-tight w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] z-20 ${
-                            isActive 
-                              ? 'scale-125 opacity-100 text-[#00ffbf] drop-shadow-[0_0_40px_rgba(0,255,191,0.8)]'
-                              : 'scale-100 opacity-30 text-white/20'
-                          }`}
-                          style={{ textWrap: 'balance' }}
+                          className={`${lyricLineLayoutClass} px-4 md:px-6 font-black transition-all duration-700 transform-gpu origin-center leading-tight w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] z-20 ${lyricStateClass}`}
+                          style={{ textWrap: 'balance', transitionDelay: `${Math.min(distance, 3) * 20}ms` }}
                         >
                           {line.text}
                         </div>
@@ -8097,7 +8539,7 @@ function App() {
                </div>
 
                {isAutoScrollPaused && (
-                 <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-[250]">
+                 <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-[250]">
                    <button 
                      onClick={handleResyncLyrics}
                      className="flex items-center gap-3 px-8 py-4 bg-brand-accent text-black font-black uppercase tracking-[0.3em] rounded-full shadow-neon scale-110 active:scale-95 transition-all"
@@ -8134,7 +8576,7 @@ function App() {
                 </div>
                 <button
                   onClick={() => !isLockBusy && setIsLockModalOpen(false)}
-                  className="w-9 h-9 rounded-xl border border-white/10 bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/40 transition-all"
+                  className={sharedModalCloseButtonClass}
                 >
                   <X size={16} />
                 </button>
@@ -8269,7 +8711,7 @@ function App() {
                 </div>
                 <button
                   onClick={() => !isSpotifyImporting && setIsSpotifyImportOpen(false)}
-                  className="w-9 h-9 rounded-xl border border-white/10 bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/40 transition-all"
+                  className={sharedModalCloseButtonClass}
                   title="Close"
                 >
                   <X size={16} />
@@ -8358,24 +8800,35 @@ function App() {
                 '--vault-spin': `${vaultPulse.spin}deg`,
                 '--vault-glow': vaultPulse.energy,
               }}
-              className="relative w-[min(92vw,680px)] rounded-3xl border border-brand-accent/30 bg-[#07090c]/95 shadow-[0_0_70px_rgba(0,255,191,0.15)] overflow-hidden"
+              className="relative w-[min(92vw,760px)] rounded-[2rem] border border-brand-accent/25 bg-[#07090c]/96 shadow-[0_0_80px_rgba(0,255,191,0.14)] overflow-hidden"
               onClick={(e) => e.stopPropagation()}
             >
-              <button
-                onClick={() => setIsMixtapeVaultOpen(false)}
-                className="absolute top-4 right-4 p-2 rounded-full bg-black/40 hover:bg-black/60 text-brand-accent transition-colors z-50"
-              >
-                <X size={20} />
-              </button>
+              <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-brand-accent/70 to-transparent" />
 
               <div className="p-6 md:p-8">
-                <div className="flex items-center gap-3 mb-6">
+                <div className="flex items-start justify-between gap-4 mb-6">
+                  <div className="flex items-center gap-3 min-w-0">
                   <div className="w-10 h-10 flex items-center justify-center rounded-xl border border-brand-accent/40 bg-brand-accent/10">
                     <Music size={18} className="text-brand-accent" />
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <h2 className="text-brand-accent font-black text-xl tracking-[0.18em] uppercase leading-none">Mixtape Vault</h2>
                     <span className="text-white/45 text-[9px] font-mono tracking-[0.2em] uppercase">SECRET_MODE // ANALOG_NIGHT</span>
+                    <div className="mt-2 text-[11px] font-black text-white/85 truncate">{currentTrack?.title || 'Aether Secret Session'}</div>
+                    <div className="mt-1 text-[9px] uppercase tracking-[0.22em] text-brand-accent/70 truncate">{currentTrack?.author || 'Unknown Artist'}</div>
+                  </div>
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <div className="rounded-2xl border border-white/10 bg-black/25 px-3 py-2 text-right">
+                      <div className="text-[8px] font-black uppercase tracking-[0.22em] text-white/35">Scene Time</div>
+                      <div className="mt-1 text-[11px] font-mono text-brand-accent">{formatTime(getActivePlaybackPositionMs())}</div>
+                    </div>
+                    <button
+                      onClick={() => setIsMixtapeVaultOpen(false)}
+                      className={sharedModalCloseButtonClass}
+                    >
+                      <X size={16} />
+                    </button>
                   </div>
                 </div>
 
@@ -8429,20 +8882,18 @@ function App() {
                   </div>
 
                   <div className="text-center">
-                    <div className="text-[10px] uppercase tracking-[0.22em] text-white/45">Now Spinning</div>
-                    <div className="font-black text-brand-accent mt-1">{currentTrack?.title || 'Aether Secret Session'}</div>
-                    <div className="text-[11px] text-white/55 mt-1">Type <span className="text-brand-accent font-black">mixtape</span> to summon this vault.</div>
+                    <div className="text-[10px] text-white/45 uppercase tracking-[0.3em]">Type <span className="text-brand-accent font-black">mixtape</span> to summon this vault.</div>
                     <div className="mt-4 flex flex-col items-center gap-2">
                       <div className="flex flex-wrap items-center justify-center gap-2">
                         <button
                           onClick={copyVaultSceneEmbed}
                           className="px-4 py-2 rounded-full border border-brand-accent/30 bg-brand-accent/10 text-[10px] uppercase tracking-[0.24em] text-brand-accent hover:bg-brand-accent hover:text-black transition-all"
                         >
-                          Copy Scene Link
+                          Copy Live Scene Link
                         </button>
                       </div>
                       <div className="text-[10px] text-white/40 font-mono uppercase tracking-[0.18em]">
-                        {currentTrack?.title ? `${currentTrack.title} • ${vaultPulse.stamp}` : vaultPulse.stamp}
+                        {currentTrack?.title ? `${currentTrack.title} • ${formatTime(getActivePlaybackPositionMs())} • ${vaultPulse.stamp}` : vaultPulse.stamp}
                       </div>
                     </div>
                   </div>
@@ -8468,14 +8919,16 @@ function App() {
               className="relative w-[min(92vw,760px)] rounded-3xl border border-brand-accent/30 bg-[#07090c]/95 shadow-[0_0_70px_rgba(0,255,191,0.15)] overflow-hidden"
               onClick={(e) => e.stopPropagation()}
             >
-              <button
-                onClick={() => setIsSharedSceneOpen(false)}
-                className="absolute top-4 right-4 p-2 rounded-full bg-black/40 hover:bg-black/60 text-brand-accent transition-colors z-50"
-              >
-                <X size={20} />
-              </button>
-              <div className="p-6 md:p-8">
-                <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent mb-4">Aether Shared Scene</div>
+              <div className="p-6 md:p-8 flex flex-col gap-6">
+                <div className="flex justify-between items-start gap-4">
+                  <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent mt-1">Aether Shared Scene</div>
+                  <button
+                    onClick={() => setIsSharedSceneOpen(false)}
+                    className={sharedModalCloseButtonClass}
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
                 <div className="rounded-2xl border border-white/10 bg-black/30 p-4 md:p-5 flex flex-col md:flex-row gap-4 md:gap-5">
                   <img
                     src={sharedScene.thumbnail || (sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : '')}
@@ -9092,7 +9545,23 @@ function App() {
                         <ListMusic size={20} className="text-brand-accent" />
                         <div>
                           <h2 className="text-lg font-black uppercase tracking-tighter text-white">Vault: {isViewingFullPlaylist}</h2>
-                          <p className="text-brand-accent text-xs font-bold tracking-widest uppercase opacity-60">{(playlists[isViewingFullPlaylist] || []).length} TRACK{(playlists[isViewingFullPlaylist] || []).length !== 1 ? 'S' : ''}</p>
+                          <div className="flex gap-2 items-center">
+                            <p className="text-brand-accent text-xs font-bold tracking-widest uppercase opacity-60">{(playlists[isViewingFullPlaylist] || []).length} TRACK{(playlists[isViewingFullPlaylist] || []).length !== 1 ? 'S' : ''}</p>
+                            <button 
+                              onClick={() => {
+                                  const list = [...(playlists[isViewingFullPlaylist] || [])];
+                                  const shuffled = list.sort(() => Math.random() - 0.5);
+                                  setQueue(shuffled);
+                                  seekActivePlaybackTo(0);
+                                  setIsPlaying(true);
+                                  setIsViewingFullPlaylist(null);
+                                  closeHeaderSurfaces();
+                              }}
+                              className="px-2 py-0.5 rounded border border-brand-accent/30 text-brand-accent text-[9px] hover:bg-brand-accent/20 transition-all font-black uppercase flex items-center gap-1"
+                            >
+                              <Shuffle size={10} /> Play Shuffled
+                            </button>
+                          </div>
                         </div>
                       </div>
                       <button 
@@ -9173,10 +9642,14 @@ function App() {
             onMouseMove={videoMode === 'cinema' ? handleCinemaMouseMove : undefined}
             onClick={videoMode === 'cinema' ? handleCinemaMouseMove : undefined}
           >
-            <div className={`absolute inset-0 transition-all duration-500 ${videoMode === 'cinema' ? 'bg-black/96 backdrop-blur-md' : 'bg-transparent'}`} />
+            <div className={`absolute inset-0 transition-all duration-700 delay-100 ${videoMode === 'cinema' ? (isVideoReady ? 'bg-black/96 backdrop-blur-md' : 'bg-transparent') : 'bg-transparent'}`} />
 
             <div className="relative h-full w-full pointer-events-auto">
-              <div className={`relative flex h-full w-full overflow-hidden transition-all duration-500 ${videoMode === 'cinema' ? 'rounded-none bg-black' : 'rounded-[2.25rem] border border-white/[0.08] bg-[#06090d]/92 backdrop-blur-[28px] shadow-[0_28px_90px_rgba(0,0,0,0.5)]'}`}>
+              <div
+                 className={`relative flex h-full w-full overflow-hidden transition-all duration-1000 ${
+                   !isVideoReady && videoMode ? 'opacity-0 scale-[0.98]' : 'opacity-100 scale-100'
+                 } ${videoMode === 'cinema' ? 'rounded-none bg-black' : 'rounded-[2.25rem] border border-white/[0.08] bg-[#06090d]/92 backdrop-blur-[28px] shadow-[0_28px_90px_rgba(0,0,0,0.5)]'}`}
+              >
                 <div className={`relative flex-1 min-h-0 ${videoMode === 'cinema' ? '' : 'm-3 rounded-[1.8rem] overflow-hidden border border-white/[0.08] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.02)]'}`}>
                   {currentTrack?.thumbnail && (
                     <img
@@ -9196,6 +9669,7 @@ function App() {
                   <video
                     ref={(el) => { localVideoRef.current = el; }}
                     playsInline
+                    onCanPlay={() => setIsVideoReady(true)}
                     className={`absolute inset-0 h-full w-full ${visualVideoFit === 'cover' ? 'object-cover' : 'object-contain'}`}
                   />
 

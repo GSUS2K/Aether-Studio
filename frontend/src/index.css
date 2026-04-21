@@ -183,3 +183,24 @@
 .custom-scrollbar-heavy::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 255, 191, 0.5);
 }
+
+@keyframes aura-liquid-spin {
+  0% { transform: rotate(0deg) scale(1.1); }
+  50% { transform: rotate(180deg) scale(1.25); }
+  100% { transform: rotate(360deg) scale(1.1); }
+}
+
+@keyframes karaoke-fill {
+  0% { background-position: 100% 50%; opacity: 0.6; filter: blur(2px); }
+  20% { opacity: 1; filter: blur(0px); }
+  100% { background-position: 0% 50%; opacity: 1; filter: blur(0px); }
+}
+
+.karaoke-text-fill {
+  background-size: 200% auto;
+  color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text;
+  background-image: linear-gradient(to right, #00ffbf 0%, #00ffbf 50%, rgba(255,255,255,0.2) 50.1%, rgba(255,255,255,0.2) 100%);
+  animation: karaoke-fill 4.5s ease-out forwards;
+}

@@ -76,6 +76,102 @@ const getResolvedCookiesPath = () => {
     return null;
 };
 
+const auditCookiesFile = (filePath) => {
+    const baseAudit = {
+        valid: false,
+        readyForYoutube: false,
+        format: 'missing',
+        cookieCount: 0,
+        youtubeEntryCount: 0,
+        pathLooksLikeYouTube: false,
+        summary: 'No cookie file loaded.',
+        note: 'Import a Netscape cookies.txt export when YouTube asks for sign-in confirmation.',
+    };
+
+    if (!filePath) return baseAudit;
+
+    try {
+        const raw = fs.readFileSync(filePath, 'utf8');
+        const trimmed = String(raw || '').trim();
+        if (!trimmed) {
+            return {
+                ...baseAudit,
+                format: 'empty',
+                summary: 'Cookie file is empty.',
+                note: 'Export a non-empty cookies.txt file and import it again.',
+            };
+        }
+
+        if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+            return {
+                ...baseAudit,
+                format: 'json',
+                summary: 'This looks like JSON cookies, not Netscape cookies.txt.',
+                note: 'yt-dlp expects a Netscape cookies.txt export for YouTube requests.',
+            };
+        }
+
+        const lines = trimmed.split(/\r?\n/);
+        const cookieRows = lines
+            .map((line) => line.trim())
+            .filter((line) => line && !line.startsWith('#'))
+            .map((line) => line.split('\t'))
+            .filter((parts) => parts.length >= 7);
+
+        const youtubeEntryCount = cookieRows.reduce((count, parts) => {
+            const domain = String(parts[0] || '');
+            return /youtube|google/i.test(domain) ? count + 1 : count;
+        }, 0);
+
+        const valid = cookieRows.length > 0;
+        const readyForYoutube = valid && youtubeEntryCount > 0;
+
+        return {
+            valid,
+            readyForYoutube,
+            format: valid ? 'netscape' : 'unknown',
+            cookieCount: cookieRows.length,
+            youtubeEntryCount,
+            pathLooksLikeYouTube: youtubeEntryCount > 0,
+            summary: valid
+                ? readyForYoutube
+                    ? `${cookieRows.length} cookie rows • ${youtubeEntryCount} YouTube/Google`
+                    : `${cookieRows.length} cookie rows • no YouTube/Google domains detected`
+                : 'Could not parse Netscape cookie rows.',
+            note: valid
+                ? readyForYoutube
+                    ? 'Local format check passed. Account ownership still cannot be proven in-app.'
+                    : 'The file format looks usable, but no YouTube/Google domains were detected.'
+                : 'Import a Netscape cookies.txt export from your browser or yt-dlp companion extension.',
+        };
+    } catch (error) {
+        return {
+            ...baseAudit,
+            format: 'error',
+            summary: 'Cookie file could not be read.',
+            note: error?.message || 'Read failure',
+        };
+    }
+};
+
+const WINDOWS_TITLEBAR_OVERLAY = Object.freeze({
+    color: '#0a0f12',
+    symbolColor: '#d9fff5bb',
+    height: 34,
+});
+
+const applyWindowsTitleBarOverlay = (win, compact = false) => {
+    if (process.platform !== 'win32' || !win || win.isDestroyed()) return;
+    try {
+        win.setTitleBarOverlay({
+            ...WINDOWS_TITLEBAR_OVERLAY,
+            height: compact ? 0 : WINDOWS_TITLEBAR_OVERLAY.height,
+        });
+    } catch (error) {
+        logDebug('setTitleBarOverlay failed', { error: error?.message || String(error), compact });
+    }
+};
+
 const APP_LOCK_STORE_KEY = 'appLock';
 const SESSION_PLAYBACK_STORE_KEY = 'aether.sessionPlayback.v1';
 let autoUpdater = null;
@@ -548,6 +644,19 @@ const resolveFfmpegPath = () => {
     return found || (process.platform === 'win32' ? null : 'ffmpeg');
 };
 
+function isSpawnableCommand(commandPath) {
+    try {
+        const result = spawnSync(commandPath, ['--version'], {
+            stdio: 'ignore',
+            timeout: 2500,
+            shell: false,
+        });
+        return !result.error && result.status === 0;
+    } catch {
+        return false;
+    }
+}
+
 const resolveYtDlpPath = () => {
     const envPath = process.env.YOUTUBE_DL_PATH;
     if (envPath && fs.existsSync(envPath)) return envPath;
@@ -569,37 +678,47 @@ const resolveYtDlpPath = () => {
         candidates.push(getBinaryPath('@distube/yt-dlp/bin/yt-dlp'));
     }
 
-    const found = candidates.find(p => p && fs.existsSync(p));
+    const spawnable = candidates.find((candidate) => candidate && fs.existsSync(candidate) && isSpawnableCommand(candidate));
+    if (spawnable) return spawnable;
+
+    const found = candidates.find((candidate) => candidate && fs.existsSync(candidate));
     return found || null;
 };
 
 let ytdlpPath = resolveYtDlpPath();
 let ensureYtDlpInFlight = null;
-const isSpawnableCommand = (commandPath) => {
-    try {
-        const result = spawnSync(commandPath, ['--version'], {
-            stdio: 'ignore',
-            timeout: 2500,
-            shell: false,
-        });
-        return !result.error && result.status === 0;
-    } catch {
-        return false;
-    }
-};
 
 const resolveSystemYtDlp = () => {
     const explicit = process.env.YOUTUBE_DL_PATH;
-    const candidates = [
-        explicit,
-        '/opt/homebrew/bin/yt-dlp',
-        '/usr/local/bin/yt-dlp',
-        '/usr/bin/yt-dlp',
-        'yt-dlp',
-    ].filter(Boolean);
+    const candidates = [explicit];
+
+    if (process.platform === 'win32') {
+        const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+        const chocolateyRoot = process.env.ChocolateyInstall || path.join(process.env.ProgramData || 'C:\\ProgramData', 'chocolatey');
+        const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
+        candidates.push(
+            path.join(localAppData, 'Microsoft', 'WindowsApps', 'yt-dlp.exe'),
+            path.join(chocolateyRoot, 'bin', 'yt-dlp.exe'),
+            path.join(programFiles, 'yt-dlp', 'yt-dlp.exe'),
+            'yt-dlp.exe',
+            'yt-dlp',
+        );
+    } else {
+        candidates.push(
+            '/opt/homebrew/bin/yt-dlp',
+            '/usr/local/bin/yt-dlp',
+            '/usr/bin/yt-dlp',
+            'yt-dlp',
+        );
+    }
 
     for (const candidate of candidates) {
+        if (!candidate) continue;
         if (candidate === 'yt-dlp') {
+            if (isSpawnableCommand(candidate)) return candidate;
+            continue;
+        }
+        if (candidate === 'yt-dlp.exe') {
             if (isSpawnableCommand(candidate)) return candidate;
             continue;
         }
@@ -1819,11 +1938,7 @@ function createWindow() {
     icon: path.join(__dirname, '../icon.png'),
     frame: !isWin,
     titleBarStyle: isWin ? 'hidden' : 'hiddenInset',
-    titleBarOverlay: isWin ? {
-      color: '#050505',
-      symbolColor: '#ffffff55',
-      height: 34,
-    } : undefined,
+    titleBarOverlay: isWin ? WINDOWS_TITLEBAR_OVERLAY : undefined,
     backgroundColor: '#050505',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -1833,6 +1948,10 @@ function createWindow() {
       allowRunningInsecureContent: true
     },
   });
+
+  if (isWin) {
+    applyWindowsTitleBarOverlay(mainWindow, mainWindow.isFullScreen() || mainWindow.isMaximized());
+  }
 
   if (!app.isPackaged && process.env.NODE_ENV !== 'production' && !process.argv.includes('--prod')) {
     mainWindow.loadURL('http://localhost:5173').catch(() => {
@@ -1905,18 +2024,22 @@ function createWindow() {
   }
 
   mainWindow.on('maximize', () => {
+    applyWindowsTitleBarOverlay(mainWindow, true);
     mainWindow.webContents.send('aether:maximized-state', true);
   });
 
   mainWindow.on('unmaximize', () => {
+    applyWindowsTitleBarOverlay(mainWindow, false);
     mainWindow.webContents.send('aether:maximized-state', false);
   });
 
   mainWindow.on('enter-full-screen', () => {
+    applyWindowsTitleBarOverlay(mainWindow, true);
     mainWindow.webContents.send('aether:maximized-state', true);
   });
 
   mainWindow.on('leave-full-screen', () => {
+    applyWindowsTitleBarOverlay(mainWindow, false);
     mainWindow.webContents.send('aether:maximized-state', false);
   });
 
@@ -2030,8 +2153,9 @@ app.whenReady().then(async () => {
     });
     ipcMain.handle('aether:get-port', () => actualPort);
     ipcMain.handle('aether:get-engine-status', async () => {
-        const ytDlpReady = await ensureYtDlpPathWithTimeout(2500);
+        const ytDlpReady = await ensureYtDlpPathWithTimeout(process.platform === 'win32' ? 5000 : 2500);
         const cookiesPath = getResolvedCookiesPath();
+        const cookieAudit = auditCookiesFile(cookiesPath);
         const ffmpegReady = !!ffmpegPath && (ffmpegPath === 'ffmpeg' || fs.existsSync(ffmpegPath));
         return {
             success: true,
@@ -2041,6 +2165,7 @@ app.whenReady().then(async () => {
             ffmpegPath: ffmpegPath || null,
             cookiesReady: !!cookiesPath,
             cookiesPath: cookiesPath || null,
+            cookieAudit,
             streamPort: actualPort,
             platform: process.platform,
         };
@@ -2241,6 +2366,12 @@ app.whenReady().then(async () => {
     ipcMain.handle('aether:window-minimize', () => {
         if (!mainWindow || mainWindow.isDestroyed()) return;
         mainWindow.minimize();
+    });
+
+    ipcMain.handle('aether:window-close', () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return { success: false };
+        mainWindow.close();
+        return { success: true };
     });
 
     ipcMain.handle('aether:open-external', async (event, url) => {
@@ -2530,9 +2661,18 @@ app.whenReady().then(async () => {
                 return { success: false, canceled: true };
             }
             const srcPath = result.filePaths[0];
+            const sourceAudit = auditCookiesFile(srcPath);
+            if (!sourceAudit.valid) {
+                return {
+                    success: false,
+                    error: sourceAudit.note || sourceAudit.summary || 'Cookies file format is not usable.',
+                    cookieAudit: sourceAudit,
+                };
+            }
             const destPath = require('path').join(app.getPath('userData'), 'cookies.txt');
             require('fs').copyFileSync(srcPath, destPath);
-            return { success: true };
+            const cookieAudit = auditCookiesFile(destPath);
+            return { success: true, cookieAudit };
         } catch (e) {
             return { success: false, error: e.message };
         }
