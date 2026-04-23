@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const http = require('http');
 const https = require('https');
 const chokidar = require('chokidar');
 const { fetchSyncedLyrics } = require('../lyrics-fetcher');
@@ -24,20 +25,86 @@ const getDebugLogPath = () => {
             return path.join(app.getPath('userData'), 'AetherDebug.log');
         }
     } catch (e) {
-        // Log error for debugging
-        logDebug('getDebugLogPath error', { error: e?.message || String(e) });
+        console.error('[Aether] getDebugLogPath error', e?.message || e);
     }
     return path.join(os.homedir(), 'Desktop', 'AetherDebug.log');
 };
+let debugLogBuffer = [];
+let debugLogFlushTimer = null;
+let debugLogWritePromise = null;
+const DEBUG_LOG_FLUSH_INTERVAL_MS = 250;
+const DEBUG_LOG_MAX_BUFFER_LINES = 24;
+const ensureDebugLogDirSync = (logPath) => {
+    const dir = path.dirname(logPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+};
+const ensureDebugLogDir = async (logPath) => {
+    await fs.promises.mkdir(path.dirname(logPath), { recursive: true });
+};
+const flushDebugLogBuffer = async () => {
+    if (debugLogFlushTimer) {
+        clearTimeout(debugLogFlushTimer);
+        debugLogFlushTimer = null;
+    }
+    if (debugLogWritePromise) return debugLogWritePromise;
+    if (debugLogBuffer.length === 0) return true;
+
+    const logPath = getDebugLogPath();
+    const lines = debugLogBuffer.join('');
+    debugLogBuffer = [];
+
+    debugLogWritePromise = (async () => {
+        await ensureDebugLogDir(logPath);
+        await fs.promises.appendFile(logPath, lines);
+        return true;
+    })().catch((e) => {
+        console.error('[Aether] logDebug async flush error', e?.message || e);
+        return false;
+    }).finally(() => {
+        debugLogWritePromise = null;
+        if (debugLogBuffer.length > 0) {
+            if (debugLogBuffer.length >= DEBUG_LOG_MAX_BUFFER_LINES) {
+                void flushDebugLogBuffer();
+            } else if (!debugLogFlushTimer) {
+                debugLogFlushTimer = setTimeout(() => {
+                    debugLogFlushTimer = null;
+                    void flushDebugLogBuffer();
+                }, DEBUG_LOG_FLUSH_INTERVAL_MS);
+            }
+        }
+    });
+
+    return debugLogWritePromise;
+};
+const flushDebugLogBufferSync = () => {
+    try {
+        if (debugLogFlushTimer) {
+            clearTimeout(debugLogFlushTimer);
+            debugLogFlushTimer = null;
+        }
+        if (debugLogBuffer.length === 0) return;
+        const logPath = getDebugLogPath();
+        ensureDebugLogDirSync(logPath);
+        fs.appendFileSync(logPath, debugLogBuffer.join(''));
+        debugLogBuffer = [];
+    } catch (e) {
+        console.error('[Aether] logDebug sync flush error', e?.message || e);
+    }
+};
 const logDebug = (message, meta = null) => {
     try {
-        const logPath = getDebugLogPath();
-        const dir = path.dirname(logPath);
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         const line = `[${new Date().toISOString()}] ${message}${meta ? ` ${JSON.stringify(meta)}` : ''}\n`;
-        fs.appendFileSync(logPath, line);
+        debugLogBuffer.push(line);
+        if (debugLogBuffer.length >= DEBUG_LOG_MAX_BUFFER_LINES) {
+            void flushDebugLogBuffer();
+        } else if (!debugLogFlushTimer) {
+            debugLogFlushTimer = setTimeout(() => {
+                debugLogFlushTimer = null;
+                void flushDebugLogBuffer();
+            }, DEBUG_LOG_FLUSH_INTERVAL_MS);
+        }
     } catch (e) {
-        logDebug('logDebug error', { error: e?.message || String(e) });
+        console.error('[Aether] logDebug error', e?.message || e);
     }
 };
 const decodeHtmlEntities = (value) => String(value || '')
@@ -160,15 +227,26 @@ const WINDOWS_TITLEBAR_OVERLAY = Object.freeze({
     height: 34,
 });
 
-const applyWindowsTitleBarOverlay = (win, compact = false) => {
+let windowsTitleBarForceCompact = false;
+
+const shouldCompactWindowsTitleBar = (win, compactHint = null) => {
+    if (process.platform !== 'win32' || !win || win.isDestroyed()) return false;
+    if (typeof compactHint === 'boolean') {
+        return compactHint || windowsTitleBarForceCompact;
+    }
+    return windowsTitleBarForceCompact || win.isFullScreen() || win.isMaximized();
+};
+
+const applyWindowsTitleBarOverlay = (win, compactHint = null) => {
     if (process.platform !== 'win32' || !win || win.isDestroyed()) return;
     try {
+        const compact = shouldCompactWindowsTitleBar(win, compactHint);
         win.setTitleBarOverlay({
             ...WINDOWS_TITLEBAR_OVERLAY,
             height: compact ? 0 : WINDOWS_TITLEBAR_OVERLAY.height,
         });
     } catch (error) {
-        logDebug('setTitleBarOverlay failed', { error: error?.message || String(error), compact });
+        logDebug('setTitleBarOverlay failed', { error: error?.message || String(error), compactHint });
     }
 };
 
@@ -335,6 +413,86 @@ const verifyLockPassword = (password, record) => {
     const b = Buffer.from(computed, 'hex');
     if (a.length !== b.length) return false;
     return crypto.timingSafeEqual(a, b);
+};
+const RECOVERY_OTP_ISSUER = 'Aether Studio';
+const RECOVERY_OTP_PERIOD_SECONDS = 30;
+const RECOVERY_OTP_DIGITS = 6;
+const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+const sanitizeRecoveryOtpSecret = (value) => String(value || '').toUpperCase().replace(/[^A-Z2-7]/g, '');
+const encodeBase32 = (buffer) => {
+    let bits = 0;
+    let value = 0;
+    let output = '';
+    for (const byte of buffer) {
+        value = (value << 8) | byte;
+        bits += 8;
+        while (bits >= 5) {
+            output += BASE32_ALPHABET[(value >>> (bits - 5)) & 31];
+            bits -= 5;
+        }
+    }
+    if (bits > 0) {
+        output += BASE32_ALPHABET[(value << (5 - bits)) & 31];
+    }
+    return output;
+};
+const decodeBase32 = (input) => {
+    const normalized = sanitizeRecoveryOtpSecret(input);
+    let bits = 0;
+    let value = 0;
+    const bytes = [];
+    for (const char of normalized) {
+        const index = BASE32_ALPHABET.indexOf(char);
+        if (index === -1) throw new Error('Invalid authenticator secret.');
+        value = (value << 5) | index;
+        bits += 5;
+        if (bits >= 8) {
+            bytes.push((value >>> (bits - 8)) & 255);
+            bits -= 8;
+        }
+    }
+    return Buffer.from(bytes);
+};
+const createRecoveryOtpProfile = () => {
+    const secret = encodeBase32(crypto.randomBytes(20));
+    const issuer = RECOVERY_OTP_ISSUER;
+    const label = `${app.getName()} (${os.hostname()})`;
+    const otpauthUrl = `otpauth://totp/${encodeURIComponent(`${issuer}:${label}`)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=${RECOVERY_OTP_DIGITS}&period=${RECOVERY_OTP_PERIOD_SECONDS}`;
+    return { secret, issuer, label, otpauthUrl };
+};
+const computeRecoveryOtpToken = (secret, counter) => {
+    const key = decodeBase32(secret);
+    const buffer = Buffer.alloc(8);
+    const safeCounter = Math.max(0, Number(counter) || 0);
+    const high = Math.floor(safeCounter / 0x100000000);
+    const low = safeCounter >>> 0;
+    buffer.writeUInt32BE(high >>> 0, 0);
+    buffer.writeUInt32BE(low, 4);
+    const digest = crypto.createHmac('sha1', key).update(buffer).digest();
+    const offset = digest[digest.length - 1] & 0x0f;
+    const code = (
+        ((digest[offset] & 0x7f) << 24) |
+        ((digest[offset + 1] & 0xff) << 16) |
+        ((digest[offset + 2] & 0xff) << 8) |
+        (digest[offset + 3] & 0xff)
+    ) % (10 ** RECOVERY_OTP_DIGITS);
+    return String(code).padStart(RECOVERY_OTP_DIGITS, '0');
+};
+const verifyRecoveryOtp = (code, secret) => {
+    const normalizedCode = String(code || '').replace(/\D/g, '');
+    const normalizedSecret = sanitizeRecoveryOtpSecret(secret);
+    if (normalizedCode.length !== RECOVERY_OTP_DIGITS || normalizedSecret.length < 16) return false;
+    try {
+        const currentCounter = Math.floor(Date.now() / 1000 / RECOVERY_OTP_PERIOD_SECONDS);
+        for (let offset = -1; offset <= 1; offset += 1) {
+            if (computeRecoveryOtpToken(normalizedSecret, currentCounter + offset) === normalizedCode) {
+                return true;
+            }
+        }
+    } catch (e) {
+        logDebug('verifyRecoveryOtp failed', { error: e?.message || String(e) });
+    }
+    return false;
 };
 
 const extractSpotifyPlaylistId = (input) => {
@@ -583,64 +741,117 @@ const getBundledPath = (relPath) => {
 };
 
 const getUserDataBinaryPath = (binaryName) => path.join(app.getPath('userData'), 'bin', binaryName);
+const dedupePaths = (paths = []) => [...new Set(paths.filter(Boolean))];
+const ensureExecutablePermissions = (filePath) => {
+    if (!filePath || process.platform === 'win32' || !fs.existsSync(filePath)) return filePath;
+    try {
+        fs.chmodSync(filePath, 0o755);
+    } catch (e) {
+        logDebug('chmod failed', { filePath, error: e?.message || String(e) });
+    }
+    return filePath;
+};
+const getBinaryStat = (filePath) => {
+    try {
+        return filePath ? fs.statSync(filePath) : null;
+    } catch {
+        return null;
+    }
+};
+const getBundledBinaryCandidates = (binaryNames = []) => dedupePaths(
+    binaryNames.map((binaryName) => getBundledPath(`desktop/bin/${binaryName}`)),
+);
+const getUserDataBinaryCandidates = (binaryNames = []) => dedupePaths(
+    binaryNames.map((binaryName) => getUserDataBinaryPath(binaryName)),
+);
+const findExistingBinary = (candidates = []) => candidates.find((candidate) => {
+    const stat = getBinaryStat(candidate);
+    if (!stat?.isFile?.()) return false;
+    ensureExecutablePermissions(candidate);
+    return true;
+}) || null;
+const getFfmpegBinaryNames = () => {
+    if (process.platform === 'win32') return ['ffmpeg.exe'];
+    if (process.platform === 'darwin') {
+        return [process.arch === 'arm64' ? 'ffmpeg_darwin_arm64' : 'ffmpeg_darwin_x64', 'ffmpeg'];
+    }
+    return ['ffmpeg'];
+};
+const getYtDlpBinaryNames = () => {
+    if (process.platform === 'win32') return ['yt-dlp.exe'];
+    if (process.platform === 'darwin') return ['yt-dlp_macos', 'yt-dlp'];
+    return ['yt-dlp'];
+};
 
 // --- BULLETPROOF NATIVE BINARY EXTRACTOR ---
 // Sidesteps read-only /Applications restrictions and Python deprecations
-const unpackNativeEngine = (binaryName) => {
+const unpackNativeEngine = (binaryName, options = {}) => {
+    const { force = false } = options;
     const sourcePath = getBundledPath(`desktop/bin/${binaryName}`);
     const targetExecutable = getUserDataBinaryPath(binaryName);
-    
+    const sourceStat = getBinaryStat(sourcePath);
+
+    if (!sourceStat?.isFile?.()) {
+        logDebug('bundled binary missing for unpack', { binaryName, sourcePath });
+        return null;
+    }
+
     try {
-        if (fs.existsSync(sourcePath)) {
-            fs.mkdirSync(path.dirname(targetExecutable), { recursive: true });
-            // Read from bundled resources, inject into user space, force execute
-            const asm = fs.readFileSync(sourcePath);
-            fs.writeFileSync(targetExecutable, asm);
-            if (process.platform !== 'win32') {
-                try { fs.chmodSync(targetExecutable, 0o755); } catch (e) {
-                    fs.appendFileSync(path.join(app.getPath('desktop'), 'AetherDebug.log'), `\n[Chmod Fault]\n${e.message}\n`);
-                }
-            }
-            if (process.platform === 'win32') {
-                try {
-                    // Copying into userData usually strips Mark-of-the-Web; this helps avoid manual Unblock-File.
-                    fs.utimesSync(targetExecutable, new Date(), new Date());
-                } catch {}
-            }
-            return targetExecutable;
-        } else {
-            fs.appendFileSync(path.join(app.getPath('desktop'), 'AetherDebug.log'), `\n[Unpack Missing]\nsourcePath does not exist: ${sourcePath}\n`);
+        const targetStat = getBinaryStat(targetExecutable);
+        if (!force && targetStat?.isFile?.() && targetStat.size > 0) {
+            return ensureExecutablePermissions(targetExecutable);
         }
+
+        fs.mkdirSync(path.dirname(targetExecutable), { recursive: true });
+        const tmpTarget = `${targetExecutable}.${process.pid}.${Date.now()}.tmp`;
+        fs.copyFileSync(sourcePath, tmpTarget);
+        ensureExecutablePermissions(tmpTarget);
+
+        try {
+            if (force && fs.existsSync(targetExecutable)) {
+                try { fs.rmSync(targetExecutable, { force: true }); } catch {}
+            }
+            if (!fs.existsSync(targetExecutable)) {
+                fs.renameSync(tmpTarget, targetExecutable);
+            } else {
+                try { fs.unlinkSync(tmpTarget); } catch {}
+            }
+        } catch (renameError) {
+            logDebug('binary unpack rename failed', {
+                binaryName,
+                sourcePath,
+                targetExecutable,
+                error: renameError?.message || String(renameError),
+            });
+            return ensureExecutablePermissions(tmpTarget);
+        }
+
+        if (process.platform === 'win32') {
+            try {
+                fs.utimesSync(targetExecutable, new Date(), new Date());
+            } catch {}
+        }
+        return ensureExecutablePermissions(targetExecutable);
     } catch (e) {
-        fs.appendFileSync(path.join(app.getPath('desktop'), 'AetherDebug.log'), `\n[Engine Unpack Fault]\n${e.message}\n`);
+        logDebug('binary unpack failed', { binaryName, sourcePath, targetExecutable, error: e?.message || String(e) });
         console.error(`[Aether] Execution unpack fault: ${e.message}`);
     }
-    return getBundledPath(`desktop/bin/${binaryName}`);
+    return null;
 };
 
 const resolveFfmpegPath = () => {
     const envPath = process.env.FFMPEG_PATH;
     if (envPath && fs.existsSync(envPath)) return envPath;
 
-    const candidates = [];
-    if (process.platform === 'win32') {
-        candidates.push(unpackNativeEngine('ffmpeg.exe'));
-        candidates.push(getBundledPath('desktop/bin/ffmpeg.exe'));
-        candidates.push(getBinaryPath('ffmpeg-static/ffmpeg.exe'));
-    } else if (process.platform === 'darwin') {
-        const darwinBinaryName = process.arch === 'arm64' ? 'ffmpeg_darwin_arm64' : 'ffmpeg_darwin_x64';
-        candidates.push(unpackNativeEngine(darwinBinaryName));
-        candidates.push(getBundledPath(`desktop/bin/${darwinBinaryName}`));
-        candidates.push(unpackNativeEngine('ffmpeg'));
-        candidates.push(getBundledPath('desktop/bin/ffmpeg'));
-        candidates.push(getBinaryPath('ffmpeg-static/ffmpeg'));
-    } else {
-        candidates.push(unpackNativeEngine('ffmpeg'));
-        candidates.push(getBundledPath('desktop/bin/ffmpeg'));
-        candidates.push(getBinaryPath('ffmpeg-static/ffmpeg'));
-    }
-
-    const found = candidates.find((p) => p && fs.existsSync(p));
+    const binaryNames = getFfmpegBinaryNames();
+    const candidates = dedupePaths([
+        ...getBundledBinaryCandidates(binaryNames),
+        ...getUserDataBinaryCandidates(binaryNames),
+        process.platform === 'win32'
+            ? getBinaryPath('ffmpeg-static/ffmpeg.exe')
+            : getBinaryPath('ffmpeg-static/ffmpeg'),
+    ]);
+    const found = findExistingBinary(candidates);
     return found || (process.platform === 'win32' ? null : 'ffmpeg');
 };
 
@@ -661,32 +872,123 @@ const resolveYtDlpPath = () => {
     const envPath = process.env.YOUTUBE_DL_PATH;
     if (envPath && fs.existsSync(envPath)) return envPath;
 
-    const candidates = [];
-
-    if (process.platform === 'win32') {
-        candidates.push(unpackNativeEngine('yt-dlp.exe'));
-        candidates.push(getBundledPath('desktop/bin/yt-dlp.exe'));
-        candidates.push(getBinaryPath('@distube/yt-dlp/bin/yt-dlp.exe'));
-    } else if (process.platform === 'darwin') {
-        candidates.push(unpackNativeEngine('yt-dlp_macos'));
-        candidates.push(getBundledPath('desktop/bin/yt-dlp_macos'));
-        candidates.push(getBundledPath('desktop/bin/yt-dlp'));
-        candidates.push(getBinaryPath('@distube/yt-dlp/bin/yt-dlp'));
-    } else {
-        candidates.push(unpackNativeEngine('yt-dlp'));
-        candidates.push(getBundledPath('desktop/bin/yt-dlp'));
-        candidates.push(getBinaryPath('@distube/yt-dlp/bin/yt-dlp'));
-    }
+    const binaryNames = getYtDlpBinaryNames();
+    const candidates = dedupePaths([
+        ...getBundledBinaryCandidates(binaryNames),
+        ...getUserDataBinaryCandidates(binaryNames),
+        process.platform === 'win32'
+            ? getBinaryPath('@distube/yt-dlp/bin/yt-dlp.exe')
+            : getBinaryPath('@distube/yt-dlp/bin/yt-dlp'),
+    ]);
 
     const spawnable = candidates.find((candidate) => candidate && fs.existsSync(candidate) && isSpawnableCommand(candidate));
     if (spawnable) return spawnable;
 
-    const found = candidates.find((candidate) => candidate && fs.existsSync(candidate));
+    const found = findExistingBinary(candidates);
     return found || null;
 };
 
 let ytdlpPath = resolveYtDlpPath();
 let ensureYtDlpInFlight = null;
+let lastLoggedYtDlpResolution = '';
+const streamTelemetryGate = new Map();
+
+const logYtDlpResolution = (eventName, resolvedPath) => {
+    const nextKey = `${eventName}:${resolvedPath || ''}`;
+    if (!resolvedPath || lastLoggedYtDlpResolution === nextKey) return;
+    lastLoggedYtDlpResolution = nextKey;
+    logDebug(eventName, { ytdlpPath: resolvedPath });
+};
+
+const shouldLogStreamEvent = (key, windowMs = 4000) => {
+    const now = Date.now();
+    const prev = streamTelemetryGate.get(key) || 0;
+    streamTelemetryGate.set(key, now);
+    if (streamTelemetryGate.size > 320) {
+        for (const [entryKey, entryTime] of streamTelemetryGate.entries()) {
+            if ((now - entryTime) > 300000) {
+                streamTelemetryGate.delete(entryKey);
+            }
+        }
+    }
+    return (now - prev) >= windowMs;
+};
+const THUMBNAIL_PROXY_SUCCESS_TTL_MS = 24 * 60 * 60 * 1000;
+const THUMBNAIL_PROXY_FAILURE_TTL_MS = 90 * 1000;
+const THUMBNAIL_PROXY_MAX_CACHE_ENTRIES = 256;
+const DIRECT_MEDIA_URL_TTL_MS = 10 * 60 * 1000;
+const thumbnailProxyCache = new Map();
+const thumbnailProxyFailureCache = new Map();
+const thumbnailProxyInflight = new Map();
+const directMediaUrlCache = new Map();
+const directMediaUrlInflight = new Map();
+const thumbnailProxyHttpAgent = new http.Agent({
+    keepAlive: true,
+    maxSockets: 12,
+    maxFreeSockets: 4,
+});
+const thumbnailProxyHttpsAgent = new https.Agent({
+    keepAlive: true,
+    maxSockets: 12,
+    maxFreeSockets: 4,
+});
+const directMediaHttpAgent = new http.Agent({
+    keepAlive: true,
+    maxSockets: 16,
+    maxFreeSockets: 8,
+});
+const directMediaHttpsAgent = new https.Agent({
+    keepAlive: true,
+    maxSockets: 16,
+    maxFreeSockets: 8,
+});
+const THUMBNAIL_PROXY_PLACEHOLDER_BUFFER = Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="480" height="480" viewBox="0 0 480 480" role="img" aria-label="Thumbnail unavailable">
+        <defs>
+            <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#081018" />
+                <stop offset="100%" stop-color="#0d1f1b" />
+            </linearGradient>
+            <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#00ffbf" stop-opacity="0.95" />
+                <stop offset="100%" stop-color="#68ffe1" stop-opacity="0.28" />
+            </linearGradient>
+        </defs>
+        <rect width="480" height="480" rx="48" fill="url(#bg)" />
+        <circle cx="240" cy="194" r="72" fill="none" stroke="url(#ring)" stroke-width="10" opacity="0.8" />
+        <circle cx="240" cy="194" r="22" fill="#00ffbf" opacity="0.78" />
+        <path d="M178 314h124" stroke="#00ffbf" stroke-width="12" stroke-linecap="round" opacity="0.72" />
+        <path d="M202 350h76" stroke="#d9fff7" stroke-width="10" stroke-linecap="round" opacity="0.34" />
+        <text x="240" y="410" text-anchor="middle" fill="#a5fff0" font-family="Arial, sans-serif" font-size="28" letter-spacing="4">AETHER</text>
+    </svg>`,
+    'utf8',
+);
+const trimThumbnailProxyCache = (map, maxEntries = THUMBNAIL_PROXY_MAX_CACHE_ENTRIES) => {
+    if (map.size <= maxEntries) return;
+    const excess = map.size - maxEntries;
+    let removed = 0;
+    for (const key of map.keys()) {
+        map.delete(key);
+        removed += 1;
+        if (removed >= excess) break;
+    }
+};
+const readThumbnailProxyCache = (map, key) => {
+    const entry = map.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt <= Date.now()) {
+        map.delete(key);
+        return null;
+    }
+    return entry.value;
+};
+const writeThumbnailProxyCache = (map, key, value, ttlMs) => {
+    map.set(key, {
+        value,
+        expiresAt: Date.now() + ttlMs,
+    });
+    trimThumbnailProxyCache(map);
+};
 
 const resolveSystemYtDlp = () => {
     const explicit = process.env.YOUTUBE_DL_PATH;
@@ -771,10 +1073,17 @@ const downloadFileWithRedirects = (url, destination, redirects = 0) => {
 const ensureYtDlpPath = async () => {
     if (ensureYtDlpInFlight) return ensureYtDlpInFlight;
     ensureYtDlpInFlight = (async () => {
+        const resolvedCandidate = resolveYtDlpPath();
+        if (resolvedCandidate && fs.existsSync(resolvedCandidate) && isSpawnableCommand(resolvedCandidate)) {
+            ytdlpPath = resolvedCandidate;
+            logYtDlpResolution('yt-dlp resolved from bundled/runtime path', ytdlpPath);
+            return true;
+        }
+
         const systemYtDlp = resolveSystemYtDlp();
         if (systemYtDlp) {
             ytdlpPath = systemYtDlp;
-            logDebug('yt-dlp resolved from system', { ytdlpPath });
+            logYtDlpResolution('yt-dlp resolved from system', ytdlpPath);
             return true;
         }
 
@@ -792,6 +1101,11 @@ const ensureYtDlpPath = async () => {
                     ? 'yt-dlp_macos'
                     : 'yt-dlp';
             const target = path.join(binDir, binaryName);
+            const parsedBinaryName = path.parse(binaryName);
+            const tempTarget = path.join(
+                binDir,
+                `${parsedBinaryName.name}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}${parsedBinaryName.ext}`,
+            );
 
             if (fs.existsSync(target)) {
                 if (process.platform !== 'win32') {
@@ -799,27 +1113,42 @@ const ensureYtDlpPath = async () => {
                 }
                 if (isSpawnableCommand(target)) {
                     ytdlpPath = target;
-                    logDebug('yt-dlp resolved from userData bin', { target });
+                    logYtDlpResolution('yt-dlp resolved from userData bin', ytdlpPath);
                     return true;
                 }
             }
 
             const downloadUrl = process.platform === 'win32'
                 ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
-                : process.platform === 'darwin'
-                    ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos'
-                    : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+                    : process.platform === 'darwin'
+                        ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos'
+                        : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
 
             logDebug('yt-dlp bootstrap download starting', { downloadUrl });
-            await downloadFileWithRedirects(downloadUrl, target);
+            await downloadFileWithRedirects(downloadUrl, tempTarget);
             if (process.platform !== 'win32') {
-                try { fs.chmodSync(target, 0o755); } catch {}
+                try { fs.chmodSync(tempTarget, 0o755); } catch {}
             }
 
-            if (isSpawnableCommand(target)) {
-                ytdlpPath = target;
-                console.log(`[Aether] yt-dlp bootstrapped at ${target}`);
-                logDebug('yt-dlp bootstrapped', { target });
+            let selectedTarget = tempTarget;
+            if (isSpawnableCommand(tempTarget)) {
+                try {
+                    if (fs.existsSync(target)) {
+                        try { fs.rmSync(target, { force: true }); } catch {}
+                    }
+                    fs.renameSync(tempTarget, target);
+                    selectedTarget = target;
+                } catch (renameError) {
+                    logDebug('yt-dlp bootstrap rename skipped', {
+                        target,
+                        tempTarget,
+                        error: renameError?.message || String(renameError),
+                    });
+                }
+
+                ytdlpPath = selectedTarget;
+                console.log(`[Aether] yt-dlp bootstrapped at ${selectedTarget}`);
+                logDebug('yt-dlp bootstrapped', { target: selectedTarget });
                 return true;
             }
         } catch (e) {
@@ -847,7 +1176,7 @@ const ensureYtDlpPathWithTimeout = async (timeoutMs = 8000) => {
     }
     return !!ready;
 };
-const ffmpegPath = resolveFfmpegPath();
+let ffmpegPath = resolveFfmpegPath();
 console.log(`[Aether] ytdlpPath: ${ytdlpPath}, ffmpegPath: ${ffmpegPath}`);
 
 const offlineEngine = new OfflineEngine(app.getPath('userData'));
@@ -1120,6 +1449,8 @@ const runFinalTeardown = () => {
     } catch (e) {
         logDebug('activeStreamProcesses.clear error', { error: e?.message || String(e) });
     }
+
+    flushDebugLogBufferSync();
 };
 
 const estimateStorageReclaim = (mode = 'cap', payload = {}) => {
@@ -1308,22 +1639,177 @@ streamApp.get('/', (req, res) => {
     `);
 });
 
+const extractDirectMediaUrl = async (videoUrl, {
+    cacheKey = null,
+    format = '140/bestaudio[ext=m4a]/bestaudio/best',
+    logKey = 'direct-media',
+} = {}) => {
+    const normalizedKey = cacheKey || `${logKey}:${videoUrl}`;
+    const cached = readThumbnailProxyCache(directMediaUrlCache, normalizedKey);
+    if (cached) {
+        return cached;
+    }
+
+    let inflight = directMediaUrlInflight.get(normalizedKey);
+    if (!inflight) {
+        inflight = new Promise((resolve, reject) => {
+            const args = [
+                videoUrl,
+                '--get-url',
+                '--format', format,
+                '--no-check-certificates',
+                '--no-warnings',
+                '--quiet',
+            ];
+
+            const cookiesPath = getResolvedCookiesPath();
+            if (cookiesPath) {
+                args.push('--cookies', cookiesPath);
+            }
+
+            const proc = spawn(ytdlpPath, args);
+            let output = '';
+            let errOutput = '';
+
+            proc.stdout.on('data', (d) => { output += d.toString(); });
+            proc.stderr.on('data', (d) => {
+                const msg = d.toString().trim();
+                errOutput += `${msg}\n`;
+                handleOAuthIntercept(msg);
+                if (msg.length > 5 && shouldLogStreamEvent(`direct-media-stderr:${logKey}`, 5000)) {
+                    console.log(`[Aether/Media] ${msg}`);
+                }
+            });
+
+            proc.on('error', (err) => {
+                reject(err);
+            });
+
+            proc.on('close', (code) => {
+                if (code !== 0 || !output.trim()) {
+                    reject(new Error(errOutput.trim() || `yt-dlp exited with code ${code}`));
+                    return;
+                }
+                const directUrl = output.trim().split('\n')[0].trim();
+                writeThumbnailProxyCache(directMediaUrlCache, normalizedKey, directUrl, DIRECT_MEDIA_URL_TTL_MS);
+                resolve(directUrl);
+            });
+        });
+
+        directMediaUrlInflight.set(normalizedKey, inflight);
+        inflight.finally(() => {
+            if (directMediaUrlInflight.get(normalizedKey) === inflight) {
+                directMediaUrlInflight.delete(normalizedKey);
+            }
+        });
+    }
+
+    return inflight;
+};
+
+const pipeRemoteMediaToResponse = (targetUrl, req, res, {
+    streamLabel = 'direct-stream',
+    startTime = Date.now(),
+    hop = 0,
+} = {}) => new Promise((resolve, reject) => {
+    if (hop > 4) {
+        reject(new Error('Too many redirects'));
+        return;
+    }
+
+    const isHttpsTarget = String(targetUrl || '').startsWith('https');
+    const client = isHttpsTarget ? https : http;
+    const upstreamReq = client.get(targetUrl, {
+        agent: isHttpsTarget ? directMediaHttpsAgent : directMediaHttpAgent,
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            ...(req.headers.range ? { Range: req.headers.range } : {}),
+        },
+        timeout: 20000,
+    }, (upstreamRes) => {
+        if (upstreamRes.statusCode >= 300 && upstreamRes.statusCode < 400 && upstreamRes.headers.location) {
+            const redirectUrl = upstreamRes.headers.location.startsWith('http')
+                ? upstreamRes.headers.location
+                : new URL(upstreamRes.headers.location, targetUrl).href;
+            upstreamRes.resume();
+            resolve(pipeRemoteMediaToResponse(redirectUrl, req, res, {
+                streamLabel,
+                startTime,
+                hop: hop + 1,
+            }));
+            return;
+        }
+
+        if (upstreamRes.statusCode < 200 || upstreamRes.statusCode >= 400) {
+            upstreamRes.resume();
+            reject(new Error(`Direct media status ${upstreamRes.statusCode}`));
+            return;
+        }
+
+        let firstChunkLogged = false;
+        upstreamRes.on('data', () => {
+            if (!firstChunkLogged) {
+                firstChunkLogged = true;
+                if (shouldLogStreamEvent(`stream-first-chunk:${streamLabel}`, 3500)) {
+                    console.log(`[Aether] First streaming chunk after ${Date.now() - startTime}ms for ${streamLabel}`);
+                }
+            }
+        });
+
+        res.status(upstreamRes.statusCode === 206 ? 206 : 200);
+        const passHeaders = ['content-type', 'content-length', 'content-range', 'accept-ranges'];
+        for (const headerName of passHeaders) {
+            if (upstreamRes.headers[headerName]) {
+                res.setHeader(headerName, upstreamRes.headers[headerName]);
+            }
+        }
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('X-Aether-Stream-Cache', 'miss');
+        res.setHeader('X-Aether-Stream-Source', 'direct-cdn');
+
+        upstreamRes.pipe(res);
+        resolve(true);
+    });
+
+    const closeUpstream = () => {
+        try { upstreamReq.destroy(); } catch {}
+    };
+
+    req.on('close', closeUpstream);
+    upstreamReq.on('timeout', () => {
+        upstreamReq.destroy(new Error('Timeout'));
+    });
+    upstreamReq.on('error', (err) => {
+        closeUpstream();
+        reject(err);
+    });
+});
+
 streamApp.get('/stream', async (req, res) => {
     const startTime = Date.now();
     const videoUrl = req.query.url;
+    if (!videoUrl) {
+        res.status(400).send('No URL');
+        return;
+    }
     const seekTime = parseFloat(req.query.t || '0');
 
     // Extract track ID only from YouTube share links (youtube.com?v=XXXXX)
     const trackIdMatch = videoUrl.match(/(?:youtube\.com|youtu\.be).*[?&]v=([A-Za-z0-9_-]{11})/);
     const trackId = trackIdMatch ? trackIdMatch[1] : null;
     const isYouTubeLink = !!trackId;
-    
-    console.log(`[Aether] Stream request for url: ${videoUrl}, isYouTubeLink: ${isYouTubeLink}, trackId: ${trackId || 'direct-stream'}`);
+    const streamLabel = trackId || 'direct-stream';
+    if (shouldLogStreamEvent(`stream-request:${streamLabel}`, 3500)) {
+        console.log(`[Aether] Stream request for url: ${videoUrl}, isYouTubeLink: ${isYouTubeLink}, trackId: ${streamLabel}`);
+    }
 
     let cachedFile = null;
     if (isYouTubeLink) {
         cachedFile = offlineEngine.getFilePath(trackId);
-        if (cachedFile) console.log(`[Aether] Cache hit for ${trackId}: ${cachedFile}`);
+        if (cachedFile && shouldLogStreamEvent(`stream-cache-hit:${trackId}`, 3500)) {
+            console.log(`[Aether] Cache hit for ${trackId}: ${cachedFile}`);
+        }
     }
 
     if (cachedFile) {
@@ -1336,7 +1822,8 @@ streamApp.get('/stream', async (req, res) => {
 
         res.setHeader('Content-Type', contentType);
         res.setHeader('Accept-Ranges', 'bytes');
-        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+        res.setHeader('X-Aether-Stream-Cache', 'hit');
 
         if (range) {
             const match = String(range).match(/bytes=(\d*)-(\d*)/i);
@@ -1367,7 +1854,9 @@ streamApp.get('/stream', async (req, res) => {
         }
 
         res.on('finish', () => {
-            console.log(`[Aether] Cached stream for ${trackId} took ${Date.now() - startTime}ms`);
+            if (shouldLogStreamEvent(`stream-cache-finish:${trackId}`, 5000)) {
+                console.log(`[Aether] Cached stream for ${trackId} took ${Date.now() - startTime}ms`);
+            }
         });
         return;
     }
@@ -1380,11 +1869,45 @@ streamApp.get('/stream', async (req, res) => {
         return;
     }
 
-    console.log(`[Aether] Cache miss for ${trackId || 'direct-stream'}, streaming from yt-dlp`);
-    // Fallback to yt-dlp streaming
+    if (shouldLogStreamEvent(`stream-cache-miss:${streamLabel}`, 3500)) {
+        console.log(`[Aether] Cache miss for ${streamLabel}, streaming from yt-dlp`);
+    }
+
+    if (shouldLogStreamEvent(`stream-live-start:${streamLabel}`, 3500)) {
+        console.log(`[Aether] Streaming: ${videoUrl} @ ${seekTime}s`);
+    }
+
+    if (isYouTubeLink) {
+        const directResolveStart = Date.now();
+        try {
+            const directUrl = await extractDirectMediaUrl(videoUrl, {
+                cacheKey: `audio:${trackId}`,
+                format: '140/bestaudio[ext=m4a]/bestaudio/best',
+                logKey: `audio:${trackId}`,
+            });
+            if (shouldLogStreamEvent(`stream-direct-url:${streamLabel}`, 5000)) {
+                console.log(`[Aether] Direct audio URL resolved for ${streamLabel} in ${Date.now() - directResolveStart}ms`);
+            }
+            await pipeRemoteMediaToResponse(directUrl, req, res, {
+                streamLabel,
+                startTime,
+            });
+            res.on('finish', () => {
+                if (shouldLogStreamEvent(`stream-live-finish:${streamLabel}`, 5000)) {
+                    console.log(`[Aether] Direct CDN audio stream for ${streamLabel} took ${Date.now() - startTime}ms`);
+                }
+            });
+            return;
+        } catch (err) {
+            directMediaUrlCache.delete(`audio:${trackId}`);
+            if (shouldLogStreamEvent(`stream-direct-fallback:${streamLabel}`, 5000)) {
+                console.warn(`[Aether] Direct audio proxy failed for ${streamLabel}, falling back to yt-dlp stdout: ${err?.message || err}`);
+            }
+        }
+    }
+
+    // Fallback to yt-dlp stdout streaming when direct resolution fails.
     const cookiesPath = getResolvedCookiesPath();
-    
-    console.log(`[Aether] Streaming: ${videoUrl} @ ${seekTime}s`);
 
     const args = [
         videoUrl,
@@ -1424,13 +1947,19 @@ streamApp.get('/stream', async (req, res) => {
     proc.stdout.on('data', () => {
         if (!firstChunkTime) {
             firstChunkTime = Date.now();
-            console.log(`[Aether] First streaming chunk after ${firstChunkTime - startTime}ms for ${trackId}`);
+            if (shouldLogStreamEvent(`stream-first-chunk:${streamLabel}`, 3500)) {
+                console.log(`[Aether] First streaming chunk after ${firstChunkTime - startTime}ms for ${streamLabel}`);
+            }
         }
     });
 
     proc.on('error', (err) => {
         activeStreamProcesses.delete(proc);
-        fs.appendFileSync(path.join(app.getPath('desktop'), 'AetherDebug.log'), `\n[Stream Spawn Fault]\nytdlpPath: ${ytdlpPath}\nerr: ${err.message}\nstack: ${err.stack}\n`);
+        logDebug('stream spawn fault', {
+            ytdlpPath,
+            error: err?.message || String(err),
+            stack: err?.stack || null,
+        });
         console.error(`[Aether] Engine launch error: ${err.message}`);
         if (!res.headersSent) res.status(500).send(`Neural Engine failed: ${err.message}`);
     });
@@ -1438,9 +1967,13 @@ streamApp.get('/stream', async (req, res) => {
     // yt-dlp primary format is m4a, so expose mp4 audio MIME for browser compatibility.
     res.setHeader('Content-Type', 'audio/mp4');
     res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Aether-Stream-Cache', 'miss');
     proc.stdout.pipe(res);
     res.on('finish', () => {
-        console.log(`[Aether] yt-dlp stream for ${trackId} took ${Date.now() - startTime}ms`);
+        if (shouldLogStreamEvent(`stream-live-finish:${streamLabel}`, 5000)) {
+            console.log(`[Aether] yt-dlp stream for ${streamLabel} took ${Date.now() - startTime}ms`);
+        }
     });
 
     proc.stderr.on('data', (d) => {
@@ -1462,11 +1995,15 @@ streamApp.get('/stream', async (req, res) => {
         const ytdlpTotal = Date.now() - ytdlpStart;
         const remuxDur = remuxStart ? Date.now() - remuxStart : null;
         const suffix = isYouTubeLink ? ` ytdlp=${ytdlpTotal}ms remux=${remuxDur != null ? remuxDur + 'ms' : 'unknown'}` : '';
-        console.log(`[Aether] yt-dlp stream closed ${trackId || 'direct'} code=${code} total=${streamTotal}ms${suffix}`);
+        if (code !== 0 || shouldLogStreamEvent(`stream-live-close:${streamLabel}`, 5000)) {
+            console.log(`[Aether] yt-dlp stream closed ${trackId || 'direct'} code=${code} total=${streamTotal}ms${suffix}`);
+        }
     });
 
     req.on('close', () => {
-        console.log(`[Aether] Stream request closed for ${trackId} after ${Date.now() - startTime}ms`);
+        if (shouldLogStreamEvent(`stream-request-close:${streamLabel}`, 5000)) {
+            console.log(`[Aether] Stream request closed for ${streamLabel} after ${Date.now() - startTime}ms`);
+        }
         activeStreamProcesses.delete(proc);
         proc.kill('SIGKILL');
     });
@@ -1554,46 +2091,150 @@ streamApp.get('/api/proxy', async (req, res) => {
         try {
             const parsed = new URL(initial);
             const isYtImg = /(^|\.)ytimg\.com$/i.test(parsed.hostname);
-            const isMaxRes = /\/maxresdefault\.(jpg|webp)$/i.test(parsed.pathname);
-            if (isYtImg && isMaxRes) {
-                const fallback = new URL(parsed.toString());
-                fallback.pathname = fallback.pathname.replace(/maxresdefault\.(jpg|webp)$/i, 'hqdefault.jpg');
-                out.push(fallback.toString());
+            if (isYtImg) {
+                const seenPaths = new Set([parsed.pathname]);
+                const fallbacks = [];
+                const pushFallback = (nextPath) => {
+                    if (!nextPath || seenPaths.has(nextPath)) return;
+                    seenPaths.add(nextPath);
+                    const fallback = new URL(parsed.toString());
+                    fallback.pathname = nextPath;
+                    fallbacks.push(fallback.toString());
+                };
+                if (/\/maxresdefault\.(jpg|webp)$/i.test(parsed.pathname)) {
+                    pushFallback(parsed.pathname.replace(/maxresdefault\.(jpg|webp)$/i, 'sddefault.jpg'));
+                    pushFallback(parsed.pathname.replace(/maxresdefault\.(jpg|webp)$/i, 'hqdefault.jpg'));
+                    pushFallback(parsed.pathname.replace(/maxresdefault\.(jpg|webp)$/i, 'mqdefault.jpg'));
+                } else if (/\/sddefault\.(jpg|webp)$/i.test(parsed.pathname)) {
+                    pushFallback(parsed.pathname.replace(/sddefault\.(jpg|webp)$/i, 'hqdefault.jpg'));
+                    pushFallback(parsed.pathname.replace(/sddefault\.(jpg|webp)$/i, 'mqdefault.jpg'));
+                } else if (/\/hqdefault\.(jpg|webp)$/i.test(parsed.pathname)) {
+                    pushFallback(parsed.pathname.replace(/hqdefault\.(jpg|webp)$/i, 'mqdefault.jpg'));
+                    pushFallback(parsed.pathname.replace(/hqdefault\.(jpg|webp)$/i, 'default.jpg'));
+                }
+                out.push(...fallbacks);
             }
         } catch {}
         return [...new Set(out.filter(Boolean))];
     };
 
-    try {
-        const candidates = buildCandidateUrls(url);
-        let lastStatus = 500;
+    const candidates = buildCandidateUrls(url);
+    const primaryKey = candidates[0] || String(url || '');
 
-        for (const candidateUrl of candidates) {
-            try {
-                const response = await fetch(candidateUrl, {
-                    redirect: 'follow',
-                    headers: {
-                        'user-agent': 'Mozilla/5.0 (Aether Proxy)',
-                        'accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-                    },
-                });
+    const sendImageResult = (payload, cacheSeconds = 86400) => {
+        res.setHeader('Content-Type', payload.contentType || 'image/jpeg');
+        res.setHeader('Cache-Control', `public, max-age=${cacheSeconds}`);
+        res.setHeader('Content-Length', payload.buffer.length);
+        return res.status(200).send(payload.buffer);
+    };
 
-                lastStatus = response.status || lastStatus;
-                if (!response.ok) continue;
+    const sendFallbackImage = () => {
+        res.setHeader('X-Aether-Thumbnail-Fallback', '1');
+        return sendImageResult({
+            buffer: THUMBNAIL_PROXY_PLACEHOLDER_BUFFER,
+            contentType: 'image/svg+xml',
+        }, Math.max(30, Math.floor(THUMBNAIL_PROXY_FAILURE_TTL_MS / 1000)));
+    };
 
-                const arrayBuf = await response.arrayBuffer();
-                const buf = Buffer.from(arrayBuf);
-                res.setHeader('Content-Type', response.headers.get('content-type') || 'image/jpeg');
-                res.setHeader('Cache-Control', 'public, max-age=3600');
-                return res.status(200).send(buf);
-            } catch (e) {
-                continue;
+    const cachedSuccess = readThumbnailProxyCache(thumbnailProxyCache, primaryKey);
+    if (cachedSuccess) {
+        return sendImageResult(cachedSuccess);
+    }
+
+    if (readThumbnailProxyCache(thumbnailProxyFailureCache, primaryKey)) {
+        return sendFallbackImage();
+    }
+
+    const fetchUrl = (candidateUrl, redirectDepth = 0) => {
+        return new Promise((resolve, reject) => {
+            if (redirectDepth > 4) {
+                reject(new Error('Too many redirects'));
+                return;
             }
+            const isHttps = candidateUrl.startsWith('https');
+            const client = isHttps ? https : http;
+            const req = client.get(candidateUrl, {
+                agent: isHttps ? thumbnailProxyHttpsAgent : thumbnailProxyHttpAgent,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+                },
+                timeout: 3500,
+            }, (response) => {
+                if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+                    // Handle redirect
+                    const redirectUrl = response.headers.location.startsWith('http')
+                        ? response.headers.location
+                        : new URL(response.headers.location, candidateUrl).href;
+                    response.resume();
+                    resolve(fetchUrl(redirectUrl, redirectDepth + 1));
+                    return;
+                }
+                
+                if (response.statusCode < 200 || response.statusCode >= 300) {
+                    response.resume(); // consume response data to free up memory
+                    return reject(new Error(`Status ${response.statusCode}`));
+                }
+
+                const chunks = [];
+                response.on('data', (chunk) => chunks.push(chunk));
+                response.on('end', () => {
+                    resolve({
+                        buffer: Buffer.concat(chunks),
+                        contentType: response.headers['content-type'] || 'image/jpeg'
+                    });
+                });
+            });
+
+            req.on('error', (err) => reject(err));
+            req.on('timeout', () => {
+                req.destroy(new Error('Timeout'));
+            });
+        });
+    };
+
+    try {
+        let inflight = thumbnailProxyInflight.get(primaryKey);
+        if (!inflight) {
+            inflight = (async () => {
+                let lastError = null;
+                for (const candidateUrl of candidates) {
+                    try {
+                        const result = await fetchUrl(candidateUrl);
+                        writeThumbnailProxyCache(thumbnailProxyCache, primaryKey, result, THUMBNAIL_PROXY_SUCCESS_TTL_MS);
+                        thumbnailProxyFailureCache.delete(primaryKey);
+                        return result;
+                    } catch (e) {
+                        lastError = e;
+                        if (shouldLogStreamEvent(`proxy-thumb-error:${candidateUrl}`, 30000)) {
+                            console.error('[Aether Proxy] Fetch error:', candidateUrl, e.message);
+                        }
+                    }
+                }
+                throw lastError || new Error('Proxy Error');
+            })();
+            thumbnailProxyInflight.set(primaryKey, inflight);
+            inflight.finally(() => {
+                if (thumbnailProxyInflight.get(primaryKey) === inflight) {
+                    thumbnailProxyInflight.delete(primaryKey);
+                }
+            });
         }
 
-        return res.status(lastStatus === 404 ? 404 : 502).send('Proxy Error');
+        try {
+            const result = await inflight;
+            return sendImageResult(result);
+        } catch (e) {
+            writeThumbnailProxyCache(thumbnailProxyFailureCache, primaryKey, {
+                message: e?.message || 'Proxy Error',
+            }, THUMBNAIL_PROXY_FAILURE_TTL_MS);
+            if (shouldLogStreamEvent(`proxy-thumb-fallback:${primaryKey}`, 30000)) {
+                console.warn('[Aether Proxy] Serving fallback thumbnail for', primaryKey, e?.message || 'Proxy Error');
+            }
+            return sendFallbackImage();
+        }
     } catch (e) {
-        res.status(502).send('Proxy Error');
+        return sendFallbackImage();
     }
 });
 
@@ -1950,7 +2591,7 @@ function createWindow() {
   });
 
   if (isWin) {
-    applyWindowsTitleBarOverlay(mainWindow, mainWindow.isFullScreen() || mainWindow.isMaximized());
+    applyWindowsTitleBarOverlay(mainWindow);
   }
 
   if (!app.isPackaged && process.env.NODE_ENV !== 'production' && !process.argv.includes('--prod')) {
@@ -2024,26 +2665,27 @@ function createWindow() {
   }
 
   mainWindow.on('maximize', () => {
-    applyWindowsTitleBarOverlay(mainWindow, true);
+    applyWindowsTitleBarOverlay(mainWindow);
     mainWindow.webContents.send('aether:maximized-state', true);
   });
 
   mainWindow.on('unmaximize', () => {
-    applyWindowsTitleBarOverlay(mainWindow, false);
+    applyWindowsTitleBarOverlay(mainWindow);
     mainWindow.webContents.send('aether:maximized-state', false);
   });
 
   mainWindow.on('enter-full-screen', () => {
-    applyWindowsTitleBarOverlay(mainWindow, true);
+    applyWindowsTitleBarOverlay(mainWindow);
     mainWindow.webContents.send('aether:maximized-state', true);
   });
 
   mainWindow.on('leave-full-screen', () => {
-    applyWindowsTitleBarOverlay(mainWindow, false);
+    applyWindowsTitleBarOverlay(mainWindow);
     mainWindow.webContents.send('aether:maximized-state', false);
   });
 
   mainWindow.on('closed', () => {
+    windowsTitleBarForceCompact = false;
     mainWindow = null;
   });
 }
@@ -2151,8 +2793,22 @@ app.whenReady().then(async () => {
         store.set(key, val);
         return true;
     });
+    ipcMain.handle('aether:debug-log', async (event, payload = {}) => {
+        const message = String(payload?.message || '').trim();
+        if (!message) return false;
+        logDebug(`renderer:${message}`, payload?.meta && typeof payload.meta === 'object' ? payload.meta : null);
+        return true;
+    });
     ipcMain.handle('aether:get-port', () => actualPort);
     ipcMain.handle('aether:get-engine-status', async () => {
+        const resolvedYtDlp = resolveYtDlpPath();
+        if (resolvedYtDlp) {
+            ytdlpPath = resolvedYtDlp;
+        }
+        const resolvedFfmpeg = resolveFfmpegPath();
+        if (resolvedFfmpeg) {
+            ffmpegPath = resolvedFfmpeg;
+        }
         const ytDlpReady = await ensureYtDlpPathWithTimeout(process.platform === 'win32' ? 5000 : 2500);
         const cookiesPath = getResolvedCookiesPath();
         const cookieAudit = auditCookiesFile(cookiesPath);
@@ -2168,6 +2824,38 @@ app.whenReady().then(async () => {
             cookieAudit,
             streamPort: actualPort,
             platform: process.platform,
+        };
+    });
+    ipcMain.handle('aether:repair-runtime', async () => {
+        const notes = [];
+
+        const resolvedFfmpeg = resolveFfmpegPath() || unpackNativeEngine(getFfmpegBinaryNames()[0], { force: true });
+        if (resolvedFfmpeg) {
+            ffmpegPath = resolvedFfmpeg;
+            notes.push(`FFmpeg ready • ${path.basename(resolvedFfmpeg)}`);
+        } else {
+            notes.push('FFmpeg still unavailable');
+        }
+
+        const bundledYtDlp = resolveYtDlpPath();
+        if (bundledYtDlp && isSpawnableCommand(bundledYtDlp)) {
+            ytdlpPath = bundledYtDlp;
+            notes.push(`yt-dlp ready • ${path.basename(bundledYtDlp)}`);
+        } else {
+            const ytReady = await ensureYtDlpPathWithTimeout(process.platform === 'win32' ? 18000 : 12000);
+            if (ytReady && ytdlpPath) {
+                notes.push(`yt-dlp ready • ${path.basename(ytdlpPath)}`);
+            } else {
+                notes.push('yt-dlp still unavailable');
+            }
+        }
+
+        logDebug('runtime repair completed', { notes, ytdlpPath, ffmpegPath });
+        return {
+            success: true,
+            notes,
+            ytDlpPath: ytdlpPath || null,
+            ffmpegPath: ffmpegPath || null,
         };
     });
 
@@ -2229,19 +2917,40 @@ app.whenReady().then(async () => {
             enabled: !!record?.enabled,
             touchIdAvailable: canPromptTouchId(),
             touchIdEnabled: !!record?.touchIdEnabled,
+            recoveryOtpEnabled: !!record?.recoveryOtpSecret,
         };
     });
 
-    ipcMain.handle('aether:lock-set-password', (event, { password, useTouchId }) => {
+    ipcMain.handle('aether:lock-generate-otp', () => {
+        try {
+            return { success: true, ...createRecoveryOtpProfile() };
+        } catch (e) {
+            return { success: false, error: e?.message || 'Could not generate authenticator setup.' };
+        }
+    });
+
+    ipcMain.handle('aether:lock-set-password', (event, { password, useTouchId, recoveryKey, recoveryOtpSecret }) => {
         const pass = String(password || '');
         if (pass.length < 4) return { success: false, error: 'Password must be at least 4 characters.' };
         const salt = crypto.randomBytes(16).toString('hex');
         const hash = hashLockPassword(pass, salt);
+        
+        let recoveryHash = null;
+        let recoverySalt = null;
+        if (recoveryKey) {
+            recoverySalt = crypto.randomBytes(16).toString('hex');
+            recoveryHash = hashLockPassword(recoveryKey, recoverySalt);
+        }
+        const normalizedRecoveryOtpSecret = sanitizeRecoveryOtpSecret(recoveryOtpSecret);
+
         store.set(APP_LOCK_STORE_KEY, {
             enabled: true,
             salt,
             hash,
             touchIdEnabled: !!useTouchId && canPromptTouchId(),
+            recoveryHash,
+            recoverySalt,
+            recoveryOtpSecret: normalizedRecoveryOtpSecret.length >= 16 ? normalizedRecoveryOtpSecret : null,
             updatedAt: Date.now(),
         });
         return { success: true };
@@ -2259,6 +2968,26 @@ app.whenReady().then(async () => {
         if (!record?.enabled) return { success: true };
         const ok = verifyLockPassword(password, record);
         if (!ok) return { success: false, error: 'Incorrect password.' };
+        store.delete(APP_LOCK_STORE_KEY);
+        return { success: true };
+    });
+
+    ipcMain.handle('aether:lock-disable-recovery', (event, { recoveryKey }) => {
+        const record = getLockRecord();
+        if (!record?.enabled) return { success: true };
+        if (!record.recoveryHash || !record.recoverySalt) return { success: false, error: 'No recovery key set for this lock.' };
+        const ok = verifyLockPassword(recoveryKey, { hash: record.recoveryHash, salt: record.recoverySalt });
+        if (!ok) return { success: false, error: 'Incorrect recovery key.' };
+        store.delete(APP_LOCK_STORE_KEY);
+        return { success: true };
+    });
+
+    ipcMain.handle('aether:lock-disable-otp', (event, { code }) => {
+        const record = getLockRecord();
+        if (!record?.enabled) return { success: true };
+        if (!record.recoveryOtpSecret) return { success: false, error: 'No mobile OTP recovery is set for this lock.' };
+        const ok = verifyRecoveryOtp(code, record.recoveryOtpSecret);
+        if (!ok) return { success: false, error: 'Incorrect or expired authenticator code.' };
         store.delete(APP_LOCK_STORE_KEY);
         return { success: true };
     });
@@ -2361,6 +3090,16 @@ app.whenReady().then(async () => {
         }
         mainWindow.maximize();
         return { success: true, state: 'maximized' };
+    });
+
+    ipcMain.handle('aether:window-set-titlebar-compact', (event, { compact }) => {
+        if (!mainWindow || mainWindow.isDestroyed()) return { success: false, compact: false };
+        windowsTitleBarForceCompact = !!compact;
+        applyWindowsTitleBarOverlay(mainWindow);
+        return {
+            success: true,
+            compact: shouldCompactWindowsTitleBar(mainWindow),
+        };
     });
 
     ipcMain.handle('aether:window-minimize', () => {
@@ -2977,11 +3716,46 @@ app.whenReady().then(async () => {
     ipcMain.handle('aether:get-stream-port', async () => actualPort);
 
     ipcMain.handle('aether:get-recommendations', async (event, details) => {
+        const started = Date.now();
         try {
-            const ready = await ensureYtDlpPathWithTimeout(7000);
-            if (!ready) return [];
-            return await getRecommendations(details, ytdlpPath);
-        } catch (err) { return []; }
+            const ready = await ensureYtDlpPathWithTimeout(9000);
+            const searchPath = ytdlpPath || resolveYtDlpPath() || resolveSystemYtDlp();
+            if (!ready && !searchPath) {
+                logDebug('recommendations unavailable: yt-dlp unresolved', {
+                    title: String(details?.title || '').slice(0, 80),
+                    author: String(details?.author || '').slice(0, 80),
+                });
+                return [];
+            }
+
+            let results = await getRecommendations(details, searchPath);
+            let fallbackSearchUsed = false;
+
+            if ((!Array.isArray(results) || results.length === 0) && (details?.title || details?.author)) {
+                const fallbackQuery = [details?.author, details?.title].filter(Boolean).join(' ').trim();
+                if (fallbackQuery) {
+                    fallbackSearchUsed = true;
+                    results = await search(fallbackQuery, searchPath);
+                }
+            }
+
+            const count = Array.isArray(results) ? results.length : 0;
+            logDebug('recommendations completed', {
+                title: String(details?.title || '').slice(0, 80),
+                author: String(details?.author || '').slice(0, 80),
+                count,
+                fallbackSearchUsed,
+                ms: Date.now() - started,
+                searchPath: searchPath || 'unresolved',
+            });
+            return Array.isArray(results) ? results : [];
+        } catch (err) {
+            logDebug('recommendations failed', {
+                error: err?.message || String(err),
+                ms: Date.now() - started,
+            });
+            return [];
+        }
     });
 
   // Store previous CPU usage for percentage calculation

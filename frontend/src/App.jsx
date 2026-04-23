@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, Component } from 'react';
 // NOTE: Many async operations and state changes below may be subject to race conditions if triggered rapidly.
 // Consider debouncing or locking for critical flows (e.g., downloads, updates, queue changes).
-import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, VolumeX, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles, Clapperboard, Columns2, Repeat } from 'lucide-react';
+import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, VolumeX, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles, Clapperboard, Columns2, Repeat, ShieldAlert, Key, Copy, Check } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'framer-motion';
 import { setupDiscordSdk } from './discord';
@@ -203,6 +203,93 @@ const parseManualLyricsLrcText = (input = '') => {
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
 const lerp = (a, b, t) => a + (b - a) * t;
 const alphaHex = (a) => Math.round(clamp01(a) * 255).toString(16).padStart(2, '0');
+const clampChannel = (value) => Math.max(0, Math.min(255, Math.round(Number(value) || 0)));
+const rgbToHex = (r, g, b) => `#${[r, g, b].map((channel) => clampChannel(channel).toString(16).padStart(2, '0')).join('')}`;
+const hslToRgb = (h, s, l) => {
+  const hue = ((Number(h) % 360) + 360) % 360;
+  const sat = clamp01(Number(s) / 100);
+  const lig = clamp01(Number(l) / 100);
+  const chroma = (1 - Math.abs((2 * lig) - 1)) * sat;
+  const huePrime = hue / 60;
+  const x = chroma * (1 - Math.abs((huePrime % 2) - 1));
+  let r1 = 0;
+  let g1 = 0;
+  let b1 = 0;
+  if (huePrime >= 0 && huePrime < 1) {
+    r1 = chroma; g1 = x; b1 = 0;
+  } else if (huePrime < 2) {
+    r1 = x; g1 = chroma; b1 = 0;
+  } else if (huePrime < 3) {
+    r1 = 0; g1 = chroma; b1 = x;
+  } else if (huePrime < 4) {
+    r1 = 0; g1 = x; b1 = chroma;
+  } else if (huePrime < 5) {
+    r1 = x; g1 = 0; b1 = chroma;
+  } else {
+    r1 = chroma; g1 = 0; b1 = x;
+  }
+  const match = lig - chroma / 2;
+  return [
+    clampChannel((r1 + match) * 255),
+    clampChannel((g1 + match) * 255),
+    clampChannel((b1 + match) * 255),
+  ];
+};
+const rgbToHsl = (r, g, b) => {
+  const red = clampChannel(r) / 255;
+  const green = clampChannel(g) / 255;
+  const blue = clampChannel(b) / 255;
+  const max = Math.max(red, green, blue);
+  const min = Math.min(red, green, blue);
+  const delta = max - min;
+  let hue = 0;
+  if (delta !== 0) {
+    if (max === red) hue = ((green - blue) / delta) % 6;
+    else if (max === green) hue = ((blue - red) / delta) + 2;
+    else hue = ((red - green) / delta) + 4;
+  }
+  const lightness = (max + min) / 2;
+  const saturation = delta === 0 ? 0 : delta / (1 - Math.abs((2 * lightness) - 1));
+  return {
+    h: Math.round((((hue * 60) + 360) % 360) * 10) / 10,
+    s: Math.round(saturation * 1000) / 10,
+    l: Math.round(lightness * 1000) / 10,
+  };
+};
+const mixRgb = (left, right, weight = 0.5) => {
+  const t = clamp01(weight);
+  return [
+    clampChannel(lerp(left[0], right[0], t)),
+    clampChannel(lerp(left[1], right[1], t)),
+    clampChannel(lerp(left[2], right[2], t)),
+  ];
+};
+const buildTrackPaletteFromRgb = (inputRgb = [0, 255, 191]) => {
+  const baseRgb = Array.isArray(inputRgb) && inputRgb.length === 3
+    ? inputRgb.map((channel) => clampChannel(channel))
+    : [0, 255, 191];
+  const { h, s, l } = rgbToHsl(baseRgb[0], baseRgb[1], baseRgb[2]);
+  const accentRgb = hslToRgb(h, Math.max(52, Math.min(84, s * 0.82 + 10)), Math.max(46, Math.min(62, l * 0.58 + 22)));
+  const contrastRgb = hslToRgb((h + 32) % 360, Math.max(42, Math.min(78, s * 0.6 + 16)), Math.max(58, Math.min(74, l * 0.34 + 40)));
+  const progressRgb = mixRgb(accentRgb, contrastRgb, 0.36);
+  const controlAccentRgb = mixRgb(accentRgb, [255, 255, 255], 0.18);
+  const controlSoftRgb = mixRgb(accentRgb, [11, 18, 22], 0.3);
+  const controlSurfaceRgb = mixRgb(accentRgb, [8, 11, 14], 0.84);
+  return {
+    accent: rgbToHex(...accentRgb),
+    contrast: rgbToHex(...contrastRgb),
+    glow: `${rgbToHex(...accentRgb)}33`,
+    accentRgb,
+    contrastRgb,
+    progressAccent: rgbToHex(...progressRgb),
+    progressGlow: `rgba(${progressRgb.join(', ')}, 0.46)`,
+    controlAccent: rgbToHex(...controlAccentRgb),
+    controlSoft: rgbToHex(...controlSoftRgb),
+    controlGlow: `rgba(${accentRgb.join(', ')}, 0.4)`,
+    controlSurface: `rgba(${controlSurfaceRgb.join(', ')}, 0.78)`,
+  };
+};
+const DEFAULT_TRACK_PALETTE = Object.freeze(buildTrackPaletteFromRgb([0, 255, 191]));
 const AETHER_SHARE_ORIGIN = 'https://aetherstudio.me';
 const encodeScenePayload = (payload) => {
   try {
@@ -379,6 +466,141 @@ const sanitizeShortcutMap = (candidate, isMacPlatform) => {
   return next;
 };
 
+const PLAYBACK_LEDGER_STORAGE_KEY = 'sound-capsule';
+const PLAYBACK_LEDGER_CHECKPOINT_MS = 15000;
+const PLAYBACK_LEDGER_SESSION_MIN_MS = 20000;
+const PLAYBACK_GENRE_SIGNALS = [
+  'lofi', 'jazz', 'rock', 'pop', 'synthwave', 'techno', 'ambient', 'classic', 'metal',
+  'rap', 'hiphop', 'trap', 'house', 'dubstep', 'relax', 'study', 'indie', 'phonk', 'folk',
+];
+
+const createPlaybackLedgerData = () => ({
+  tracks: {},
+  artists: {},
+  totalMinutes: 0,
+  totalMs: 0,
+  totalPlays: 0,
+  totalSessions: 0,
+  hourlyTrends: {},
+  weeklyTrends: {},
+  dailyMinutes: {},
+  dailyPlays: {},
+  genres: {},
+  recentSessions: [],
+});
+
+const clonePlaybackLedgerData = (value) => {
+  try {
+    if (typeof structuredClone === 'function') return structuredClone(value);
+  } catch {}
+  return JSON.parse(JSON.stringify(value));
+};
+
+const safeMetricMap = (input) => {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  return Object.fromEntries(
+    Object.entries(input)
+      .filter(([key]) => key !== '__proto__')
+      .map(([key, value]) => [key, Math.max(0, Math.floor(Number(value) || 0))]),
+  );
+};
+
+const getLocalDateKey = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const inferPlaybackSignals = (track) => {
+  const titleLower = String(track?.title || '').toLowerCase();
+  const authorLower = String(track?.author || '').toLowerCase();
+  return PLAYBACK_GENRE_SIGNALS.filter((signal) => titleLower.includes(signal) || authorLower.includes(signal));
+};
+
+const formatPlaybackDuration = (ms) => {
+  const safeMs = Math.max(0, Math.floor(Number(ms) || 0));
+  const totalMinutes = Math.round(safeMs / 60000);
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes > 0 ? `${hours}h ${String(minutes).padStart(2, '0')}m` : `${hours}h`;
+};
+
+const normalizePlaybackLedgerData = (raw) => {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const next = createPlaybackLedgerData();
+
+  next.tracks = Object.fromEntries(
+    Object.entries(source.tracks || {})
+      .filter(([key]) => key !== '__proto__')
+      .map(([id, entry]) => {
+        const trackEntry = entry && typeof entry === 'object' ? entry : {};
+        return [id, {
+          count: Math.max(0, Math.floor(Number(trackEntry.count) || 0)),
+          totalMs: Math.max(0, Math.floor(Number(trackEntry.totalMs) || 0)),
+          title: String(trackEntry.title || 'Unknown track'),
+          author: String(trackEntry.author || 'Unknown artist'),
+          thumbnail: String(trackEntry.thumbnail || ''),
+          lastListened: trackEntry.lastListened || null,
+          lastCompletedAt: trackEntry.lastCompletedAt || null,
+        }];
+      }),
+  );
+
+  next.artists = Object.fromEntries(
+    Object.entries(source.artists || {})
+      .filter(([key]) => key !== '__proto__')
+      .map(([name, entry]) => {
+        const artistEntry = entry && typeof entry === 'object' ? entry : {};
+        return [name, {
+          count: Math.max(0, Math.floor(Number(artistEntry.count) || 0)),
+          totalMs: Math.max(0, Math.floor(Number(artistEntry.totalMs) || 0)),
+        }];
+      }),
+  );
+
+  next.hourlyTrends = safeMetricMap(source.hourlyTrends);
+  next.weeklyTrends = safeMetricMap(source.weeklyTrends);
+  next.dailyMinutes = safeMetricMap(source.dailyMinutes);
+  next.dailyPlays = safeMetricMap(source.dailyPlays);
+  next.genres = safeMetricMap(source.genres);
+  next.recentSessions = Array.isArray(source.recentSessions)
+    ? source.recentSessions
+      .filter((entry) => entry && typeof entry === 'object')
+      .slice(0, 24)
+      .map((entry) => ({
+        id: String(entry.id || `${entry.trackId || 'session'}-${entry.endedAt || entry.startedAt || Date.now()}`),
+        trackId: String(entry.trackId || ''),
+        title: String(entry.title || 'Unknown track'),
+        author: String(entry.author || 'Unknown artist'),
+        thumbnail: String(entry.thumbnail || ''),
+        playedMs: Math.max(0, Math.floor(Number(entry.playedMs) || 0)),
+        completed: Boolean(entry.completed),
+        startedAt: entry.startedAt || null,
+        endedAt: entry.endedAt || null,
+        reason: String(entry.reason || 'session'),
+      }))
+    : [];
+
+  const sumTrackMs = Object.values(next.tracks).reduce((total, entry) => total + Math.max(0, Math.floor(Number(entry.totalMs) || 0)), 0);
+  const sumTrackPlays = Object.values(next.tracks).reduce((total, entry) => total + Math.max(0, Math.floor(Number(entry.count) || 0)), 0);
+  const sourceTotalMs = Math.max(0, Math.floor(Number(source.totalMs) || 0));
+  const sourceTotalMinutes = Math.max(0, Math.floor(Number(source.totalMinutes) || 0));
+
+  next.totalMs = sourceTotalMs || sumTrackMs || (sourceTotalMinutes * 60000);
+  next.totalMinutes = next.totalMs > 0 ? Math.round(next.totalMs / 60000) : sourceTotalMinutes;
+  next.totalPlays = Math.max(0, Math.floor(Number(source.totalPlays) || 0)) || sumTrackPlays;
+  next.totalSessions = Math.max(
+    0,
+    Math.floor(Number(source.totalSessions) || 0),
+    next.totalPlays,
+    next.recentSessions.length,
+  );
+
+  return next;
+};
+
 class ErrorBoundary extends Component {
   constructor(props) {
     super(props);
@@ -429,6 +651,10 @@ function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [lyricOffsetMs, setLyricOffsetMs] = useState(0);
   const [isMaximized, setIsMaximized] = useState(false);
+  const [viewportSize, setViewportSize] = useState(() => ({
+    width: typeof window !== 'undefined' ? window.innerWidth : 1440,
+    height: typeof window !== 'undefined' ? window.innerHeight : 900,
+  }));
   const [lyrics, setLyrics] = useState([]);
   const [isLyricsLoading, setIsLyricsLoading] = useState(false);
   const [activeLyricIndex, setActiveLyricIndex] = useState(-1);
@@ -446,7 +672,9 @@ function App() {
   const visualizerCanvasRef = useRef(null);
   const pulseCanvasRef = useRef(null);
   const [visualizerMode, setVisualizerMode] = useState('bars');
-  const [themeColor, setThemeColor] = useState('#00ffbf');
+  const [themeColor, setThemeColor] = useState(DEFAULT_TRACK_PALETTE.accent);
+  const [trackPalette, setTrackPalette] = useState(DEFAULT_TRACK_PALETTE);
+  const trackPaletteCacheRef = useRef(new Map());
   const lyricsContainerRef = useRef(null);
   const activeLyricRef = useRef(null);
   const lyricsFetchRequestRef = useRef(0);
@@ -548,13 +776,21 @@ function App() {
   const [isOfflineRemovalBusy, setIsOfflineRemovalBusy] = useState(false);
   const [skipReasonToast, setSkipReasonToast] = useState('');
   const [skipEvents, setSkipEvents] = useState([]);
-  const [lockStatus, setLockStatus] = useState({ enabled: false, touchIdAvailable: false, touchIdEnabled: false });
+  const [lockStatus, setLockStatus] = useState({ enabled: false, touchIdAvailable: false, touchIdEnabled: false, recoveryOtpEnabled: false });
   const [isAppLocked, setIsAppLocked] = useState(false);
   const [isLockModalOpen, setIsLockModalOpen] = useState(false);
   const [lockPasswordInput, setLockPasswordInput] = useState('');
   const [lockPasswordConfirm, setLockPasswordConfirm] = useState('');
   const [lockDisablePassword, setLockDisablePassword] = useState('');
   const [unlockPasswordInput, setUnlockPasswordInput] = useState('');
+  const [isRecoveryMode, setIsRecoveryMode] = useState(false);
+  const [recoveryMethod, setRecoveryMethod] = useState('key');
+  const [recoveryKeyInput, setRecoveryKeyInput] = useState('');
+  const [recoveryOtpInput, setRecoveryOtpInput] = useState('');
+  const [generatedRecoveryKey, setGeneratedRecoveryKey] = useState('');
+  const [generatedRecoveryOtp, setGeneratedRecoveryOtp] = useState(null);
+  const [hasCopiedRecoveryKey, setHasCopiedRecoveryKey] = useState(false);
+  const [hasCopiedRecoveryOtp, setHasCopiedRecoveryOtp] = useState(false);
   const [lockUseTouchId, setLockUseTouchId] = useState(false);
   const [lockIdleMinutes, setLockIdleMinutes] = useState(5);
   const [lockError, setLockError] = useState('');
@@ -567,6 +803,7 @@ function App() {
   const [engineStatus, setEngineStatus] = useState(null);
   const [offlineDownloads, setOfflineDownloads] = useState([]);
   const [isOfflineDownloadsBusy, setIsOfflineDownloadsBusy] = useState(false);
+  const [isLibraryPanelCondensed, setIsLibraryPanelCondensed] = useState(false);
   
   const fileInputRef = useRef(null);
   const [isAutoplayEnabled, setIsAutoplayEnabled] = useState(true);
@@ -590,6 +827,7 @@ function App() {
   const audioCtxRef = useRef(null);
   const analyserRef = useRef(null);
   const sourceRef = useRef(null);
+  const audioSourceElementRef = useRef(null);
   const animationFrameRef = useRef(null);
   const auraEnergyRef = useRef({ bass: 0, mids: 0, highs: 0, phase: 0 });
   const uiPulseRef = useRef(1);
@@ -605,6 +843,7 @@ function App() {
   const playButtonRef = useRef(null);
   const beatRingsRef = useRef(null);
   const lastBeatRingTimeRef = useRef(0);
+  const libraryPanelRef = useRef(null);
   const mixtapeVaultRef = useRef(null);
   const vaultTelemetryRef = useRef({ lastStateAt: 0 });
   const restoreVerticalStackAfterVideoRef = useRef(false);
@@ -612,6 +851,10 @@ function App() {
   const prevTrackRef = useRef(null); // Neural Memory Ref (NOVA
   const standaloneTrackLoadKeyRef = useRef('');
   const bufferingRescueRef = useRef({ trackKey: '', lastAttemptAt: 0, attempts: 0 });
+  const soundCapsuleCacheRef = useRef(null);
+  const soundCapsuleSessionRef = useRef({ trackKey: '', track: null, accruedMs: 0, flushedMs: 0, counted: false, logged: false, lastObservedMs: 0, startedAt: null });
+  const flushSoundCapsuleSessionRef = useRef(async () => {});
+  const audioStallMonitorRef = useRef({ trackKey: '', lastProgressMs: 0, lastProgressAt: 0, rescues: 0, lastRecoveryAt: 0 });
   const skipReasonTimeoutRef = useRef(null);
   const updateToastTimeoutRef = useRef(null);
   const prevUpdateStatusRef = useRef('idle');
@@ -661,6 +904,10 @@ function App() {
     vid.onwaiting = null;
     vid.onplaying = null;
     vid.ontimeupdate = null;
+    vid.onpause = null;
+    vid.onstalled = null;
+    vid.onsuspend = null;
+    vid.onemptied = null;
     vid.onended = null;
     vid.onerror = null;
     try {
@@ -733,6 +980,10 @@ function App() {
     // Step 6: Clear stale buffering state from the video engine
     setIsAudioBuffering(false);
 
+    setDualFocusMode(null);
+    setVisualControlsPinned(false);
+    setShowVisualLyrics(true);
+    setIsAutoScrollPaused(false);
     setIsVideoReady(false);
     setVideoMode(null);
   }, []);
@@ -763,6 +1014,7 @@ function App() {
 
     if (!currentMode) {
       restoreVerticalStackAfterVideoRef.current = false;
+      setIsVideoReady(false);
     }
 
     if (next === 'dual') {
@@ -816,6 +1068,18 @@ function App() {
       isMixtapeVaultOpen,
     };
   }, [visualizerMode, themeColor, auraPreset, isMixtapeVaultOpen]);
+
+  useEffect(() => {
+    const isWindowsDesktop = isStandalone
+      ? window.aether?.platform === 'win32'
+      : /win/i.test(navigator?.platform || '');
+    if (!isWindowsDesktop || !window.aether?.setWindowsTitleBarCompact) return undefined;
+    const shouldCompact = Boolean(isLyricsExpanded || videoMode === 'cinema');
+    window.aether.setWindowsTitleBarCompact(shouldCompact).catch(() => {});
+    return () => {
+      window.aether?.setWindowsTitleBarCompact?.(false).catch(() => {});
+    };
+  }, [isLyricsExpanded, isStandalone, videoMode]);
 
   // Auto-exit video mode when queue empties (no current track)
   useEffect(() => {
@@ -876,6 +1140,51 @@ function App() {
     }
   }, [isAudioBuffering, oauthPrompt]);
 
+  const pushDebugLog = useCallback((message, meta = {}) => {
+    if (!isStandalone || !window.aether?.debugLog) return;
+    window.aether.debugLog(message, meta).catch(() => {});
+  }, [isStandalone]);
+
+  const ensureAudioPipelineReady = useCallback(async () => {
+    const audio = localAudioRef.current;
+    if (!isStandalone || !audio) return false;
+
+    try {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      }
+
+      if (!analyserRef.current) {
+        analyserRef.current = audioCtxRef.current.createAnalyser();
+        analyserRef.current.fftSize = 256;
+        analyserRef.current.smoothingTimeConstant = 0.85;
+      }
+
+      if (!sourceRef.current || audioSourceElementRef.current !== audio) {
+        if (sourceRef.current) {
+          try { sourceRef.current.disconnect(); } catch {}
+        }
+        sourceRef.current = audioCtxRef.current.createMediaElementSource(audio);
+        sourceRef.current.connect(analyserRef.current);
+        analyserRef.current.connect(audioCtxRef.current.destination);
+        audioSourceElementRef.current = audio;
+      }
+
+      if (audioCtxRef.current.state !== 'running') {
+        await audioCtxRef.current.resume();
+      }
+
+      return true;
+    } catch (e) {
+      console.error('[Aether/Audio] Failed to prepare audio pipeline', e);
+      pushDebugLog('audio-pipeline-error', {
+        error: e?.message || String(e),
+        contextState: audioCtxRef.current?.state || 'missing',
+      });
+      return false;
+    }
+  }, [isStandalone, pushDebugLog]);
+
   // ─── SIMPLE VIDEO ENGINE ─────────────────────────────────────────────────
   // NOTE: isPlaying is intentionally NOT in the dep array.
   // Play/Pause sync is handled by a separate effect below to avoid
@@ -889,6 +1198,10 @@ function App() {
         vid.onwaiting = null;
         vid.onplaying = null;
         vid.ontimeupdate = null;
+        vid.onpause = null;
+        vid.onstalled = null;
+        vid.onsuspend = null;
+        vid.onemptied = null;
         vid.onended = null;
         vid.onerror = null;
         vid.pause();
@@ -935,7 +1248,59 @@ function App() {
       const guard = videoEndGuardRef.current;
       if (!guard || guard.trackKey !== trackActionKey || guard.settled) return;
       guard.settled = true;
+      pushDebugLog('video-natural-end', {
+        title: track?.title || '',
+        trackActionKey,
+        currentMs: Math.max(0, Math.floor((vid.currentTime || 0) * 1000)),
+        durationMs: getKnownDurationMs(),
+        mode: videoMode,
+      });
       advanceQueueRef.current('natural_end');
+    };
+
+    const getKnownDurationMs = () => (
+      Number.isFinite(Number(vid.duration)) && Number(vid.duration) > 0
+        ? Math.round(Number(vid.duration) * 1000)
+        : Number(track.totalDurationMs || track.duration || 0)
+    );
+
+    const evaluateVideoNaturalEnd = (trigger) => {
+      const guard = videoEndGuardRef.current;
+      if (!vid || !guard || guard.trackKey !== trackActionKey || guard.settled) return false;
+
+      const durationMs = getKnownDurationMs();
+      if (!Number.isFinite(durationMs) || durationMs <= 0) return false;
+
+      const currentMs = Math.max(0, Math.floor((vid.currentTime || 0) * 1000));
+      const nearEndThresholdMs = Math.max(400, Math.min(1800, durationMs * 0.03));
+      const remainingMs = Math.max(0, durationMs - currentMs);
+      const nearEndLongEnough = guard.lastNearEndAt > 0 && (Date.now() - guard.lastNearEndAt) > 420;
+      const stalledNearEnd = currentMs > 0 && remainingMs <= nearEndThresholdMs && (Date.now() - guard.lastProgressAt) > 650;
+
+      if (vid.ended || remainingMs <= 120 || nearEndLongEnough || stalledNearEnd) {
+        console.warn('[Aether/Video] Final-second guard advancing queue', {
+          title: track?.title,
+          trigger,
+          currentMs,
+          durationMs,
+          remainingMs,
+          nearEndLongEnough,
+          stalledNearEnd,
+        });
+        pushDebugLog('video-end-guard-advance', {
+          title: track?.title || '',
+          trigger,
+          currentMs,
+          durationMs,
+          remainingMs,
+          nearEndLongEnough,
+          stalledNearEnd,
+        });
+        settleVideoNaturalEnd();
+        return true;
+      }
+
+      return false;
     };
 
     // Handlers — re-attach every time track/mode changes, not on play/pause
@@ -947,20 +1312,21 @@ function App() {
         setIsAudioBuffering(false);
         setIsVideoReady(true);
     };
-    vid.onwaiting = () => setIsAudioBuffering(true);
+    vid.onwaiting = () => {
+        setIsAudioBuffering(true);
+        evaluateVideoNaturalEnd('waiting');
+    };
     vid.onplaying = () => setIsAudioBuffering(false);
     vid.ontimeupdate = () => {
         const currentMs = Math.max(0, Math.floor((vid.currentTime || 0) * 1000));
         const guard = videoEndGuardRef.current;
         if (guard?.trackKey === trackActionKey) {
-          if (currentMs > guard.lastObservedMs + 120) {
+          if (currentMs > guard.lastObservedMs + 45) {
             guard.lastObservedMs = currentMs;
             guard.lastProgressAt = Date.now();
           }
-          const durationMs = Number.isFinite(Number(vid.duration)) && Number(vid.duration) > 0
-            ? Math.round(Number(vid.duration) * 1000)
-            : Number(track.totalDurationMs || track.duration || 0);
-          const nearEndThresholdMs = durationMs > 0 ? Math.max(260, Math.min(900, durationMs * 0.015)) : 0;
+          const durationMs = getKnownDurationMs();
+          const nearEndThresholdMs = durationMs > 0 ? Math.max(320, Math.min(1400, durationMs * 0.02)) : 0;
           const remainingMs = durationMs > 0 ? Math.max(0, durationMs - currentMs) : Infinity;
           if (durationMs > 0 && remainingMs <= nearEndThresholdMs) {
             guard.lastNearEndAt ||= Date.now();
@@ -969,12 +1335,33 @@ function App() {
           }
         }
         if (currentMs > 0) setCurrentTime(currentMs);
+        evaluateVideoNaturalEnd('timeupdate');
+    };
+    vid.onpause = () => {
+      if (!isPlayingRef.current) return;
+      evaluateVideoNaturalEnd('pause');
+    };
+    vid.onstalled = () => {
+      setIsAudioBuffering(true);
+      evaluateVideoNaturalEnd('stalled');
+    };
+    vid.onsuspend = () => {
+      evaluateVideoNaturalEnd('suspend');
+    };
+    vid.onemptied = () => {
+      evaluateVideoNaturalEnd('emptied');
     };
     vid.onended = () => settleVideoNaturalEnd();
     vid.onerror = () => {
       console.warn('[Aether/Video] Video playback error, falling back to audio mode', {
         title: track?.title,
         url: youtubeUrl,
+      });
+      pushDebugLog('video-playback-error', {
+        title: track?.title || '',
+        url: youtubeUrl,
+        currentMs: Math.max(0, Math.floor((vid.currentTime || 0) * 1000)),
+        durationMs: getKnownDurationMs(),
       });
       setIsAudioBuffering(false);
       exitVideoMode();
@@ -983,28 +1370,7 @@ function App() {
     const nearEndWatchdog = window.setInterval(() => {
       const guard = videoEndGuardRef.current;
       if (!vid || !guard || guard.trackKey !== trackActionKey || guard.settled) return;
-      const durationMs = Number.isFinite(Number(vid.duration)) && Number(vid.duration) > 0
-        ? Math.round(Number(vid.duration) * 1000)
-        : Number(track.totalDurationMs || track.duration || 0);
-      if (!Number.isFinite(durationMs) || durationMs <= 0) return;
-
-      const currentMs = Math.max(0, Math.floor((vid.currentTime || 0) * 1000));
-      const nearEndThresholdMs = Math.max(260, Math.min(900, durationMs * 0.015));
-      const remainingMs = Math.max(0, durationMs - currentMs);
-      const nearEndLongEnough = guard.lastNearEndAt > 0 && (Date.now() - guard.lastNearEndAt) > 700;
-      const stalledNearEnd = isPlayingRef.current && !vid.paused && remainingMs <= nearEndThresholdMs && (Date.now() - guard.lastProgressAt) > 900;
-
-      if (vid.ended || remainingMs <= 120 || nearEndLongEnough || stalledNearEnd) {
-        console.warn('[Aether/Video] Near-end watchdog advancing queue', {
-          title: track?.title,
-          currentMs,
-          durationMs,
-          remainingMs,
-          nearEndLongEnough,
-          stalledNearEnd,
-        });
-        settleVideoNaturalEnd();
-      }
+      evaluateVideoNaturalEnd('watchdog');
     }, 260);
 
     return () => {
@@ -1014,13 +1380,17 @@ function App() {
             vid.onwaiting = null;
             vid.onplaying = null;
             vid.ontimeupdate = null;
+            vid.onpause = null;
+            vid.onstalled = null;
+            vid.onsuspend = null;
+            vid.onemptied = null;
             vid.onended = null;
             vid.onerror = null;
         }
         videoEndGuardRef.current = { trackKey: '', settled: false, lastNearEndAt: 0, lastObservedMs: 0, lastProgressAt: 0 };
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queue?.[0]?.id, queue?.[0]?.queueNonce, videoMode, streamPort, playbackResetNonce]);
+  }, [pushDebugLog, queue?.[0]?.id, queue?.[0]?.queueNonce, videoMode, streamPort, playbackResetNonce]);
 
   // Video play/pause sync — separate effect so it doesn't re-run src/seek logic
   useEffect(() => {
@@ -1076,6 +1446,26 @@ function App() {
   const isWindowsPlatform = isStandalone ? platform === 'win32' : /win/i.test(navigator?.platform || '');
   const windowChromeInsetClass = isMacPlatform ? 'pt-7' : (isWindowsPlatform ? (isMaximized ? 'pt-0' : 'pt-[34px]') : 'pt-0');
   const defaultGlobalMediaShortcutsEnabled = isMacPlatform;
+
+  useEffect(() => {
+    const node = libraryPanelRef.current;
+    if (!node) return;
+
+    const updateCondensed = (width) => {
+      const next = width < 430;
+      setIsLibraryPanelCondensed((prev) => (prev === next ? prev : next));
+    };
+
+    updateCondensed(node.getBoundingClientRect().width || 0);
+
+    if (typeof ResizeObserver !== 'function') return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect?.width || node.getBoundingClientRect().width || 0;
+      updateCondensed(width);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [isVerticalStack, isFocusedMode, isStandalone, videoMode, Boolean(currentTrack)]);
 
   const updateActionLabel = useMemo(() => {
     if (!canUseUpdater || !updateInfo?.enabled) return 'UPDATE';
@@ -1423,9 +1813,13 @@ function App() {
         enabled: !!status?.enabled,
         touchIdAvailable: !!status?.touchIdAvailable,
         touchIdEnabled: !!status?.touchIdEnabled,
+        recoveryOtpEnabled: !!status?.recoveryOtpEnabled,
       };
       setLockStatus(normalized);
       setLockUseTouchId(normalized.touchIdEnabled);
+      if (!normalized.recoveryOtpEnabled) {
+        setRecoveryMethod('key');
+      }
       setIsAppLocked(normalized.enabled);
     } catch (e) {
       console.warn('[Aether/Lock] Failed to load lock status', e);
@@ -1465,8 +1859,7 @@ function App() {
     }
   }, []);
 
-  const handleEnableLock = useCallback(async () => {
-    if (!window.aether?.setAppLock) return;
+  const handleGenerateRecoveryKeyAndPrompt = useCallback(async () => {
     if (!lockPasswordInput || lockPasswordInput.length < 4) {
       setLockError('Password must be at least 4 characters.');
       return;
@@ -1475,16 +1868,52 @@ function App() {
       setLockError('Passwords do not match.');
       return;
     }
+    setLockError('');
+    
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let key = 'AETH-';
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 4; j++) {
+        key += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      if (i < 2) key += '-';
+    }
+    let otpSeed = null;
+    if (window.aether?.generateLockRecoveryOtp) {
+      try {
+        const res = await window.aether.generateLockRecoveryOtp();
+        if (!res?.success || !res?.secret) {
+          setLockError(res?.error || 'Could not prepare mobile OTP recovery.');
+          return;
+        }
+        otpSeed = res;
+      } catch (e) {
+        setLockError('Could not prepare mobile OTP recovery.');
+        return;
+      }
+    }
+    setGeneratedRecoveryKey(key);
+    setGeneratedRecoveryOtp(otpSeed);
+    setHasCopiedRecoveryKey(false);
+    setHasCopiedRecoveryOtp(false);
+  }, [lockPasswordInput, lockPasswordConfirm]);
+
+  const handleConfirmEnableLock = useCallback(async () => {
+    if (!window.aether?.setAppLock) return;
     setIsLockBusy(true);
     setLockError('');
     try {
-      const res = await window.aether.setAppLock(lockPasswordInput, !!lockUseTouchId);
+      const res = await window.aether.setAppLock(lockPasswordInput, !!lockUseTouchId, generatedRecoveryKey, generatedRecoveryOtp?.secret || null);
       if (!res?.success) {
         setLockError(res?.error || 'Failed to enable lock.');
         return;
       }
       setLockPasswordInput('');
       setLockPasswordConfirm('');
+      setGeneratedRecoveryKey('');
+      setGeneratedRecoveryOtp(null);
+      setHasCopiedRecoveryKey(false);
+      setHasCopiedRecoveryOtp(false);
       await refreshLockStatus();
       setIsLockModalOpen(false);
       setLastAdded('App lock enabled');
@@ -1492,7 +1921,7 @@ function App() {
     } finally {
       setIsLockBusy(false);
     }
-  }, [lockPasswordConfirm, lockPasswordInput, lockUseTouchId, refreshLockStatus]);
+  }, [generatedRecoveryKey, generatedRecoveryOtp?.secret, lockPasswordInput, lockUseTouchId, refreshLockStatus]);
 
   const handleDisableLock = useCallback(async () => {
     if (!window.aether?.disableAppLock || !lockDisablePassword) {
@@ -1517,6 +1946,60 @@ function App() {
       setIsLockBusy(false);
     }
   }, [lockDisablePassword, refreshLockStatus]);
+
+  const handleRecoveryLock = useCallback(async () => {
+    if (!window.aether?.disableAppLockRecovery || !recoveryKeyInput) {
+      setLockError('Enter your Master Recovery Key.');
+      return;
+    }
+    setIsLockBusy(true);
+    setLockError('');
+    try {
+      const res = await window.aether.disableAppLockRecovery(recoveryKeyInput.trim());
+      if (!res?.success) {
+        setLockError(res?.error || 'Invalid recovery key. Access denied.');
+        return;
+      }
+      setRecoveryKeyInput('');
+      setRecoveryOtpInput('');
+      setIsRecoveryMode(false);
+      setRecoveryMethod('key');
+      await refreshLockStatus();
+      setIsAppLocked(false);
+      setIsLockModalOpen(false);
+      setLastAdded('App lock recovered & disabled');
+      setTimeout(() => setLastAdded(null), 2000);
+    } finally {
+      setIsLockBusy(false);
+    }
+  }, [recoveryKeyInput, refreshLockStatus]);
+
+  const handleRecoveryOtpLock = useCallback(async () => {
+    if (!window.aether?.disableAppLockRecoveryOtp || !recoveryOtpInput) {
+      setLockError('Enter the 6-digit code from your authenticator app.');
+      return;
+    }
+    setIsLockBusy(true);
+    setLockError('');
+    try {
+      const res = await window.aether.disableAppLockRecoveryOtp(recoveryOtpInput.trim());
+      if (!res?.success) {
+        setLockError(res?.error || 'Invalid recovery code.');
+        return;
+      }
+      setRecoveryKeyInput('');
+      setRecoveryOtpInput('');
+      setIsRecoveryMode(false);
+      setRecoveryMethod('key');
+      await refreshLockStatus();
+      setIsAppLocked(false);
+      setIsLockModalOpen(false);
+      setLastAdded('App lock recovered with mobile OTP');
+      setTimeout(() => setLastAdded(null), 2000);
+    } finally {
+      setIsLockBusy(false);
+    }
+  }, [recoveryOtpInput, refreshLockStatus]);
 
   const handleToggleTouchIdLock = useCallback(async (enabled) => {
     setLockUseTouchId(enabled);
@@ -1578,15 +2061,20 @@ function App() {
   }, [isStandalone]);
 
   useEffect(() => {
-    try {
-      if (isStandalone && window.aether?.store?.set) {
-        window.aether.store.set(SKIP_EVENTS_STORAGE_KEY, skipEvents.slice(-50));
-      } else {
-        localStorage.setItem(SKIP_EVENTS_STORAGE_KEY, JSON.stringify(skipEvents.slice(-50)));
+    const persist = () => {
+      try {
+        if (isStandalone && window.aether?.store?.set) {
+          window.aether.store.set(SKIP_EVENTS_STORAGE_KEY, skipEvents.slice(-50));
+        } else {
+          localStorage.setItem(SKIP_EVENTS_STORAGE_KEY, JSON.stringify(skipEvents.slice(-50)));
+        }
+      } catch (e) {
+        console.warn('[Aether/Prefs] Failed to persist skip events', e);
       }
-    } catch (e) {
-      console.warn('[Aether/Prefs] Failed to persist skip events', e);
-    }
+    };
+
+    const timeoutId = setTimeout(persist, 500);
+    return () => clearTimeout(timeoutId);
   }, [isStandalone, skipEvents]);
 
   useEffect(() => {
@@ -2206,7 +2694,7 @@ function App() {
     };
     audio.onended = () => {
       console.log("[Aether/Audio] Web ended", { title: currentTrack.title });
-      axios.post(`${API_BASE}/api/control/${DEFAULT_GUILD_ID}`, { action: 'skip' })
+      axios.post(`${API_BASE}/api/control/${getEffectiveGuildId()}`, { action: 'skip' })
         .then(() => fetchQueue())
         .catch((err) => console.error("[Aether/Audio] Web skip failed", err));
     };
@@ -2244,7 +2732,7 @@ function App() {
       console.log("[Aether/Audio] Web paused by state", { title: currentTrack.title });
       audio.pause();
     }
-  }, [isStandalone, currentTrack?.title, currentTrack?.actualUrl, currentTrack?.url, currentTrack?.id, isPlaying, volume, API_BASE]);
+  }, [isStandalone, currentTrack?.title, currentTrack?.actualUrl, currentTrack?.url, currentTrack?.id, isPlaying, volume, API_BASE, getEffectiveGuildId]);
 
   useEffect(() => {
     if (!sessionReadyRef.current) return;
@@ -2307,7 +2795,7 @@ function App() {
     let pollInterval;
     
     if (isStandalone) {
-      setAuth({ guild_id: 'LOCAL', user: { id: 'Standalone', username: 'DESKTOP_USER' } });
+      setAuth({ guild_id: DEFAULT_GUILD_ID, user: { id: 'Standalone', username: 'DESKTOP_USER' } });
       setLoading(false);
       setVoiceChannel('Local Speakers');
 
@@ -2566,6 +3054,10 @@ function App() {
     }
 
     const handleResize = () => {
+      setViewportSize({
+        width: window.innerWidth,
+        height: window.innerHeight,
+      });
       // If window is significantly taller than the standard 800px, assume we want elastic mode
       if (window.innerHeight > 820) setIsMaximized(true);
       else if (window.innerHeight <= 800) setIsMaximized(false);
@@ -2618,7 +3110,7 @@ function App() {
     });
 
     // Pre-warm next queue tracks
-    queue.slice(0, 3).forEach((item) => {
+    queue.slice(1, 4).forEach((item) => {
       if (!downloadedTracks.includes(item.id) && !warmingTrackIds.has(item.id)) {
         console.log(`[Aether] Warmup pre-download for queued track: ${item.title} (${item.id})`);
         warmupTrack(item);
@@ -2634,6 +3126,10 @@ function App() {
         if (!localAudioRef.current) {
             localAudioRef.current = new Audio();
             localAudioRef.current.volume = volume;
+        }
+        if (localAudioRef.current) {
+          localAudioRef.current.volume = volume;
+          localAudioRef.current.muted = !!videoModeRef.current;
         }
 
         const isLocalDownloaded = downloadedTracks.includes(track.id);
@@ -2654,8 +3150,19 @@ function App() {
             title: track.title,
             onlineUrl,
           });
+          pushDebugLog('audio-fallback-online-stream', {
+            trackId: track.id,
+            title: track.title || '',
+            onlineUrl,
+          });
+          localAudioRef.current.volume = volume;
+          if (!videoModeRef.current) localAudioRef.current.muted = false;
           localAudioRef.current.src = onlineUrl;
-          if (!videoModeRef.current) localAudioRef.current.play().catch(() => {});
+          if (!videoModeRef.current) {
+            ensureAudioPipelineReady().finally(() => {
+              localAudioRef.current?.play().catch(() => {});
+            });
+          }
         };
 
         // Neural Flow Bridge (NOVA) - High-Fidelity Signal Acquisition
@@ -2676,7 +3183,11 @@ function App() {
               setPendingResumeTime(null);
               setIsAudioBuffering(false);
               // Resume playback after seek
-              if (isPlaying) localAudioRef.current.play().catch(() => {});
+              if (isPlaying) {
+                ensureAudioPipelineReady().finally(() => {
+                  localAudioRef.current?.play().catch(() => {});
+                });
+              }
             } else {
               setIsAudioBuffering(false);
             }
@@ -2694,7 +3205,16 @@ function App() {
             // In video mode the video element owns audio output — don't un-mute here
             if (videoModeRef.current) return;
             console.log(`[Aether/Audio] playing after ${Date.now() - loadStartTime}ms`);
-            if (localAudioRef.current) localAudioRef.current.muted = false;
+            if (localAudioRef.current) {
+              localAudioRef.current.volume = volume;
+              localAudioRef.current.muted = false;
+            }
+            pushDebugLog('audio-playing', {
+              trackId: track.id,
+              title: track.title || '',
+              src: localAudioRef.current?.currentSrc || localAudioRef.current?.src || '',
+              currentMs: Math.max(0, Math.floor((localAudioRef.current?.currentTime || 0) * 1000)),
+            });
             setIsAudioBuffering(false);
             bufferingRescueRef.current = { trackKey: trackLoadKey, lastAttemptAt: 0, attempts: 0 };
             setDiagnostics(prev => ({
@@ -2741,10 +3261,14 @@ function App() {
                 });
                 setIsAudioBuffering(true);
                 localAudioRef.current.src = recoveryUrl;
-                if (!videoModeRef.current) localAudioRef.current.play().catch((e) => {
-                  console.error('[Aether/Audio] Recovery failed', e);
-                  advanceQueueRef.current('premature_recover_failed');
-                });
+                if (!videoModeRef.current) {
+                  ensureAudioPipelineReady().finally(() => {
+                    localAudioRef.current?.play().catch((e) => {
+                      console.error('[Aether/Audio] Recovery failed', e);
+                      advanceQueueRef.current('premature_recover_failed');
+                    });
+                  });
+                }
                 return;
             }
             console.log("[Aether/Audio] Terminated Naturally. Handing to Shared Advance.");
@@ -2756,16 +3280,24 @@ function App() {
               return;
             }
             // HIGH-FIDELITY FAULT TOLERANCE: Do not skip on initial connection fault
-          console.error("[Aether/Audio] Signal Disturbance Detected:", e, {
+            console.error("[Aether/Audio] Signal Disturbance Detected:", e, {
             src: localAudioRef.current?.src,
             networkState: localAudioRef.current?.networkState,
             readyState: localAudioRef.current?.readyState,
             currentTime: localAudioRef.current?.currentTime,
             paused: localAudioRef.current?.paused,
           });
+            pushDebugLog('audio-playback-error', {
+              trackId: track.id,
+              title: track.title || '',
+              src: localAudioRef.current?.src || '',
+              networkState: localAudioRef.current?.networkState,
+              readyState: localAudioRef.current?.readyState,
+              currentMs: Math.max(0, Math.floor((localAudioRef.current?.currentTime || 0) * 1000)),
+              paused: Boolean(localAudioRef.current?.paused),
+            });
             console.log("[Aether/Audio] Attempting signal recovery. Skip suppressed.");
             // Maintain buffering state instead of skipping to Standby
-            if (localAudioRef.current) localAudioRef.current.muted = true;
             if (isPlaying) {
               setIsAudioBuffering(true);
               fallbackToOnlineStream();
@@ -2820,13 +3352,7 @@ function App() {
             });
             fallbackToOnlineStream();
           }
-        }, 12000);
-        
-        // Trigger background download if not already cached / warming
-        if (window.aether?.download && !downloadedTracks.includes(track.id) && !warmingTrackIds.has(track.id)) {
-            console.log(`[Aether] Triggering background download for track ${track.id}`);
-            warmupTrack(track);
-        }
+        }, 16000);
         
         if (isPlaying && !videoModeRef.current) {
           console.log("[Aether/Audio] Attempting play()", {
@@ -2834,19 +3360,23 @@ function App() {
             readyState: localAudioRef.current?.readyState,
             networkState: localAudioRef.current?.networkState,
           });
-            if (!videoModeRef.current) localAudioRef.current.play().catch(e => {
-            if (e?.name === 'AbortError') {
-              console.warn('[Aether/Audio] play() interrupted by source refresh (non-fatal)');
-              return;
-            }
-            console.error("[Aether/Audio] Autoplay Blocked or Failed:", e, {
-              src: localAudioRef.current?.src,
-              readyState: localAudioRef.current?.readyState,
-              networkState: localAudioRef.current?.networkState,
-              paused: localAudioRef.current?.paused,
+            if (!videoModeRef.current) {
+              ensureAudioPipelineReady().finally(() => {
+                localAudioRef.current?.play().catch(e => {
+                  if (e?.name === 'AbortError') {
+                    console.warn('[Aether/Audio] play() interrupted by source refresh (non-fatal)');
+                    return;
+                  }
+                  console.error("[Aether/Audio] Autoplay Blocked or Failed:", e, {
+                    src: localAudioRef.current?.src,
+                    readyState: localAudioRef.current?.readyState,
+                    networkState: localAudioRef.current?.networkState,
+                    paused: localAudioRef.current?.paused,
+                  });
+                  setIsAudioBuffering(true);
+                });
             });
-                setIsAudioBuffering(true);
-            });
+          }
         } else {
           setIsAudioBuffering(false);
         }
@@ -2867,7 +3397,7 @@ function App() {
           }
         };
     }
-  }, [queue?.[0]?.title, queue?.[0]?.id, queue?.[0]?.queueNonce, isPlaying, isStandalone, streamPort, API_BASE, pendingResumeTime, videoMode, playbackResetNonce]);
+  }, [queue?.[0]?.title, queue?.[0]?.id, queue?.[0]?.queueNonce, ensureAudioPipelineReady, isPlaying, isStandalone, streamPort, API_BASE, pendingResumeTime, videoMode, playbackResetNonce, pushDebugLog, volume]);
 
   useEffect(() => {
     if (!isStandalone || !isPlaying || !isAudioBuffering || !currentTrack || !localAudioRef.current || videoModeRef.current) return;
@@ -2889,6 +3419,11 @@ function App() {
         console.warn('[Aether/Audio] Buffering rescue exhausted; pausing playback to prevent screech loop', {
           trackId: currentTrack.id,
           title: currentTrack.title,
+          attempts,
+        });
+        pushDebugLog('audio-buffering-rescue-exhausted', {
+          trackId: currentTrack.id,
+          title: currentTrack.title || '',
           attempts,
         });
         audio.pause();
@@ -2918,18 +3453,30 @@ function App() {
         readyState: audio.readyState,
         currentTime: audio.currentTime,
       });
+      pushDebugLog('audio-buffering-rescue', {
+        trackId: currentTrack.id,
+        title: currentTrack.title || '',
+        from: audio.src || '',
+        to: rescueUrl,
+        attempt: attempts + 1,
+        readyState: audio.readyState,
+        currentMs: Math.max(0, Math.floor((audio.currentTime || 0) * 1000)),
+      });
 
-      audio.muted = true;
+      audio.volume = volume;
+      if (!videoModeRef.current) audio.muted = false;
       audio.pause();
       audio.src = rescueUrl;
       audio.load();
-      audio.play().catch((e) => {
-        console.error('[Aether/Audio] Buffering rescue failed; keeping current track in buffering state', e);
+      ensureAudioPipelineReady().finally(() => {
+        audio.play().catch((e) => {
+          console.error('[Aether/Audio] Buffering rescue failed; keeping current track in buffering state', e);
+        });
       });
-    }, 8500);
+    }, 16000);
 
     return () => clearTimeout(timer);
-  }, [isStandalone, isPlaying, isAudioBuffering, currentTime, currentTrack?.id, currentTrack?.youtubeId, currentTrack?.title, currentTrack?.author, currentTrack?.actualUrl, currentTrack?.url, streamPort]);
+  }, [ensureAudioPipelineReady, isStandalone, isPlaying, isAudioBuffering, currentTime, currentTrack?.id, currentTrack?.youtubeId, currentTrack?.title, currentTrack?.author, currentTrack?.actualUrl, currentTrack?.url, pushDebugLog, streamPort, volume]);
 
   useEffect(() => {
     if (!isStandalone || videoMode || !isPlaying || !isAudioBuffering) return;
@@ -3081,8 +3628,13 @@ function App() {
   useEffect(() => {
     if (!isStandalone || !localAudioRef.current) return;
     if (isPlaying) {
-       if (localAudioRef.current && !videoModeRef.current) localAudioRef.current.play().catch(() => {});
-       if (audioCtxRef.current?.state === 'suspended') audioCtxRef.current.resume();
+       if (localAudioRef.current && !videoModeRef.current) {
+        localAudioRef.current.volume = volume;
+        localAudioRef.current.muted = false;
+        ensureAudioPipelineReady().finally(() => {
+          localAudioRef.current?.play().catch(() => {});
+        });
+       }
     } else {
        localAudioRef.current.pause();
        setIsAudioBuffering(false);
@@ -3090,7 +3642,7 @@ function App() {
         audioCtxRef.current.suspend().catch(() => {});
        }
     }
-  }, [isPlaying, isStandalone, videoMode]);
+  }, [ensureAudioPipelineReady, isPlaying, isStandalone, videoMode, volume]);
 
   // Audio Visualizer Loop (NOVA
   useEffect(() => {
@@ -3100,26 +3652,7 @@ function App() {
 
     const setupAudioAnalysis = () => {
       if (cancelled) return;
-      try {
-        if (!audioCtxRef.current) {
-          audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
-        }
-        if (!analyserRef.current) {
-          analyserRef.current = audioCtxRef.current.createAnalyser();
-          analyserRef.current.fftSize = 256; 
-          analyserRef.current.smoothingTimeConstant = 0.85;
-        }
-        if (!sourceRef.current && localAudioRef.current) {
-          sourceRef.current = audioCtxRef.current.createMediaElementSource(localAudioRef.current);
-          sourceRef.current.connect(analyserRef.current);
-          analyserRef.current.connect(audioCtxRef.current.destination);
-        }
-        if (audioCtxRef.current.state === 'suspended') {
-          audioCtxRef.current.resume();
-        }
-      } catch (e) {
-        console.error("[Aether] Audio API Error:", e.message);
-      }
+      ensureAudioPipelineReady();
     };
 
     const runVisualizer = () => {
@@ -3385,7 +3918,7 @@ function App() {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       visualizerErrorCountRef.current = 0;
     };
-  }, [isStandalone, currentTrack?.id, currentTrack?.queueNonce, playbackResetNonce]);
+  }, [ensureAudioPipelineReady, isStandalone, currentTrack?.id, currentTrack?.queueNonce, playbackResetNonce]);
 
   const handleVolumeChange = (val) => {
     const v = parseFloat(val);
@@ -3548,26 +4081,78 @@ function App() {
     };
   }, [playlists, normalizeTrackIdentity]);
 
-  const smartMixTracks = useMemo(() => {
-    const allTracks = Object.values(playlists).flat();
-    if (allTracks.length === 0) return [];
-    const unique = [];
-    const used = new Set();
-    for (const t of allTracks) {
-      const key = normalizeTrackIdentity(t);
-      if (used.has(key)) continue;
-      used.add(key);
-      unique.push(t);
-      if (unique.length >= 18) break;
+  const smartMixPlan = useMemo(() => {
+    const normalizeSmartMixArtist = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const buckets = orderedPlaylistNames
+      .map((name) => {
+        const seenInBucket = new Set();
+        const tracks = (playlists[name] || []).filter((track) => {
+          const key = normalizeTrackIdentity(track);
+          if (!key || seenInBucket.has(key)) return false;
+          seenInBucket.add(key);
+          return true;
+        });
+        return { name, tracks };
+      })
+      .filter((bucket) => bucket.tracks.length > 0);
+
+    const usedKeys = new Set();
+    const artistHits = new Map();
+    const selection = [];
+    let safety = 0;
+    let cursor = 0;
+
+    while (selection.length < 24 && buckets.some((bucket) => bucket.tracks.length > 0) && safety < 240) {
+      const bucket = buckets[cursor % Math.max(buckets.length, 1)];
+      cursor += 1;
+      safety += 1;
+      if (!bucket?.tracks?.length) continue;
+
+      const previousArtist = selection.length > 0
+        ? normalizeSmartMixArtist(selection[selection.length - 1]?.author)
+        : '';
+
+      const preferredIndex = bucket.tracks.findIndex((candidate) => {
+        const key = normalizeTrackIdentity(candidate);
+        if (!key || usedKeys.has(key)) return false;
+        const artistKey = normalizeSmartMixArtist(candidate?.author);
+        const artistCount = artistHits.get(artistKey) || 0;
+        return !artistKey || (artistKey !== previousArtist && artistCount < 2);
+      });
+
+      const fallbackIndex = bucket.tracks.findIndex((candidate) => {
+        const key = normalizeTrackIdentity(candidate);
+        return key && !usedKeys.has(key);
+      });
+
+      const resolvedIndex = preferredIndex >= 0 ? preferredIndex : fallbackIndex;
+      if (resolvedIndex < 0) {
+        bucket.tracks = [];
+        continue;
+      }
+
+      const [candidate] = bucket.tracks.splice(resolvedIndex, 1);
+      const key = normalizeTrackIdentity(candidate);
+      if (!key || usedKeys.has(key)) continue;
+      usedKeys.add(key);
+      selection.push(candidate);
+
+      const artistKey = normalizeSmartMixArtist(candidate?.author);
+      if (artistKey) {
+        artistHits.set(artistKey, (artistHits.get(artistKey) || 0) + 1);
+      }
     }
-    return unique;
-  }, [playlists, normalizeTrackIdentity]);
+
+    return {
+      tracks: selection,
+      playlistCount: buckets.length,
+      artistCount: artistHits.size,
+    };
+  }, [orderedPlaylistNames, playlists, normalizeTrackIdentity]);
 
   const handleGenerateSmartMix = useCallback(() => {
-    if (!smartMixTracks.length) return;
-    const shuffled = [...smartMixTracks].sort(() => Math.random() - 0.5);
-    const pickCount = Math.min(shuffled.length, Math.max(5, Math.ceil(shuffled.length * 0.5)));
-    const selected = shuffled.slice(0, pickCount);
+    if (!smartMixPlan.tracks.length) return;
+    const selected = smartMixPlan.tracks.slice(0, Math.min(14, smartMixPlan.tracks.length));
 
     let added = 0;
     setQueue((prev) => {
@@ -3581,14 +4166,18 @@ function App() {
       return next;
     });
 
-    setLastAdded(added > 0 ? `Smart Mix queued • ${added} tracks` : 'Smart Mix already in queue');
+    setLastAdded(
+      added > 0
+        ? `Smart Mix queued • ${added} tracks • ${Math.max(smartMixPlan.artistCount, 1)} artists`
+        : 'Smart Mix already in queue',
+    );
     setTimeout(() => setLastAdded(null), 2800);
-  }, [smartMixTracks, hasTrackInList]);
+  }, [smartMixPlan, hasTrackInList]);
 
   const handleCleanVault = useCallback(async () => {
     if (isVaultCleaning) return;
     setIsVaultCleaning(true);
-    setLastAdded('Cleaning vault…');
+    setLastAdded('Repairing vault…');
 
     try {
       const next = {};
@@ -3629,7 +4218,7 @@ function App() {
         for (const original of (tracks || [])) {
           processedTracks += 1;
           if (processedTracks % 18 === 0) {
-            setLastAdded(`Cleaning vault… ${processedTracks}/${Math.max(totalTracks, 1)}`);
+            setLastAdded(`Repairing vault… ${processedTracks}/${Math.max(totalTracks, 1)}`);
           }
 
           const baseUrl = original?.actualUrl || original?.url || (original?.youtubeId ? `https://www.youtube.com/watch?v=${original.youtubeId}` : '');
@@ -3698,7 +4287,7 @@ function App() {
       setPlaylists(next);
       await window.aether?.store?.set?.('playlists', next);
       persistPlaylistOrder(Object.keys(next).filter((name) => next[name]));
-      setLastAdded(`Vault cleaned • deduped ${removedDuplicates}, removed ${removedUnavailable}, normalized ${normalized}`);
+      setLastAdded(`Vault repaired • deduped ${removedDuplicates}, removed ${removedUnavailable}, refreshed ${normalized}`);
       setTimeout(() => setLastAdded(null), 4200);
     } finally {
       setIsVaultCleaning(false);
@@ -3923,18 +4512,19 @@ function App() {
   };
 
   useEffect(() => {
+    if (isStandalone) return;
     const interval = setInterval(() => {
         fetchQueue();
         if (isPlaying) {
-            // Heartbeat Sync (NOVA
-            axios.post(`${API_BASE}/api/heartbeat/${DEFAULT_GUILD_ID}`, { 
+            const effectiveGuildId = getEffectiveGuildId();
+            axios.post(`${API_BASE}/api/heartbeat/${effectiveGuildId}`, {
                 currentTime, 
                 isPlaying 
             }).catch(() => {});
         }
     }, 3000);
     return () => clearInterval(interval);
-  }, [currentTime, isPlaying, queue.length, isAutoplayEnabled, isStandalone, isManualStop]);
+  }, [API_BASE, currentTime, getEffectiveGuildId, isPlaying, isStandalone]);
 
   // Autoplay Trigger Logic
   useEffect(() => {
@@ -3970,14 +4560,20 @@ function App() {
   // --- AETHER: DYNAMIC THEME SYNC (NOVA ---
   useEffect(() => {
     if (!currentTrack) return;
+    let cancelled = false;
 
     const applyPalette = (palette) => {
+      if (cancelled || !palette) return;
+      setTrackPalette(palette);
       setThemeColor(palette.accent);
       document.documentElement.style.setProperty('--brand-accent', palette.accent);
       document.documentElement.style.setProperty('--brand-contrast', palette.contrast);
       document.documentElement.style.setProperty('--brand-glow', palette.glow);
       document.documentElement.style.setProperty('--aura-accent-rgb', `${palette.accentRgb[0]}, ${palette.accentRgb[1]}, ${palette.accentRgb[2]}`);
       document.documentElement.style.setProperty('--aura-contrast-rgb', `${palette.contrastRgb[0]}, ${palette.contrastRgb[1]}, ${palette.contrastRgb[2]}`);
+      document.documentElement.style.setProperty('--track-control-accent', palette.controlAccent);
+      document.documentElement.style.setProperty('--track-progress-accent', palette.progressAccent);
+      document.documentElement.style.setProperty('--track-progress-glow', palette.progressGlow);
     };
 
     const applyFallbackTheme = () => {
@@ -3985,15 +4581,35 @@ function App() {
       applyPalette(palette);
     };
 
-    if (!currentTrack?.thumbnail) {
+    const themeImageUrl = currentTrack?.thumbnail ? getProxyUrl(currentTrack.thumbnail) : '';
+    const themeCacheKey = String(currentTrack?.youtubeId || currentTrack?.id || themeImageUrl || `${currentTrack?.title || ''}|${currentTrack?.author || ''}`);
+    const paletteCache = trackPaletteCacheRef.current;
+    const rememberPalette = (key, palette) => {
+      if (!key || !palette) return;
+      paletteCache.set(key, palette);
+      if (paletteCache.size > 64) {
+        const oldestKey = paletteCache.keys().next().value;
+        if (oldestKey) paletteCache.delete(oldestKey);
+      }
+    };
+
+    const cachedPalette = paletteCache.get(themeCacheKey) || (themeImageUrl ? paletteCache.get(themeImageUrl) : null);
+    if (cachedPalette) {
+      applyPalette(cachedPalette);
+      return;
+    }
+
+    if (!themeImageUrl) {
       applyFallbackTheme();
       return;
     }
 
     const img = new Image();
     img.crossOrigin = 'Anonymous';
-    img.src = currentTrack.thumbnail;
+    img.decoding = 'async';
+    img.src = themeImageUrl;
     img.onload = () => {
+      if (cancelled) return;
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
       if (!ctx || !img.width || !img.height) {
@@ -4054,70 +4670,11 @@ function App() {
         const tunedR = Math.round(vibrantR * blend + avgR * (1 - blend));
         const tunedG = Math.round(vibrantG * blend + avgG * (1 - blend));
         const tunedB = Math.round(vibrantB * blend + avgB * (1 - blend));
-        const hex = `#${((1 << 24) + (tunedR << 16) + (tunedG << 8) + tunedB).toString(16).slice(1)}`;
-        setThemeColor(hex);
 
-        const rNorm = tunedR / 255;
-        const gNorm = tunedG / 255;
-        const bNorm = tunedB / 255;
-        const max = Math.max(rNorm, gNorm, bNorm);
-        const min = Math.min(rNorm, gNorm, bNorm);
-        let h = 0;
-        let s = 0;
-        const l = (max + min) / 2;
-        if (max !== min) {
-          const delta = max - min;
-          s = l > 0.5 ? delta / (2 - max - min) : delta / (max + min);
-          switch (max) {
-            case rNorm:
-              h = (gNorm - bNorm) / delta + (gNorm < bNorm ? 6 : 0);
-              break;
-            case gNorm:
-              h = (bNorm - rNorm) / delta + 2;
-              break;
-            default:
-              h = (rNorm - gNorm) / delta + 4;
-              break;
-          }
-          h /= 6;
-        }
-
-        const contrastH = (h + 0.5) % 1;
-        const contrastHex = (function hslToHex(inputH, inputS, inputL) {
-          let red;
-          let green;
-          let blue;
-          const q = inputL < 0.5 ? inputL * (1 + inputS) : inputL + inputS - inputL * inputS;
-          const p = 2 * inputL - q;
-          const hue2rgb = (pValue, qValue, tValue) => {
-            let next = tValue;
-            if (next < 0) next += 1;
-            if (next > 1) next -= 1;
-            if (next < 1 / 6) return pValue + (qValue - pValue) * 6 * next;
-            if (next < 1 / 2) return qValue;
-            if (next < 2 / 3) return pValue + (qValue - pValue) * (2 / 3 - next) * 6;
-            return pValue;
-          };
-          red = hue2rgb(p, q, inputH + 1 / 3);
-          green = hue2rgb(p, q, inputH);
-          blue = hue2rgb(p, q, inputH - 1 / 3);
-          const toHex = (value) => Math.round(value * 255).toString(16).padStart(2, '0');
-          return `#${toHex(red)}${toHex(green)}${toHex(blue)}`;
-        })(contrastH, 0.9, 0.6);
-
-        const contrastRgb = [
-          parseInt(contrastHex.slice(1, 3), 16),
-          parseInt(contrastHex.slice(3, 5), 16),
-          parseInt(contrastHex.slice(5, 7), 16),
-        ];
-
-        applyPalette({
-          accent: hex,
-          contrast: contrastHex,
-          glow: `${hex}33`,
-          accentRgb: [tunedR, tunedG, tunedB],
-          contrastRgb,
-        });
+        const palette = buildTrackPaletteFromRgb([tunedR, tunedG, tunedB]);
+        rememberPalette(themeCacheKey, palette);
+        rememberPalette(themeImageUrl, palette);
+        applyPalette(palette);
       } catch (error) {
         applyFallbackTheme();
       }
@@ -4125,7 +4682,12 @@ function App() {
 
     img.onerror = applyFallbackTheme;
     applyFallbackTheme();
-  }, [currentTrack]);
+    return () => {
+      cancelled = true;
+      img.onload = null;
+      img.onerror = null;
+    };
+  }, [currentTrack?.thumbnail, currentTrack?.youtubeId, currentTrack?.id, currentTrack?.title, currentTrack?.author, isStandalone, streamPort]);
 
   // --- AETHER: HARDWARE MEDIA SESSION BRIDGE (NOVA ---
   useEffect(() => {
@@ -4195,6 +4757,7 @@ function App() {
   }, [defaultGlobalMediaShortcutsEnabled, isMacPlatform, isStandalone]);
 
   const fetchQueue = async () => {
+    if (isStandalone) return;
     const startedAt = performance.now();
     try {
       const guildId = getEffectiveGuildId();
@@ -4614,51 +5177,13 @@ function App() {
   };
 
   function getTrackFallbackPalette(track) {
-    const hslToRgb = (h, s, l) => {
-      const sat = s / 100;
-      const lig = l / 100;
-      const c = (1 - Math.abs(2 * lig - 1)) * sat;
-      const hp = h / 60;
-      const x = c * (1 - Math.abs((hp % 2) - 1));
-      let r1 = 0;
-      let g1 = 0;
-      let b1 = 0;
-      if (hp >= 0 && hp < 1) {
-        r1 = c; g1 = x; b1 = 0;
-      } else if (hp < 2) {
-        r1 = x; g1 = c; b1 = 0;
-      } else if (hp < 3) {
-        r1 = 0; g1 = c; b1 = x;
-      } else if (hp < 4) {
-        r1 = 0; g1 = x; b1 = c;
-      } else if (hp < 5) {
-        r1 = x; g1 = 0; b1 = c;
-      } else {
-        r1 = c; g1 = 0; b1 = x;
-      }
-      const m = lig - c / 2;
-      return [
-        Math.round((r1 + m) * 255),
-        Math.round((g1 + m) * 255),
-        Math.round((b1 + m) * 255),
-      ];
-    };
-
     const seed = String(track?.thumbnail || track?.youtubeId || track?.actualUrl || track?.url || `${track?.title || ''}|${track?.author || ''}`).trim() || 'aether';
     let hash = 0;
     for (let index = 0; index < seed.length; index += 1) {
       hash = ((hash << 5) - hash + seed.charCodeAt(index)) | 0;
     }
     const hue = Math.abs(hash) % 360;
-    const accentRgb = hslToRgb(hue, 100, 58);
-    const contrastRgb = hslToRgb((hue + 180) % 360, 90, 64);
-    return {
-      accent: `hsl(${hue} 100% 58%)`,
-      contrast: `hsl(${(hue + 180) % 360} 90% 64%)`,
-      glow: `hsla(${hue} 100% 58% / 0.28)`,
-      accentRgb,
-      contrastRgb,
-    };
+    return buildTrackPaletteFromRgb(hslToRgb(hue, 76, 56));
   }
 
   const fetchLyrics = async (trackTitle, trackAuthor, trackDuration, trackUrl, trackKey = '') => {
@@ -4983,15 +5508,41 @@ function App() {
 
   const handleSearch = async (e) => {
     if (e) e.preventDefault();
-    if (!searchQuery.trim()) return;
+    const query = searchQuery.trim();
+    if (!query) return;
     setIsSearching(true);
     setHasCompletedSearch(true);
     try {
+      const directYoutubeId = extractYouTubeId(query);
+      const directUrl = directYoutubeId
+        ? `https://www.youtube.com/watch?v=${directYoutubeId}`
+        : (/^https?:\/\//i.test(query) ? query : '');
+
       if (isStandalone) {
-          const results = await window.aether.search(searchQuery);
+          if (directUrl && window.aether?.getMetadata) {
+            const meta = await window.aether.getMetadata(directUrl);
+            if (meta) {
+              const hydratedTrack = normalizeQueueTrack({
+                id: directYoutubeId || meta.id || directUrl,
+                youtubeId: directYoutubeId || meta.youtubeId || extractYouTubeId(meta.actualUrl || meta.url || directUrl),
+                title: meta.title || query,
+                author: meta.author || 'Unknown Artist',
+                thumbnail: meta.thumbnail || '',
+                duration: meta.totalDurationMs || meta.duration || 0,
+                totalDurationMs: meta.totalDurationMs || meta.duration || 0,
+                url: directUrl,
+                actualUrl: directUrl,
+              });
+              setSearchResults(hydratedTrack ? [hydratedTrack] : []);
+              if (isMobileSearchOpen) setIsMobileSearchOpen(false);
+              return;
+            }
+          }
+
+          const results = await window.aether.search(query);
           setSearchResults(Array.isArray(results) ? results : []);
       } else {
-          const resp = await axios.get(`${API_BASE}/api/search?q=${encodeURIComponent(searchQuery)}`);
+          const resp = await axios.get(`${API_BASE}/api/search?q=${encodeURIComponent(query)}`);
           setSearchResults(Array.isArray(resp.data) ? resp.data : []);
       }
       if (isMobileSearchOpen) setIsMobileSearchOpen(false);
@@ -5004,6 +5555,7 @@ function App() {
   };
 
   const clearDiscoveryResults = useCallback(() => {
+    setSearchQuery('');
     setSearchResults([]);
     setHasCompletedSearch(false);
     setIsSearching(false);
@@ -5017,21 +5569,71 @@ function App() {
 
   // -- NEURAL DISCOVERY (AUTO-FETCH) --
   useEffect(() => {
-    if (!currentTrack || !isStandalone || !window.aether?.search) return;
+    if (!currentTrack || !isStandalone) return;
+    let cancelled = false;
     const fetchNeural = async () => {
+      const seedIdentity = normalizeTrackIdentity(currentTrack);
       try {
-        const query = currentTrack.author || currentTrack.title?.split('-')?.[0] || 'music';
-        const res = await window.aether.search(query);
-        if (Array.isArray(res)) {
-          const filtered = res.filter(t => t.id !== currentTrack.id && t.youtubeId !== currentTrack.youtubeId);
-          setNeuralRecommendations(filtered.slice(0, 15));
+        const seedUrl = currentTrack.youtubeId
+          ? `https://www.youtube.com/watch?v=${currentTrack.youtubeId}`
+          : currentTrack.actualUrl || currentTrack.url || '';
+
+        let recommendations = [];
+        if (window.aether?.getRecommendations) {
+          const payload = {
+            title: currentTrack.title,
+            author: currentTrack.author,
+            url: seedUrl,
+          };
+          let recs = await window.aether.getRecommendations(payload);
+          if ((!Array.isArray(recs) || recs.length === 0) && !engineStatus?.ytDlpReady) {
+            await refreshEngineStatus();
+            if (!cancelled) {
+              await new Promise((resolve) => window.setTimeout(resolve, 900));
+              recs = await window.aether.getRecommendations(payload);
+            }
+          }
+          if (Array.isArray(recs)) recommendations = recs;
         }
+
+        if (recommendations.length === 0 && window.aether?.search) {
+          const query = [currentTrack.author, currentTrack.title].filter(Boolean).join(' ').trim()
+            || currentTrack.title?.split('-')?.[0]
+            || 'music';
+          const fallback = await window.aether.search(query);
+          if (Array.isArray(fallback)) recommendations = fallback;
+        }
+
+        if (cancelled) return;
+        const seen = new Set();
+        const filtered = recommendations.filter((track) => {
+          const key = normalizeTrackIdentity(track);
+          if (!key || seen.has(key)) return false;
+          seen.add(key);
+          return key !== seedIdentity;
+        });
+        setNeuralRecommendations(filtered.slice(0, 15));
+        pushDebugLog('discovery-refresh', {
+          title: currentTrack.title || '',
+          author: currentTrack.author || '',
+          engineReady: !!engineStatus?.ytDlpReady,
+          returned: filtered.length,
+          usedFallbackSearch: recommendations.length > 0 && filtered.length > 0 && filtered[0] && normalizeTrackIdentity(filtered[0]) !== seedIdentity && !seedUrl.includes('watch?v='),
+        });
       } catch (e) {
         console.error('[Aether] Neural fetch failed', e);
+        pushDebugLog('discovery-refresh-failed', {
+          title: currentTrack.title || '',
+          author: currentTrack.author || '',
+          error: e?.message || String(e),
+        });
       }
     };
     fetchNeural();
-  }, [currentTrack?.title, currentTrack?.author, currentTrack?.id, currentTrack?.youtubeId, isStandalone]);
+    return () => {
+      cancelled = true;
+    };
+  }, [currentTrack?.title, currentTrack?.author, currentTrack?.id, currentTrack?.youtubeId, currentTrack?.actualUrl, currentTrack?.url, engineStatus?.ytDlpReady, isStandalone, normalizeTrackIdentity, pushDebugLog, refreshEngineStatus]);
 
   const warmupTrack = async (track) => {
     if (!window.aether?.download || !track || isWarmupUnavailable) return;
@@ -5044,6 +5646,15 @@ function App() {
       : (track.actualUrl || track.url);
     const title = track.title || 'Unknown';
     if (!id || !sourceUrl) return;
+
+    const activeTrack = currentTrackRef.current;
+    const activeYoutubeId = activeTrack?.youtubeId || extractYouTubeId(activeTrack?.actualUrl || activeTrack?.url || activeTrack?.id);
+    const activeIdFromTrack = /^[A-Za-z0-9_-]{11}$/.test(String(activeTrack?.id || '')) ? String(activeTrack.id) : null;
+    const activeTrackId = activeYoutubeId || activeIdFromTrack || activeTrack?.id || null;
+    if (activeTrackId && String(activeTrackId) === String(id)) {
+      console.log(`[Aether] Warmup skipped for active track: ${title} (${id})`);
+      return;
+    }
 
     const retryGate = warmupRetryRef.current.get(id);
     if (retryGate && Date.now() < retryGate.nextTryAt) {
@@ -5210,7 +5821,9 @@ function App() {
         setLastAdded(track.title);
         setTimeout(() => setLastAdded(null), 3000);
 
-        warmupTrack({ ...newTrack, id: stableId, actualUrl: url, url, title: track.title });
+        if (queue.length > 0) {
+          warmupTrack({ ...newTrack, id: stableId, actualUrl: url, url, title: track.title });
+        }
 
         // --- AETHER: NEURAL METADATA SYNC (NOVA ---
         window.aether.getMetadata(newTrack.actualUrl || newTrack.url).then(fullTrack => {
@@ -5392,45 +6005,150 @@ function App() {
     setCurrentTime(clampedMs);
   }, []);
 
-  const logSoundCapsulePlayback = useCallback(async (track) => {
+  const readSoundCapsuleData = useCallback(async (forceReload = false) => {
+    if (!isStandalone || !window.aether?.store) return createPlaybackLedgerData();
+    if (!forceReload && soundCapsuleCacheRef.current) return soundCapsuleCacheRef.current;
+    const raw = await window.aether.store.get(PLAYBACK_LEDGER_STORAGE_KEY);
+    const normalized = normalizePlaybackLedgerData(raw);
+    soundCapsuleCacheRef.current = normalized;
+    return normalized;
+  }, [isStandalone]);
+
+  const commitSoundCapsuleDelta = useCallback(async ({
+    track,
+    deltaMs = 0,
+    totalSessionMs = 0,
+    countPlay = false,
+    completed = false,
+    logSession = false,
+    reason = 'checkpoint',
+    sessionStartedAt = null,
+  }) => {
     if (!track || !isStandalone || !window.aether?.store) return;
+
+    const safeDeltaMs = Math.max(0, Math.floor(Number(deltaMs) || 0));
+    const safeSessionMs = Math.max(0, Math.floor(Number(totalSessionMs) || safeDeltaMs));
+    if (safeDeltaMs <= 0 && !countPlay && !logSession) return;
+
     try {
-      const data = await window.aether.store.get('sound-capsule') || { tracks: {}, artists: {}, totalMinutes: 0, hourlyTrends: {}, weeklyTrends: {}, genres: {} };
+      const base = clonePlaybackLedgerData(await readSoundCapsuleData());
+      const data = normalizePlaybackLedgerData(base);
       const now = new Date();
       const hour = now.getHours();
       const day = now.getDay();
-      
-      const tId = track.id || track.youtubeId;
-      if (tId) {
-        if (!data.tracks[tId]) data.tracks[tId] = { count: 0, title: track.title, author: track.author, thumbnail: track.thumbnail };
-        data.tracks[tId].count++;
-        data.tracks[tId].lastListened = now.toISOString();
+      const dateKey = getLocalDateKey(now);
+      const trackId = String(track.id || track.youtubeId || `${track.title || 'track'}|${track.author || ''}`);
+      const endedAt = now.toISOString();
+
+      if (!data.tracks[trackId]) {
+        data.tracks[trackId] = {
+          count: 0,
+          totalMs: 0,
+          title: track.title || 'Unknown track',
+          author: track.author || 'Unknown artist',
+          thumbnail: track.thumbnail || '',
+          lastListened: null,
+          lastCompletedAt: null,
+        };
       }
 
-      const author = track.author?.trim();
+      const trackEntry = data.tracks[trackId];
+      trackEntry.title = track.title || trackEntry.title;
+      trackEntry.author = track.author || trackEntry.author;
+      trackEntry.thumbnail = track.thumbnail || trackEntry.thumbnail || '';
+      trackEntry.lastListened = endedAt;
+      trackEntry.totalMs = Math.max(0, Math.floor(Number(trackEntry.totalMs) || 0)) + safeDeltaMs;
+      if (completed) {
+        trackEntry.lastCompletedAt = endedAt;
+      }
+
+      const author = String(track.author || '').trim();
       if (author) {
-        if (!data.artists[author]) data.artists[author] = { count: 0 };
-        data.artists[author].count++;
+        if (!data.artists[author]) data.artists[author] = { count: 0, totalMs: 0 };
+        data.artists[author].totalMs = Math.max(0, Math.floor(Number(data.artists[author].totalMs) || 0)) + safeDeltaMs;
       }
 
-      // Trends
-      data.hourlyTrends[hour] = (data.hourlyTrends[hour] || 0) + 1;
-      data.weeklyTrends[day] = (data.weeklyTrends[day] || 0) + 1;
+      if (safeDeltaMs > 0) {
+        data.totalMs = Math.max(0, Math.floor(Number(data.totalMs) || 0)) + safeDeltaMs;
+        data.totalMinutes = Math.round(data.totalMs / 60000);
+        data.dailyMinutes[dateKey] = Math.max(0, Math.floor(Number(data.dailyMinutes[dateKey]) || 0)) + safeDeltaMs;
+      }
 
-      // Inferred Genre (Signal lookup)
-      const titleLower = track.title?.toLowerCase() || '';
-      const authorLower = track.author?.toLowerCase() || '';
-      const genreSignals = ['lofi', 'jazz', 'rock', 'pop', 'synthwave', 'techno', 'ambient', 'classic', 'metal', 'rap', 'hiphop', 'trap', 'house', 'dubstep', 'relax', 'study'];
-      genreSignals.forEach(signal => {
-        if (titleLower.includes(signal) || authorLower.includes(signal)) {
-            data.genres[signal] = (data.genres[signal] || 0) + 1;
+      if (countPlay) {
+        trackEntry.count = Math.max(0, Math.floor(Number(trackEntry.count) || 0)) + 1;
+        data.totalPlays = Math.max(0, Math.floor(Number(data.totalPlays) || 0)) + 1;
+        data.totalSessions = Math.max(0, Math.floor(Number(data.totalSessions) || 0)) + 1;
+        data.hourlyTrends[hour] = Math.max(0, Math.floor(Number(data.hourlyTrends[hour]) || 0)) + 1;
+        data.weeklyTrends[day] = Math.max(0, Math.floor(Number(data.weeklyTrends[day]) || 0)) + 1;
+        data.dailyPlays[dateKey] = Math.max(0, Math.floor(Number(data.dailyPlays[dateKey]) || 0)) + 1;
+        if (author) {
+          data.artists[author].count = Math.max(0, Math.floor(Number(data.artists[author].count) || 0)) + 1;
         }
-      });
+        inferPlaybackSignals(track).forEach((signal) => {
+          data.genres[signal] = Math.max(0, Math.floor(Number(data.genres[signal]) || 0)) + 1;
+        });
+      }
 
-      data.totalMinutes += Math.round(Number(currentTimeRef.current || 0) / 60000);
-      await window.aether.store.set('sound-capsule', data);
-    } catch(e) { console.error('[Aether] Sound capsule write failed', e); }
-  }, [isStandalone]);
+      if (logSession && safeSessionMs >= PLAYBACK_LEDGER_SESSION_MIN_MS) {
+        const sessionId = `${trackId}:${sessionStartedAt || endedAt}`;
+        const sessionEntry = {
+          id: sessionId,
+          trackId,
+          title: track.title || trackEntry.title,
+          author: track.author || trackEntry.author,
+          thumbnail: track.thumbnail || trackEntry.thumbnail || '',
+          playedMs: safeSessionMs,
+          completed: Boolean(completed),
+          startedAt: sessionStartedAt || null,
+          endedAt,
+          reason,
+        };
+        data.recentSessions = [
+          sessionEntry,
+          ...(Array.isArray(data.recentSessions) ? data.recentSessions : []).filter((entry) => entry?.id !== sessionId),
+        ].slice(0, 24);
+      }
+
+      const normalized = normalizePlaybackLedgerData(data);
+      soundCapsuleCacheRef.current = normalized;
+      await window.aether.store.set(PLAYBACK_LEDGER_STORAGE_KEY, normalized);
+      if (isSoundCapsuleOpen) setSoundCapsuleData(normalized);
+    } catch (e) {
+      console.error('[Aether] Playback ledger write failed', e);
+    }
+  }, [isSoundCapsuleOpen, isStandalone, readSoundCapsuleData]);
+
+  const flushSoundCapsuleSession = useCallback(async (reason = 'checkpoint', options = {}) => {
+    const { force = false, completed = false, closeSession = false } = options;
+    const tracker = soundCapsuleSessionRef.current;
+    if (!tracker?.trackKey || !tracker.track) return;
+
+    const safeAccruedMs = Math.max(0, Math.floor(Number(tracker.accruedMs) || 0));
+    const deltaMs = Math.max(0, safeAccruedMs - Math.max(0, Math.floor(Number(tracker.flushedMs) || 0)));
+    const qualifiesPlay = !tracker.counted && (completed || safeAccruedMs >= PLAYBACK_LEDGER_SESSION_MIN_MS);
+    const shouldLogSession = closeSession && !tracker.logged && safeAccruedMs >= PLAYBACK_LEDGER_SESSION_MIN_MS;
+
+    if (!force && deltaMs < PLAYBACK_LEDGER_CHECKPOINT_MS && !qualifiesPlay) return;
+    if (deltaMs <= 0 && !qualifiesPlay && !shouldLogSession) return;
+
+    await commitSoundCapsuleDelta({
+      track: tracker.track,
+      deltaMs,
+      totalSessionMs: safeAccruedMs,
+      countPlay: qualifiesPlay,
+      completed,
+      logSession: shouldLogSession,
+      reason,
+      sessionStartedAt: tracker.startedAt,
+    });
+
+    tracker.flushedMs = safeAccruedMs;
+    if (qualifiesPlay) tracker.counted = true;
+    if (shouldLogSession) tracker.logged = true;
+  }, [commitSoundCapsuleDelta]);
+  useEffect(() => {
+    flushSoundCapsuleSessionRef.current = flushSoundCapsuleSession;
+  }, [flushSoundCapsuleSession]);
 
   // Consolidate queue advancement logic
   const advanceQueue = useCallback((reason) => {
@@ -5460,15 +6178,27 @@ function App() {
     console.log(`[Aether/Queue] Advancing: ${reason} for ${track.title}`);
     noteSkipReason(reason, { trackId: track.id, title: track.title });
 
-    if (reason === 'natural_end' || currentTimeRef.current > 30000 || (track.totalDurationMs && currentTimeRef.current > track.totalDurationMs * 0.5)) {
-      logSoundCapsulePlayback(track);
-    }
+    flushSoundCapsuleSession(reason, {
+      force: true,
+      completed: reason === 'natural_end',
+      closeSession: true,
+    }).catch(() => {});
 
     if (reason === 'natural_end' && repeatMode === 'track') {
       pendingResumeTimeRef.current = null;
       setPendingResumeTime(null);
       currentTimeRef.current = 0;
       setCurrentTime(0);
+      soundCapsuleSessionRef.current = {
+        trackKey: endedTrackKey,
+        track,
+        accruedMs: 0,
+        flushedMs: 0,
+        counted: false,
+        logged: false,
+        lastObservedMs: 0,
+        startedAt: new Date().toISOString(),
+      };
       manualTransportAdvanceRef.current = null;
       if (localAudioRef.current && !videoModeRef.current) {
         try {
@@ -5485,6 +6215,16 @@ function App() {
       setPendingResumeTime(null);
       currentTimeRef.current = 0;
       setCurrentTime(0);
+      soundCapsuleSessionRef.current = {
+        trackKey: endedTrackKey,
+        track,
+        accruedMs: 0,
+        flushedMs: 0,
+        counted: false,
+        logged: false,
+        lastObservedMs: 0,
+        startedAt: new Date().toISOString(),
+      };
       manualTransportAdvanceRef.current = null;
       if (localAudioRef.current && !videoModeRef.current) {
         try {
@@ -5520,12 +6260,82 @@ function App() {
     currentTimeRef.current = 0;
     setCurrentTime(0);
     manualTransportAdvanceRef.current = null;
-  }, [appendRecentEvent, getTrackActionKey, isAutoplayEnabled, isPlaying, noteSkipReason, queue, repeatMode, triggerAutoplay]);
+  }, [appendRecentEvent, flushSoundCapsuleSession, getTrackActionKey, isAutoplayEnabled, isPlaying, noteSkipReason, queue, repeatMode, triggerAutoplay]);
 
   const advanceQueueRef = useRef(advanceQueue);
   useEffect(() => {
     advanceQueueRef.current = advanceQueue;
   }, [advanceQueue]);
+
+  useEffect(() => {
+    const nextTrack = queue?.[0] || null;
+    const nextTrackKey = nextTrack ? getTrackActionKey(nextTrack) : '';
+    const currentSession = soundCapsuleSessionRef.current;
+
+    if (currentSession.trackKey && currentSession.trackKey !== nextTrackKey) {
+      flushSoundCapsuleSession('track_change', { force: true, closeSession: true }).catch(() => {});
+    }
+
+    if (!nextTrackKey) {
+      soundCapsuleSessionRef.current = {
+        trackKey: '',
+        track: null,
+        accruedMs: 0,
+        flushedMs: 0,
+        counted: false,
+        logged: false,
+        lastObservedMs: 0,
+        startedAt: null,
+      };
+      return;
+    }
+
+    if (currentSession.trackKey !== nextTrackKey) {
+      soundCapsuleSessionRef.current = {
+        trackKey: nextTrackKey,
+        track: nextTrack,
+        accruedMs: 0,
+        flushedMs: 0,
+        counted: false,
+        logged: false,
+        lastObservedMs: Math.max(0, Math.floor(Number(currentTimeRef.current || 0))),
+        startedAt: new Date().toISOString(),
+      };
+      return;
+    }
+
+    currentSession.track = nextTrack;
+  }, [flushSoundCapsuleSession, getTrackActionKey, queue]);
+
+  useEffect(() => {
+    const tracker = soundCapsuleSessionRef.current;
+    if (!tracker?.trackKey) return;
+
+    const observedMs = Math.max(0, Math.floor(Number(currentTime || 0)));
+    if (!isPlaying) {
+      tracker.lastObservedMs = observedMs;
+      flushSoundCapsuleSession('pause', { force: true }).catch(() => {});
+      return;
+    }
+
+    if (!Number.isFinite(tracker.lastObservedMs)) {
+      tracker.lastObservedMs = observedMs;
+      return;
+    }
+
+    const deltaMs = observedMs - tracker.lastObservedMs;
+    tracker.lastObservedMs = observedMs;
+    if (deltaMs <= 0) return;
+
+    tracker.accruedMs += Math.min(deltaMs, 4000);
+    if ((tracker.accruedMs - tracker.flushedMs) >= PLAYBACK_LEDGER_CHECKPOINT_MS) {
+      flushSoundCapsuleSession('checkpoint').catch(() => {});
+    }
+  }, [currentTime, flushSoundCapsuleSession, isPlaying]);
+
+  useEffect(() => () => {
+    flushSoundCapsuleSessionRef.current('shutdown', { force: true, closeSession: true }).catch(() => {});
+  }, []);
 
   const handleControl = useCallback(async (action) => {
     console.log("[Aether/Control] Signal Bridge Active:", action);
@@ -5755,7 +6565,7 @@ function App() {
           appendRecentEvent('mini_player', 'Returned to studio layout', { tone: 'neutral' });
       } else {
           if (videoModeRef.current || localVideoRef.current) {
-            switchVideoMode('dual'); // Compress into album bounding box, don't sever connection
+            exitVideoMode(); // Fallback to audio engine because the video DOM element gets unmounted
           }
           await window.aether.resizeWindow(isMacPlatform ? 664 : 648, isMacPlatform ? 236 : 228, true);
           setIsMiniPlayer(true);
@@ -5815,6 +6625,17 @@ function App() {
       console.warn('[Aether/Window] toggle maximize failed', e);
     }
   }, [isStandalone]);
+
+  const handleHeaderDoubleClick = useCallback((event) => {
+    if (!isStandalone) return;
+    if (
+      event?.target instanceof Element
+      && event.target.closest('button, input, textarea, select, option, a, [role="button"], [data-no-maximize="true"]')
+    ) {
+      return;
+    }
+    toggleWindowMaximize();
+  }, [isStandalone, toggleWindowMaximize]);
 
   const handleResetPlaybackEngine = useCallback(() => {
     const sourceUrl = currentTrack?.actualUrl || currentTrack?.url;
@@ -5896,6 +6717,99 @@ function App() {
       setIsRuntimeRepairing(false);
     }
   }, [appendRecentEvent, currentTrack?.actualUrl, currentTrack?.url, handleResetPlaybackEngine, isStandalone, refreshEngineStatus, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats]);
+
+  useEffect(() => {
+    if (!isStandalone || videoMode || !isPlaying || !currentTrack || !localAudioRef.current) return;
+    const audio = localAudioRef.current;
+    if (audio.src) {
+      audio.volume = volume;
+      audio.muted = false;
+      return;
+    }
+
+    const trackKey = getTrackActionKey(currentTrack);
+    const monitor = audioStallMonitorRef.current;
+    if (monitor.trackKey === trackKey && (Date.now() - monitor.lastRecoveryAt) < 2000) {
+      return;
+    }
+
+    monitor.trackKey = trackKey;
+    monitor.lastRecoveryAt = Date.now();
+    pushDebugLog('audio-source-repair', {
+      trackId: currentTrack.id,
+      title: currentTrack.title || '',
+    });
+    handleResetPlaybackEngine();
+  }, [currentTrack, getTrackActionKey, handleResetPlaybackEngine, isPlaying, isStandalone, pushDebugLog, videoMode, volume]);
+
+  useEffect(() => {
+    if (!isStandalone || videoMode || !isPlaying || !currentTrack || !localAudioRef.current) return;
+
+    const trackKey = getTrackActionKey(currentTrack);
+    audioStallMonitorRef.current = {
+      trackKey,
+      lastProgressMs: Math.max(0, Math.floor(Number(currentTimeRef.current || 0))),
+      lastProgressAt: Date.now(),
+      rescues: 0,
+      lastRecoveryAt: 0,
+    };
+
+    const interval = window.setInterval(() => {
+      const audio = localAudioRef.current;
+      if (!audio || videoModeRef.current || !isPlayingRef.current) return;
+
+      const observedMs = Math.max(
+        0,
+        Math.floor((audio.currentTime || 0) * 1000),
+        Math.floor(Number(currentTimeRef.current || 0)),
+      );
+      const monitor = audioStallMonitorRef.current;
+
+      if (observedMs > monitor.lastProgressMs + 220) {
+        monitor.lastProgressMs = observedMs;
+        monitor.lastProgressAt = Date.now();
+        return;
+      }
+
+      const durationMs = Math.max(0, Math.floor(Number(currentTrackRef.current?.totalDurationMs || currentTrackRef.current?.duration || 0)));
+      const nearTrackEnd = durationMs > 0 && observedMs >= Math.max(0, durationMs - 2500);
+      if (nearTrackEnd && Date.now() - monitor.lastProgressAt > 3500) {
+        pushDebugLog('audio-stall-natural-end', {
+          trackId: currentTrackRef.current?.id,
+          title: currentTrackRef.current?.title || '',
+          currentMs: observedMs,
+          durationMs,
+        });
+        advanceQueueRef.current('natural_end');
+        return;
+      }
+
+      const hardStall = !audio.paused && !audio.ended && observedMs > 12000 && (Date.now() - monitor.lastProgressAt) > 8000;
+      if (!hardStall) return;
+      if ((Date.now() - monitor.lastRecoveryAt) < 12000) return;
+
+      monitor.lastRecoveryAt = Date.now();
+      monitor.rescues += 1;
+
+      pushDebugLog('audio-stall-recovery', {
+        trackId: currentTrackRef.current?.id,
+        title: currentTrackRef.current?.title || '',
+        currentMs: observedMs,
+        rescues: monitor.rescues,
+        readyState: audio.readyState,
+        paused: Boolean(audio.paused),
+      });
+
+      if (monitor.rescues >= 3) {
+        advanceQueueRef.current('stall_timeout');
+        return;
+      }
+
+      handleResetPlaybackEngine();
+    }, 1600);
+
+    return () => window.clearInterval(interval);
+  }, [currentTrack, getTrackActionKey, handleResetPlaybackEngine, isPlaying, isStandalone, pushDebugLog, videoMode]);
 
   useEffect(() => {
     const isTypingTarget = (el) => {
@@ -5997,6 +6911,66 @@ function App() {
     return () => window.removeEventListener('keydown', onShortcut);
   }, [handleControl, isLibraryOverlayOpen, isLockModalOpen, isMacPlatform, isManualLyricsEditorOpen, isManualLyricsRawEditorOpen, isMixtapeVaultOpen, isPlayerOverlayOpen, isPlaying, isShortcutSettingsOpen, isSharedSceneOpen, isSpotifyImportOpen, isStandalone, isTipsOverlayOpen, isViewingFullDiscovery, isViewingFullPlaylist, isViewingFullQueue, oauthPrompt, shortcuts, toggleDiagnostics, toggleFocusMode, toggleMiniPlayer]);
 
+  const soundLedgerView = useMemo(() => {
+    const data = normalizePlaybackLedgerData(soundCapsuleData);
+    const totalTracksPlayed = data.totalPlays || Object.values(data.tracks || {}).reduce((total, entry) => total + Math.max(0, Math.floor(Number(entry?.count) || 0)), 0);
+    const totalMs = Math.max(0, Math.floor(Number(data.totalMs) || (Number(data.totalMinutes) || 0) * 60000));
+    const recentWeek = Array.from({ length: 7 }, (_, index) => {
+      const date = new Date();
+      date.setDate(date.getDate() - (6 - index));
+      const key = getLocalDateKey(date);
+      return {
+        key,
+        label: date.toLocaleDateString(undefined, { weekday: 'short' }).slice(0, 3).toUpperCase(),
+        minutesMs: Math.max(0, Math.floor(Number(data.dailyMinutes?.[key]) || 0)),
+        plays: Math.max(0, Math.floor(Number(data.dailyPlays?.[key]) || 0)),
+      };
+    });
+    const peakHours = Array.from({ length: 24 }, (_, hour) => ({
+      hour,
+      label: hour === 0 ? '12A' : hour === 12 ? '12P' : hour > 12 ? `${hour - 12}P` : `${hour}A`,
+      count: Math.max(0, Math.floor(Number(data.hourlyTrends?.[hour]) || 0)),
+    }));
+    const topArtists = Object.entries(data.artists || {})
+      .sort((left, right) => {
+        const countDiff = Math.max(0, Math.floor(Number(right[1]?.count) || 0)) - Math.max(0, Math.floor(Number(left[1]?.count) || 0));
+        if (countDiff !== 0) return countDiff;
+        return Math.max(0, Math.floor(Number(right[1]?.totalMs) || 0)) - Math.max(0, Math.floor(Number(left[1]?.totalMs) || 0));
+      })
+      .slice(0, 6);
+    const topTracks = Object.entries(data.tracks || {})
+      .sort((left, right) => {
+        const countDiff = Math.max(0, Math.floor(Number(right[1]?.count) || 0)) - Math.max(0, Math.floor(Number(left[1]?.count) || 0));
+        if (countDiff !== 0) return countDiff;
+        return Math.max(0, Math.floor(Number(right[1]?.totalMs) || 0)) - Math.max(0, Math.floor(Number(left[1]?.totalMs) || 0));
+      })
+      .slice(0, 8);
+    const genreMix = Object.entries(data.genres || {})
+      .sort((left, right) => Math.max(0, Math.floor(Number(right[1]) || 0)) - Math.max(0, Math.floor(Number(left[1]) || 0)))
+      .slice(0, 6);
+    const recentSessions = Array.isArray(data.recentSessions) ? data.recentSessions.slice(0, 6) : [];
+    const weekMaxMs = Math.max(1, ...recentWeek.map((entry) => entry.minutesMs));
+    const peakHourMax = Math.max(1, ...peakHours.map((entry) => entry.count));
+    const topWindow = [...peakHours].sort((left, right) => right.count - left.count).filter((entry) => entry.count > 0).slice(0, 3);
+
+    return {
+      data,
+      totalTracksPlayed,
+      totalMs,
+      totalSessions: Math.max(0, Math.floor(Number(data.totalSessions) || totalTracksPlayed)),
+      activeDays: recentWeek.filter((entry) => entry.minutesMs > 0 || entry.plays > 0).length,
+      recentWeek,
+      weekMaxMs,
+      peakHours,
+      peakHourMax,
+      topArtists,
+      topTracks,
+      genreMix,
+      recentSessions,
+      topWindow,
+    };
+  }, [soundCapsuleData]);
+
   if (loading) return (
     <div className="h-screen w-full bg-[#0a0a0a] flex flex-col items-center justify-center gap-6 p-6 text-center">
       <div className="relative">
@@ -6012,49 +6986,150 @@ function App() {
       <div className="w-full max-w-md rounded-3xl border border-white/10 bg-black/70 backdrop-blur-2xl p-6 md:p-8">
         <div className="flex items-center gap-3 mb-5">
           <div className="w-10 h-10 rounded-2xl bg-brand-accent/15 border border-brand-accent/30 flex items-center justify-center text-brand-accent">
-            <Lock size={18} />
+            {isRecoveryMode ? <ShieldAlert size={18} /> : <Lock size={18} />}
           </div>
           <div>
-            <div className="text-sm font-black text-brand-accent uppercase tracking-[0.22em]">Aether Locked</div>
-            <div className="text-[11px] text-white/45 mt-1">Unlock to access your studio.</div>
+            <div className="text-sm font-black text-brand-accent uppercase tracking-[0.22em]">
+              {isRecoveryMode ? 'Recovery Mode' : 'Aether Locked'}
+            </div>
+            <div className="text-[11px] text-white/45 mt-1">
+              {isRecoveryMode ? 'Use your master recovery key or mobile authenticator code to disable the lock.' : 'Unlock to access your studio.'}
+            </div>
           </div>
         </div>
 
-        <div className="space-y-3">
-          <input
-            type="password"
-            value={unlockPasswordInput}
-            onChange={(e) => setUnlockPasswordInput(e.target.value)}
-            placeholder="Enter password"
-            className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5 text-sm text-white outline-none focus:border-brand-accent/50"
-            onKeyDown={(e) => { if (e.key === 'Enter') handleUnlockWithPassword(); }}
-          />
+        <div className="space-y-4">
+          {!isRecoveryMode ? (
+            <>
+              <input
+                type="password"
+                value={unlockPasswordInput}
+                onChange={(e) => setUnlockPasswordInput(e.target.value)}
+                placeholder="Enter password"
+                className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5 text-sm text-white outline-none focus:border-brand-accent/50"
+                onKeyDown={(e) => { if (e.key === 'Enter') handleUnlockWithPassword(); }}
+              />
 
-          {lockError && <div className="text-[11px] text-red-400">{lockError}</div>}
+              {lockError && <div className="text-[11px] text-red-400 font-medium">{lockError}</div>}
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleUnlockWithPassword}
-              disabled={isLockBusy || !unlockPasswordInput}
-              className="flex-1 rounded-xl bg-brand-accent text-black font-black py-2.5 text-sm disabled:opacity-50"
-            >
-              Unlock
-            </button>
-            {lockStatus.touchIdAvailable && lockStatus.touchIdEnabled && (
-              <button
-                onClick={handleUnlockWithBiometric}
-                disabled={isLockBusy}
-                className="rounded-xl border border-white/15 bg-white/5 text-white px-3 py-2.5 hover:text-brand-accent transition-colors"
-                title="Unlock with Touch ID"
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleUnlockWithPassword}
+                  disabled={isLockBusy || !unlockPasswordInput}
+                  className="flex-1 rounded-xl bg-brand-accent text-black font-black py-2.5 text-sm disabled:opacity-50 transition-all active:scale-[0.98]"
+                >
+                  Unlock
+                </button>
+                {lockStatus.touchIdAvailable && lockStatus.touchIdEnabled && (
+                  <button
+                    onClick={handleUnlockWithBiometric}
+                    disabled={isLockBusy}
+                    className="rounded-xl border border-white/15 bg-white/5 text-white px-3 py-2.5 hover:text-brand-accent transition-colors"
+                    title="Unlock with Touch ID"
+                  >
+                    <Fingerprint size={16} />
+                  </button>
+                )}
+              </div>
+
+              <button 
+                onClick={() => {
+                  setIsRecoveryMode(true);
+                  setRecoveryMethod(lockStatus.recoveryOtpEnabled ? 'otp' : 'key');
+                  setRecoveryKeyInput('');
+                  setRecoveryOtpInput('');
+                  setLockError('');
+                }}
+                className="w-full text-center text-[10px] uppercase tracking-[0.16em] text-white/25 hover:text-white/50 transition-colors py-2"
               >
-                <Fingerprint size={16} />
+                Forgot password?
               </button>
-            )}
-          </div>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.03] p-1">
+                <button
+                  onClick={() => { setRecoveryMethod('key'); setLockError(''); }}
+                  className={`flex-1 rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${recoveryMethod === 'key' ? 'bg-brand-accent text-black' : 'text-white/45 hover:text-white'}`}
+                >
+                  Master Key
+                </button>
+                {lockStatus.recoveryOtpEnabled && (
+                  <button
+                    onClick={() => { setRecoveryMethod('otp'); setLockError(''); }}
+                    className={`flex-1 rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${recoveryMethod === 'otp' ? 'bg-brand-accent text-black' : 'text-white/45 hover:text-white'}`}
+                  >
+                    Mobile OTP
+                  </button>
+                )}
+              </div>
+
+              {recoveryMethod === 'otp' && lockStatus.recoveryOtpEnabled ? (
+                <div className="relative">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={recoveryOtpInput}
+                    onChange={(e) => setRecoveryOtpInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="123456"
+                    className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-3 py-3 text-sm text-white font-mono outline-none focus:border-brand-accent/50"
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleRecoveryOtpLock(); }}
+                  />
+                  <div className="absolute right-3 top-3.5 text-white/20">
+                    <Fingerprint size={14} />
+                  </div>
+                </div>
+              ) : (
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={recoveryKeyInput}
+                    onChange={(e) => setRecoveryKeyInput(e.target.value.toUpperCase())}
+                    placeholder="AETH-XXXX-XXXX-XXXX"
+                    className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-3 py-3 text-sm text-white font-mono outline-none focus:border-brand-accent/50"
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleRecoveryLock(); }}
+                  />
+                  <div className="absolute right-3 top-3.5 text-white/20">
+                    <Key size={14} />
+                  </div>
+                </div>
+              )}
+
+              {lockError && <div className="text-[11px] text-red-400 font-medium">{lockError}</div>}
+
+              <div className="flex flex-col gap-2">
+                <button
+                  onClick={recoveryMethod === 'otp' ? handleRecoveryOtpLock : handleRecoveryLock}
+                  disabled={isLockBusy || (recoveryMethod === 'otp' ? !recoveryOtpInput : !recoveryKeyInput)}
+                  className="w-full rounded-xl bg-white text-black font-black py-2.5 text-sm disabled:opacity-50 transition-all active:scale-[0.98]"
+                >
+                  {recoveryMethod === 'otp' ? 'Verify OTP & Disable Lock' : 'Reset & Disable Lock'}
+                </button>
+                <button
+                  onClick={() => {
+                    setIsRecoveryMode(false);
+                    setRecoveryMethod('key');
+                    setRecoveryKeyInput('');
+                    setRecoveryOtpInput('');
+                    setLockError('');
+                  }}
+                  className="w-full rounded-xl border border-white/10 bg-white/[0.03] text-white/50 py-2.5 text-sm hover:text-white transition-colors"
+                >
+                  Back to Login
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>
   );
+
+  const trackProgressAccent = trackPalette.progressAccent || themeColor;
+  const trackProgressGlow = trackPalette.progressGlow || `rgba(0, 255, 191, 0.42)`;
+  const trackControlAccent = trackPalette.controlAccent || themeColor;
+  const trackControlGlow = trackPalette.controlGlow || `rgba(0, 255, 191, 0.38)`;
+  const trackControlSurface = trackPalette.controlSurface || 'rgba(12, 18, 22, 0.78)';
 
   if (isMiniPlayer) {
     const miniDurationMs = currentTrack?.totalDurationMs || currentTrack?.duration || 0;
@@ -6203,7 +7278,7 @@ function App() {
                           >
                             <div
                               className="absolute inset-y-0 left-0 rounded-full transition-all"
-                              style={{ width: `${miniProgressSafePct}%`, background: themeColor, boxShadow: `0 0 10px ${themeColor}88` }}
+                              style={{ width: `${miniProgressSafePct}%`, background: trackProgressAccent, boxShadow: `0 0 14px ${trackProgressGlow}` }}
                             />
                           </div>
                           <div className="flex items-center justify-between gap-3 text-[9px] font-mono text-white/36">
@@ -6224,8 +7299,8 @@ function App() {
                         </button>
                         <button
                           onClick={() => handleControl(isPlaying ? 'pause' : 'resume')}
-                          className="flex h-12 w-12 items-center justify-center rounded-[1.1rem] text-black shadow-[0_0_18px_rgba(0,255,191,0.34)] transition-all hover:scale-[1.03] active:scale-95"
-                          style={{ background: themeColor }}
+                          className="flex h-12 w-12 items-center justify-center rounded-[1.1rem] text-black transition-all hover:scale-[1.03] active:scale-95"
+                          style={{ background: trackControlAccent, boxShadow: `0 0 22px ${trackControlGlow}` }}
                           title={isPlaying ? 'Pause' : 'Play'}
                         >
                           {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="ml-0.5" />}
@@ -6282,13 +7357,22 @@ function App() {
   }
 
   const isAuraMode = visualizerMode === 'pulse';
+  const isFullBleedOverlayActive = isLyricsExpanded || videoMode === 'cinema';
+  const auraViewportArea = viewportSize.width * viewportSize.height;
+  const isAuraLite = isAuraMode && (
+    isVerticalStack
+    || isFullBleedOverlayActive
+    || viewportSize.width < 1580
+    || viewportSize.height < 940
+    || auraViewportArea < 1500000
+  );
   const headerZClass = videoMode === 'cinema' ? 'z-[120]' : 'z-[220]';
   const headerInsetClass = isMacPlatform ? 'pl-20' : 'pl-4';
   const topHeaderClass = isAuraMode
-    ? `h-[72px] border-b border-white/[0.12] bg-[#07090c]/72 backdrop-blur-3xl shadow-[0_10px_40px_rgba(0,0,0,0.35)] ${headerZClass} px-4 md:px-6 ${headerInsetClass} flex flex-row items-center justify-between gap-4 drag flex-none relative`
-    : `h-[72px] border-b border-white/8 bg-[#0a0f12]/86 backdrop-blur-3xl ${headerZClass} px-4 md:px-6 ${headerInsetClass} flex flex-row items-center justify-between gap-4 drag flex-none relative`;
+    ? `h-[68px] border-b border-white/[0.12] bg-[#07090c]/72 ${isAuraLite ? 'backdrop-blur-xl shadow-[0_10px_28px_rgba(0,0,0,0.28)]' : 'backdrop-blur-3xl shadow-[0_10px_40px_rgba(0,0,0,0.35)]'} ${headerZClass} px-4 md:px-6 ${headerInsetClass} flex flex-row items-center justify-between gap-3 drag flex-none relative`
+    : `h-[68px] border-b border-white/8 bg-[#0a0f12]/86 backdrop-blur-3xl ${headerZClass} px-4 md:px-6 ${headerInsetClass} flex flex-row items-center justify-between gap-3 drag flex-none relative`;
   const panelGlassClass = isAuraMode
-    ? 'bg-white/[0.015] border-white/[0.12] backdrop-blur-[26px] shadow-[0_20px_80px_rgba(0,0,0,0.28)]'
+    ? `bg-white/[0.015] border-white/[0.12] ${isAuraLite ? 'backdrop-blur-[14px] shadow-[0_14px_38px_rgba(0,0,0,0.22)]' : 'backdrop-blur-[26px] shadow-[0_20px_80px_rgba(0,0,0,0.28)]'}`
     : 'bg-white/[0.03] border-white/5';
   const panelHeaderClass = isAuraMode
     ? 'bg-white/[0.03]'
@@ -6300,18 +7384,35 @@ function App() {
     ? clamp01((vaultPulse.energy * 0.9) + (vaultPulse.bass * 0.45) + (vaultPulse.highs * 0.12))
     : 0;
   const auraCardShadow = isAuraMode
-    ? `0 24px 60px rgba(0,0,0,0.30), inset 0 0 ${10 + immersiveBeatIntensity * 30}px rgba(0,255,191,${0.06 + immersiveBeatIntensity * 0.24})`
+    ? isAuraLite
+      ? `0 18px 42px rgba(0,0,0,0.26), inset 0 0 ${8 + immersiveBeatIntensity * 18}px rgba(0,255,191,${0.04 + immersiveBeatIntensity * 0.14})`
+      : `0 24px 60px rgba(0,0,0,0.30), inset 0 0 ${10 + immersiveBeatIntensity * 30}px rgba(0,255,191,${0.06 + immersiveBeatIntensity * 0.24})`
     : undefined;
   const auraPanelShadow = isAuraMode
-    ? `0 12px 30px rgba(0,0,0,0.24), inset 0 0 ${6 + immersiveBeatIntensity * 18}px rgba(0,255,191,${0.05 + immersiveBeatIntensity * 0.18})`
+    ? isAuraLite
+      ? `0 10px 22px rgba(0,0,0,0.20), inset 0 0 ${4 + immersiveBeatIntensity * 12}px rgba(0,255,191,${0.04 + immersiveBeatIntensity * 0.11})`
+      : `0 12px 30px rgba(0,0,0,0.24), inset 0 0 ${6 + immersiveBeatIntensity * 18}px rgba(0,255,191,${0.05 + immersiveBeatIntensity * 0.18})`
     : undefined;
-  const auraCardBorder = isAuraMode ? `rgba(130, 255, 221, ${0.16 + immersiveBeatIntensity * 0.20})` : undefined;
-  const auraPanelBorder = isAuraMode ? `rgba(130, 255, 221, ${0.11 + immersiveBeatIntensity * 0.16})` : undefined;
+  const auraCardBorder = isAuraMode
+    ? `rgba(130, 255, 221, ${isAuraLite ? 0.12 + immersiveBeatIntensity * 0.14 : 0.16 + immersiveBeatIntensity * 0.20})`
+    : undefined;
+  const auraPanelBorder = isAuraMode
+    ? `rgba(130, 255, 221, ${isAuraLite ? 0.09 + immersiveBeatIntensity * 0.10 : 0.11 + immersiveBeatIntensity * 0.16})`
+    : undefined;
+
+  const headerIconButtonClass = 'no-drag flex h-10 w-10 items-center justify-center rounded-2xl border border-white/12 bg-white/[0.045] text-white/54 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition-all hover:-translate-y-[1px] hover:border-brand-accent/38 hover:bg-brand-accent/[0.08] hover:text-brand-accent';
+  const headerAccentButtonClass = 'no-drag flex h-10 w-10 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/[0.08] text-brand-accent shadow-[0_0_18px_rgba(0,255,191,0.14)] transition-all hover:-translate-y-[1px] hover:border-brand-accent/55 hover:bg-brand-accent/[0.14]';
+  const panelActionIconButtonClass = 'flex h-10 w-10 items-center justify-center rounded-2xl border border-white/12 bg-white/[0.045] text-white/58 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition-all hover:-translate-y-[1px] hover:border-brand-accent/35 hover:bg-brand-accent/[0.08] hover:text-brand-accent disabled:opacity-40 disabled:cursor-not-allowed';
+  const studioPanelActionButtonClass = 'flex h-8 w-8 items-center justify-center rounded-xl border border-white/10 bg-black/20 text-white/58 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] transition-all hover:-translate-y-[1px] hover:border-brand-accent/36 hover:bg-brand-accent/[0.09] hover:text-brand-accent disabled:opacity-40 disabled:cursor-not-allowed';
+  const panelActionPillClass = 'flex h-10 items-center justify-center gap-2 rounded-2xl border border-white/12 bg-white/[0.045] px-3.5 text-[9px] font-black uppercase tracking-[0.18em] text-white/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition-all hover:-translate-y-[1px] hover:border-brand-accent/35 hover:bg-brand-accent/[0.08] hover:text-brand-accent disabled:opacity-40 disabled:cursor-not-allowed';
+  const diagnosticsActionButtonClass = 'inline-flex h-9 items-center justify-center gap-2 rounded-2xl border border-white/12 bg-white/[0.045] px-3.5 text-[10px] font-black uppercase tracking-[0.16em] text-white/72 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition-all hover:-translate-y-[1px] hover:border-brand-accent/35 hover:bg-brand-accent/[0.08] hover:text-brand-accent disabled:opacity-60 disabled:cursor-not-allowed';
+  const diagnosticsCopyButtonClass = 'mt-2 inline-flex items-center rounded-xl border border-white/12 bg-white/[0.045] px-2.5 py-1.5 text-[9px] font-black uppercase tracking-[0.14em] text-white/68 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition-all hover:-translate-y-[1px] hover:border-brand-accent/30 hover:bg-brand-accent/[0.08] hover:text-brand-accent';
+  const playerMetaActionButtonClass = 'flex h-9 w-9 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/46 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition-all hover:-translate-y-[1px] hover:border-brand-accent/30 hover:bg-brand-accent/[0.08] hover:text-brand-accent disabled:opacity-25 disabled:cursor-not-allowed';
   const auraPresetConfig = AURA_PRESETS.find((preset) => preset.id === auraPreset) || AURA_PRESETS[1];
   const doodlePresetConfig = DOODLE_PRESETS.find((preset) => preset.id === doodleIntensity) || DOODLE_PRESETS[1];
   const auraFieldStyle = isAuraMode ? {
-    '--aura-field-boost': String(clamp01((0.22 + immersiveBeatIntensity * 0.78) * auraPresetConfig.fieldBoost)),
-    '--aura-field-flare': String(clamp01((0.18 + immersiveBeatIntensity * 0.46) * auraPresetConfig.fieldFlare)),
+    '--aura-field-boost': String(clamp01((0.16 + immersiveBeatIntensity * (isAuraLite ? 0.52 : 0.78)) * auraPresetConfig.fieldBoost * (isAuraLite ? 0.76 : 1))),
+    '--aura-field-flare': String(clamp01((0.12 + immersiveBeatIntensity * (isAuraLite ? 0.24 : 0.46)) * auraPresetConfig.fieldFlare * (isAuraLite ? 0.52 : 1))),
     '--aura-field-drift': `${(8 + immersiveBeatIntensity * 18).toFixed(2)}px`,
   } : undefined;
   const diagnosticsApiBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
@@ -6382,11 +7483,22 @@ function App() {
       : 'FFmpeg is not resolved yet.';
   const showVisualStage = Boolean(isStandalone && currentTrack && videoMode);
   const showImmersiveLyricsOverlay = Boolean(isLyricsExpanded && !showVisualStage);
-  const showWindowsTitleStrip = Boolean(isStandalone && isWindowsPlatform && !isMaximized && !showImmersiveLyricsOverlay);
-  const showWindowsHeaderWindowControls = Boolean(isStandalone && isWindowsPlatform && isMaximized && !showImmersiveLyricsOverlay);
-  const desktopTopInsetClass = showImmersiveLyricsOverlay
+  const showWindowsTitleStrip = Boolean(isStandalone && isWindowsPlatform && !isMaximized && !isFullBleedOverlayActive);
+  const desktopTopInsetClass = isFullBleedOverlayActive
     ? 'pt-0'
     : windowChromeInsetClass;
+  const trimmedSearchQuery = searchQuery.trim();
+  const isSearchActive = trimmedSearchQuery.length > 0;
+  const shouldShowSearchResults = isSearchActive && (isSearching || searchResults.length > 0 || hasCompletedSearch);
+  const activeDiscoveryTracks = shouldShowSearchResults ? searchResults : neuralRecommendations;
+  const hasActiveSearchState = Boolean(trimmedSearchQuery || searchResults.length > 0 || hasCompletedSearch);
+  const discoveryCountLabel = shouldShowSearchResults
+    ? `${searchResults.length} result${searchResults.length === 1 ? '' : 's'}`
+    : `${neuralRecommendations.length} recommendation${neuralRecommendations.length === 1 ? '' : 's'}`;
+  const smartMixHint = smartMixPlan.tracks.length > 0
+    ? `${smartMixPlan.tracks.length} picks • ${Math.max(smartMixPlan.artistCount, 1)} artists`
+    : 'Need more saved tracks';
+  const vaultNodeCount = orderedPlaylistNames.length;
   const diagnosticPathBlockClass = 'mt-2 rounded-xl border border-white/8 bg-black/25 px-2.5 py-2 text-[10px] leading-4 font-mono text-white/55 whitespace-pre-wrap break-all';
   const repairActionLabel = isRuntimeRepairing ? 'Repairing…' : 'Repair Runtime';
   const doodleIntensityScale = doodleIntensity === 'subtle' ? 0.75 : doodleIntensity === 'dreamy' ? 1.35 : 1;
@@ -6419,10 +7531,13 @@ function App() {
   const leftWorkspaceClass = isVerticalStack
     ? '!w-full !max-w-full !flex-none'
     : showSecondaryColumn
-      ? 'w-[66.666%] h-full'
+      ? 'flex-1 h-full'
       : isFocusedMode
         ? 'w-full px-0 max-w-[1480px] mx-auto'
         : 'w-full px-0';
+  const secondaryColumnClass = isVerticalStack
+    ? '!w-full !max-w-full !flex-none pb-20'
+    : 'w-[clamp(300px,36vw,460px)] h-full overflow-hidden flex-none';
   const playerCardClass = isDualWorkspaceMode
     ? 'p-5 md:p-6 gap-6 md:gap-8 min-h-[248px] lg:min-h-[266px]'
     : 'p-6 md:p-8 gap-8 md:gap-10 min-h-[300px]';
@@ -6438,13 +7553,13 @@ function App() {
   const sharedModalCloseButtonClass = 'w-10 h-10 rounded-xl border border-white/15 bg-white/[0.03] text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center';
 
   return (
-    <div className={`fixed inset-0 bg-transparent selection:bg-brand-accent selection:text-brand-dark flex flex-col h-screen overflow-hidden relative isolate ${desktopTopInsetClass} ${isVerticalStack ? 'vertical-stack-mode' : ''} ${isDoodleMode ? `doodle-mode-active doodle-preset-${doodleIntensity}` : ''} ${isAuraMode ? `aura-mode-active aura-preset-${auraPreset}` : ''}`} style={auraFieldStyle}>
+    <div className={`fixed inset-0 bg-transparent selection:bg-brand-accent selection:text-brand-dark flex flex-col h-screen overflow-hidden relative isolate ${desktopTopInsetClass} ${isVerticalStack ? 'vertical-stack-mode' : ''} ${isDoodleMode ? `doodle-mode-active doodle-preset-${doodleIntensity}` : ''} ${isAuraMode ? `aura-mode-active aura-preset-${auraPreset}${isAuraLite ? ' aura-mode-lite' : ''}` : ''}`} style={auraFieldStyle}>
       <div className="fixed inset-0 bg-[#050505] z-[-2]" />
       {/* Background Mesh (Absolute to avoid flex interference) */}
-      <div className="absolute inset-0 bg-mesh pointer-events-none z-[-1]" />
+      <div className="absolute inset-0 bg-mesh pointer-events-none z-[-1]" style={isAuraLite ? { opacity: 0.08 } : undefined} />
 
       {showWindowsTitleStrip && (
-        <div className="fixed inset-x-0 top-0 z-[260] h-[34px] border-b border-white/8 bg-[#0a0f12]/92 backdrop-blur-3xl drag">
+        <div className="fixed inset-x-0 top-0 z-[260] h-[34px] border-b border-white/8 bg-[#0a0f12]/92 backdrop-blur-3xl drag" onDoubleClick={handleHeaderDoubleClick} title={isStandalone ? 'Double-click header chrome to maximize or restore' : undefined}>
           <div className="flex h-full items-center px-4 pr-[140px] select-none">
             <div className="flex items-center gap-2">
               <div className="h-1.5 w-1.5 rounded-full bg-brand-accent/65 shadow-[0_0_14px_rgba(0,255,191,0.4)]" />
@@ -6464,19 +7579,19 @@ function App() {
             <motion.div 
               key={currentTrack.thumbnail}
               initial={{ opacity: 0 }}
-              animate={{ opacity: 0.15 }}
+              animate={{ opacity: isAuraMode ? (isAuraLite ? 0.08 : 0.15) : 0.15 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 2 }}
-              className="absolute inset-0 bg-center bg-cover scale-110 blur-[120px]"
+              className={`absolute inset-0 bg-center bg-cover ${isAuraLite ? 'scale-105 blur-[64px]' : 'scale-110 blur-[120px]'}`}
               style={{ backgroundImage: `url(${getProxyUrl(currentTrack.thumbnail)})` }}
             />
           ) : (
             <motion.div 
               key="standby-backdrop"
               initial={{ opacity: 0 }}
-              animate={{ opacity: 0.05 }}
+              animate={{ opacity: isAuraLite ? 0.03 : 0.05 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-gradient-to-br from-brand-accent/20 via-transparent to-brand-accent/10 blur-[150px]"
+              className={`absolute inset-0 bg-gradient-to-br from-brand-accent/20 via-transparent to-brand-accent/10 ${isAuraLite ? 'blur-[80px]' : 'blur-[150px]'}`}
             />
           )}
         </AnimatePresence>
@@ -6485,8 +7600,14 @@ function App() {
       </div>
 
       <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
-         <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-brand-accent/5 blur-[100px] rounded-full animate-pulse-glow" />
-         <div className="absolute bottom-[-5%] right-[-5%] w-[40%] h-[40%] bg-brand-accent/10 blur-[80px] rounded-full animate-pulse-glow" style={{ animationDelay: '2s' }} />
+         {isAuraLite ? (
+           <div className="absolute inset-x-[12%] top-[8%] h-[32%] rounded-full bg-brand-accent/[0.045] blur-[58px]" />
+         ) : (
+           <>
+             <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-brand-accent/5 blur-[100px] rounded-full animate-pulse-glow" />
+             <div className="absolute bottom-[-5%] right-[-5%] w-[40%] h-[40%] bg-brand-accent/10 blur-[80px] rounded-full animate-pulse-glow" style={{ animationDelay: '2s' }} />
+           </>
+         )}
       </div>
 
       {isDoodleMode && (
@@ -6510,8 +7631,12 @@ function App() {
           <div className="aura-field-tone aura-field-tone-right" style={{ opacity: 'calc(var(--aura-field-flare, 0) * 0.48)' }} />
           <div className="aura-field-core aura-field-core-a" style={{ opacity: 'var(--aura-field-boost, 0)' }} />
           <div className="aura-field-core aura-field-core-b" style={{ opacity: 'calc(var(--aura-field-boost, 0) * 0.82)' }} />
-          <div className="aura-field-ribbon aura-field-ribbon-a" style={{ opacity: 'var(--aura-field-flare, 0)' }} />
-          <div className="aura-field-ribbon aura-field-ribbon-b" style={{ opacity: 'calc(var(--aura-field-flare, 0) * 0.92)' }} />
+          {!isAuraLite && (
+            <>
+              <div className="aura-field-ribbon aura-field-ribbon-a" style={{ opacity: 'var(--aura-field-flare, 0)' }} />
+              <div className="aura-field-ribbon aura-field-ribbon-b" style={{ opacity: 'calc(var(--aura-field-flare, 0) * 0.92)' }} />
+            </>
+          )}
           <div className="aura-field-orbits">
             {[
               ['18%', '12%', '7s', '1.2s', '16px'],
@@ -6519,7 +7644,7 @@ function App() {
               ['48%', '78%', '11s', '0s', '22px'],
               ['12%', '68%', '13s', '2.2s', '10px'],
               ['86%', '58%', '10s', '4.1s', '14px'],
-            ].map(([left, top, duration, delay, size], index) => (
+            ].slice(0, isAuraLite ? 3 : 5).map(([left, top, duration, delay, size], index) => (
               <span
                 key={`aura-orbit-${index}`}
                 className="aura-field-orbit"
@@ -6527,286 +7652,275 @@ function App() {
               />
             ))}
           </div>
-          <div className="aura-field-particles">
-            {[
-              ['9%', '18%', '12s', '0s'],
-              ['24%', '72%', '14s', '2.5s'],
-              ['41%', '24%', '11s', '1.1s'],
-              ['58%', '66%', '16s', '4s'],
-              ['77%', '32%', '13s', '3.1s'],
-              ['91%', '78%', '18s', '0.7s'],
-            ].map(([left, top, duration, delay], index) => (
-              <span
-                key={`aura-particle-${index}`}
-                className="aura-field-particle"
-                style={{ left, top, animationDuration: duration, animationDelay: delay }}
-              />
-            ))}
-          </div>
+          {!isAuraLite && (
+            <div className="aura-field-particles">
+              {[
+                ['9%', '18%', '12s', '0s'],
+                ['24%', '72%', '14s', '2.5s'],
+                ['41%', '24%', '11s', '1.1s'],
+                ['58%', '66%', '16s', '4s'],
+                ['77%', '32%', '13s', '3.1s'],
+                ['91%', '78%', '18s', '0.7s'],
+              ].map(([left, top, duration, delay], index) => (
+                <span
+                  key={`aura-particle-${index}`}
+                  className="aura-field-particle"
+                  style={{ left, top, animationDuration: duration, animationDelay: delay }}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
 
       {/* APP HEADER */}
       {!showImmersiveLyricsOverlay && (
-      <header className={topHeaderClass}>
-        <div className="flex min-w-0 items-center gap-3 lg:min-w-[250px]">
-          <div className="relative flex h-11 w-11 items-center justify-center overflow-hidden rounded-[1.35rem] border border-brand-accent/25 bg-white/[0.04] shadow-[0_0_28px_rgba(0,255,191,0.08)] no-drag">
-            <img src="aether-logo.png" alt="Aether" className="h-6 w-6 object-contain" onError={(e) => e.target.src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiMwMGZmYmYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cG9seWdvbiBwb2ludHM9IjEzIDIgMyAxNCAxMiAxNCAxMSAyMiAyMSAxMCAxMiAxMCAxMyAyIj48L3BvbHlnb24+PC9zdmc+'} />
-            <div className="absolute inset-0 bg-brand-accent/6 opacity-70" />
-          </div>
-
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] font-black uppercase tracking-[0.08em] text-white/92">Aether</span>
-              <span className="rounded-full border border-brand-accent/30 bg-brand-accent/10 px-1.5 py-[2px] text-[7px] font-black uppercase tracking-[0.18em] text-brand-accent/80">
-                {BUILD_VERSION}
-              </span>
-              <span className="rounded-full border border-white/10 bg-white/[0.03] px-1.5 py-[2px] text-[7px] font-black uppercase tracking-[0.18em] text-white/45">
-                beta
-              </span>
+        <header className={topHeaderClass} onDoubleClick={handleHeaderDoubleClick} title={isStandalone ? 'Double-click the header background to maximize or restore' : undefined}>
+          <div className="flex min-w-0 items-center gap-3 lg:min-w-[220px]">
+            <div className="relative flex h-11 w-11 items-center justify-center overflow-hidden rounded-[1.35rem] border border-brand-accent/25 bg-white/[0.04] shadow-[0_0_28px_rgba(0,255,191,0.08)]">
+              <img src="aether-logo.png" alt="Aether" className="h-6 w-6 object-contain" onError={(e) => e.target.src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiMwMGZmYmYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cG9seWdvbiBwb2ludHM9IjEzIDIgMyAxNCAxMiAxNCAxMSAyMiAyMSAxMCAxMiAxMCAxMyAyIj48L3BvbHlnb24+PC9zdmc+'} />
+              <div className="absolute inset-0 bg-brand-accent/6 opacity-70" />
             </div>
-            <div className="mt-1 flex min-w-0 items-center gap-2 text-[8px] font-black uppercase tracking-[0.22em] text-white/38">
-              <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-white/52">{workspaceModeLabel}</span>
-              <span className="truncate text-brand-accent/70">{playbackModeLabel}</span>
+
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-black uppercase tracking-[0.08em] text-white/92">Aether</span>
+                <span className="rounded-full border border-brand-accent/30 bg-brand-accent/10 px-1.5 py-[2px] text-[7px] font-black uppercase tracking-[0.18em] text-brand-accent/80">
+                  {BUILD_VERSION}
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/[0.03] px-1.5 py-[2px] text-[7px] font-black uppercase tracking-[0.18em] text-white/45">
+                  beta
+                </span>
+              </div>
+              <div className="mt-1 flex min-w-0 items-center gap-2 text-[8px] font-black uppercase tracking-[0.22em] text-white/38">
+                <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-white/52">{workspaceModeLabel}</span>
+                <span className="truncate text-brand-accent/70">{playbackModeLabel}</span>
+              </div>
             </div>
           </div>
-        </div>
 
-        <div className="w-full md:flex-1 flex justify-center md:max-w-[760px] md:px-4 lg:px-8 order-3 md:order-2 ultra-compact-hide no-drag">
-            <form onSubmit={handleSearch} className="relative w-full group no-drag">
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-brand-text-dim group-focus-within:text-brand-accent z-10 transition-colors" size={18} />
-              <input 
-                type="text" 
-                placeholder="Search music..." 
-                className={`w-full rounded-full pl-12 pr-12 h-12 text-base md:text-[15px] outline-none transition-all ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/[0.04] border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'} disabled:opacity-30 disabled:cursor-not-allowed`}
-                value={searchQuery}
-                disabled={videoMode === 'dual'}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value);
-                  setHasCompletedSearch(false);
-                }}
-              />
-              {isSearching && <div className="absolute right-5 top-1/2 -translate-y-1/2"><Loader2 className="animate-spin text-brand-accent" size={16} /></div>}
-            </form>
-        </div>
-
-        <div className="flex items-center justify-end gap-2 min-w-fit order-3 no-drag">
-          <button
-            onClick={async () => {
-              if (window.aether?.store) {
-                const data = await window.aether.store.get('sound-capsule');
-                setSoundCapsuleData(data || { tracks: {}, artists: {}, totalMinutes: 0 });
-              }
-              setIsSoundCapsuleOpen(true);
-            }}
-            className="h-10 px-4 rounded-2xl flex items-center justify-center gap-2 transition-all border no-drag bg-white/[0.04] border-brand-accent/20 text-brand-accent hover:bg-brand-accent/20 hover:border-brand-accent/50 shadow-[0_0_15px_rgba(0,255,191,0.15)] group"
-            title="Open Sound Capsule Analytics"
-          >
-            <Activity size={16} className="group-hover:animate-pulse" />
-            <span className="text-[10px] font-black uppercase tracking-[0.2em] hidden md:block">Capsule</span>
-          </button>
-          <button
-            onClick={openShortcutSettings}
-            className="w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag bg-white/[0.04] border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50"
-            title="Shortcut Settings"
-          >
-            <Keyboard size={16} />
-          </button>
-
-          {!hideFirstRunTips && (
+          <div className="hidden lg:flex items-center gap-2 no-drag">
             <button
-              onClick={openTipsOverlay}
-              className="w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag bg-white/[0.04] border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50"
-              title="Tips & Shortcuts"
-            >
-              <AppWindow size={16} />
-            </button>
-          )}
-
-          <button
-            onClick={toggleDiagnostics}
-            className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${isDiagnosticsOpen ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : 'bg-white/[0.04] border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
-            title={isDiagnosticsOpen ? 'Hide Diagnostics' : 'Show Diagnostics'}
-          >
-            <Monitor size={16} />
-          </button>
-
-          <div className="relative" ref={looksPanelRef}>
-            <button
-              onClick={toggleLooksPanel}
-              className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${isLooksPanelOpen ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/[0.04] border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
-              title="Visual presets"
-            >
-              <Sparkles size={14} />
-            </button>
-
-            {isLooksPanelOpen && (
-              <div className="absolute right-0 mt-2 z-[340] w-64 rounded-2xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-3 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
-                <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Visualizer</div>
-                <div className="grid grid-cols-2 gap-1.5 mb-3">
-                  <button
-                    onClick={() => setVisualizerMode('bars')}
-                    className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${visualizerMode === 'bars' ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                  >
-                    Bars
-                  </button>
-                  <button
-                    onClick={() => setVisualizerMode('pulse')}
-                    className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${visualizerMode === 'pulse' ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                  >
-                    Aura
-                  </button>
-                </div>
-
-                <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Aura Preset</div>
-                <div className="grid grid-cols-3 gap-1.5 mb-3">
-                  {AURA_PRESETS.map((preset) => (
-                    <button
-                      key={preset.id}
-                      onClick={() => {
-                        setAuraPreset(preset.id);
-                        setLastAdded(`Aura preset • ${preset.label}`);
-                        setTimeout(() => setLastAdded(null), 1500);
-                      }}
-                      className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${auraPreset === preset.id ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Doodle Preset</div>
-                <div className="grid grid-cols-3 gap-1.5 mb-3">
-                  {DOODLE_PRESETS.map((preset) => (
-                    <button
-                      key={preset.id}
-                      onClick={() => {
-                        setDoodleIntensity(preset.id);
-                        setLastAdded(`Doodle preset • ${preset.label}`);
-                        setTimeout(() => setLastAdded(null), 1500);
-                      }}
-                      className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${doodleIntensity === preset.id ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                    >
-                      {preset.badge}
-                    </button>
-                  ))}
-                </div>
-
-                <button
-                  onClick={() => {
-                    const next = !isDoodleMode;
-                    setIsDoodleMode(next);
-                    setLastAdded(next ? 'Doodle mode enabled' : 'Doodle mode disabled');
-                    setTimeout(() => setLastAdded(null), 1600);
-                  }}
-                  className={`w-full px-3 py-2 rounded-xl border text-[10px] font-black uppercase tracking-[0.14em] transition-colors ${isDoodleMode ? 'bg-brand-accent/15 border-brand-accent/40 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                >
-                  {isDoodleMode ? `Doodle ON • ${doodleIntensityBadge}` : 'Enable Doodle'}
-                </button>
-              </div>
-            )}
-          </div>
-
-          <div className="relative" ref={sleepTimerMenuRef}>
-            <button
-              onClick={toggleSleepTimerMenu}
-              className={`h-10 px-3 rounded-2xl flex items-center gap-2 transition-all border no-drag ${sleepTimerValue > 0 ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/[0.04] border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
-              title={sleepTimerValue > 0 ? `Sleep timer active • ${sleepRemainingStr || `${sleepTimerValue}m`}` : 'Sleep timer'}
-            >
-              <Clock size={14} />
-              <span className="hidden xl:inline text-[10px] font-black uppercase tracking-widest">{sleepTimerValue > 0 ? (sleepRemainingStr || `${sleepTimerValue}m`) : 'Sleep'}</span>
-            </button>
-
-            {isSleepTimerMenuOpen && (
-              <div className="absolute right-0 mt-2 z-[340] w-44 rounded-2xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-2 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
-                {[15, 30, 60, 120].map((minutes) => (
-                  <button
-                    key={`sleep-${minutes}`}
-                    onClick={() => handleSetSleepTimer(minutes)}
-                    className={`w-full text-left px-3 py-2 rounded-xl text-sm transition-colors ${sleepTimerValue === minutes ? 'text-brand-accent bg-brand-accent/10' : 'text-white/75 hover:text-brand-accent hover:bg-white/5'}`}
-                  >
-                    Sleep in {minutes} min
-                  </button>
-                ))}
-                <div className="my-1 border-t border-white/10" />
-                <button
-                  onClick={() => handleSetSleepTimer(0)}
-                  className="w-full text-left px-3 py-2 rounded-xl text-sm text-red-300 hover:bg-red-500/10 transition-colors"
-                >
-                  Turn off
-                </button>
-              </div>
-            )}
-          </div>
-
-          {isStandalone && (
-            <button
-              onClick={() => {
-                closeHeaderSurfaces();
-                setLockError('');
-                setIsLockModalOpen(true);
+              onClick={async () => {
+                const data = await readSoundCapsuleData(true);
+                setSoundCapsuleData(data);
+                setIsSoundCapsuleOpen(true);
               }}
-              className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all border no-drag ${lockStatus.enabled ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/[0.04] border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
-              title="App Lock"
+              className={`${headerAccentButtonClass} group`}
+              title="Open Signal Ledger"
             >
-              <Lock size={16} />
-            </button>
-          )}
-
-          <button
-            onClick={toggleFocusMode}
-            disabled={isDualLayoutLocked}
-            className={`h-10 px-3 rounded-2xl flex items-center gap-2 transition-all border no-drag ${isDualLayoutLocked ? 'bg-white/[0.03] border-white/8 text-white/20 cursor-not-allowed' : isFocusedMode ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : 'bg-white/[0.04] border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/50'}`}
-            title={isDualLayoutLocked ? 'Focus view is locked while Dual View is active' : (isFocusedMode ? 'Exit Focus View' : 'Enter Focus View')}
-          >
-            <Target size={15} />
-            <span className="hidden xl:inline text-[10px] font-black uppercase tracking-[0.18em]">{isFocusedMode ? 'Focus' : 'Focus'}</span>
-          </button>
-
-          <div className={`hidden md:flex items-center gap-1 rounded-2xl border p-1 no-drag ${isDualLayoutLocked ? 'border-white/8 bg-white/[0.03]' : 'border-white/10 bg-white/[0.04]'}`} title={isDualLayoutLocked ? 'Layout switching is unavailable while Dual View is active' : 'Workspace layout'}>
-            <button
-              onClick={() => setIsVerticalStack(false)}
-              disabled={isDualLayoutLocked}
-              className={`rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${!isVerticalStack ? 'bg-brand-accent text-black shadow-[0_0_16px_rgba(0,255,191,0.28)]' : isDualLayoutLocked ? 'text-white/20 cursor-not-allowed' : 'text-white/45 hover:text-brand-accent'}`}
-            >
-              Studio
+              <Activity size={16} className="group-hover:animate-pulse" />
             </button>
             <button
-              onClick={() => setIsVerticalStack(true)}
-              disabled={isDualLayoutLocked}
-              className={`rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${isVerticalStack ? 'bg-brand-accent text-black shadow-[0_0_16px_rgba(0,255,191,0.28)]' : isDualLayoutLocked ? 'text-white/20 cursor-not-allowed' : 'text-white/45 hover:text-brand-accent'}`}
+              onClick={openShortcutSettings}
+              className={headerIconButtonClass}
+              title="Shortcut Settings"
             >
-              Stack
+              <Keyboard size={16} />
             </button>
+            <button
+              onClick={toggleDiagnostics}
+              className={`${headerIconButtonClass} ${isDiagnosticsOpen ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : ''}`}
+              title={isDiagnosticsOpen ? 'Hide Diagnostics' : 'Show Diagnostics'}
+            >
+              <Monitor size={16} />
+            </button>
+
+            <div className="relative" ref={looksPanelRef}>
+              <button
+                onClick={toggleLooksPanel}
+                className={`${headerIconButtonClass} ${isLooksPanelOpen ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`}
+                title="Visual presets"
+              >
+                <Sparkles size={14} />
+              </button>
+
+              {isLooksPanelOpen && (
+                <div className="absolute left-0 mt-2 z-[340] w-64 rounded-2xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-3 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
+                  <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Visualizer</div>
+                  <div className="grid grid-cols-2 gap-1.5 mb-3">
+                    <button
+                      onClick={() => setVisualizerMode('bars')}
+                      className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${visualizerMode === 'bars' ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                    >
+                      Bars
+                    </button>
+                    <button
+                      onClick={() => setVisualizerMode('pulse')}
+                      className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${visualizerMode === 'pulse' ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                    >
+                      Aura
+                    </button>
+                  </div>
+
+                  <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Aura Preset</div>
+                  <div className="grid grid-cols-3 gap-1.5 mb-3">
+                    {AURA_PRESETS.map((preset) => (
+                      <button
+                        key={preset.id}
+                        onClick={() => {
+                          setAuraPreset(preset.id);
+                          setLastAdded(`Aura preset • ${preset.label}`);
+                          setTimeout(() => setLastAdded(null), 1500);
+                        }}
+                        className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${auraPreset === preset.id ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Doodle Preset</div>
+                  <div className="grid grid-cols-3 gap-1.5 mb-3">
+                    {DOODLE_PRESETS.map((preset) => (
+                      <button
+                        key={preset.id}
+                        onClick={() => {
+                          setDoodleIntensity(preset.id);
+                          setLastAdded(`Doodle preset • ${preset.label}`);
+                          setTimeout(() => setLastAdded(null), 1500);
+                        }}
+                        className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${doodleIntensity === preset.id ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                      >
+                        {preset.badge}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      const next = !isDoodleMode;
+                      setIsDoodleMode(next);
+                      setLastAdded(next ? 'Doodle mode enabled' : 'Doodle mode disabled');
+                      setTimeout(() => setLastAdded(null), 1600);
+                    }}
+                    className={`w-full px-3 py-2 rounded-xl border text-[10px] font-black uppercase tracking-[0.14em] transition-colors ${isDoodleMode ? 'bg-brand-accent/15 border-brand-accent/40 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                  >
+                    {isDoodleMode ? `Doodle ON • ${doodleIntensityBadge}` : 'Enable Doodle'}
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
 
-          {showWindowsHeaderWindowControls && (
-            <div className="ml-1 flex items-center gap-1 rounded-2xl border border-white/10 bg-white/[0.04] p-1 no-drag">
+          <div className="order-3 flex w-full justify-center ultra-compact-hide no-drag md:order-2 md:flex-1 md:max-w-[900px] md:px-4 lg:px-6">
+              <form onSubmit={handleSearch} className="relative w-full group no-drag">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-brand-text-dim group-focus-within:text-brand-accent z-10 transition-colors" size={18} />
+                <input 
+                  type="text" 
+                  placeholder="Search tracks, artists, or paste a YouTube link" 
+                  className={`w-full rounded-full pl-12 pr-36 h-11 text-sm md:text-[14px] outline-none transition-all ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/[0.04] border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'} disabled:opacity-30 disabled:cursor-not-allowed`}
+                  value={searchQuery}
+                  disabled={videoMode === 'dual'}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    setHasCompletedSearch(false);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape' && hasActiveSearchState) {
+                      setSearchQuery('');
+                      clearDiscoveryResults();
+                    }
+                  }}
+                />
+                <div className="absolute right-3 top-1/2 z-10 flex -translate-y-1/2 items-center gap-2">
+                  {isSearchActive && /(youtube\.com|youtu\.be)/i.test(trimmedSearchQuery) && (
+                    <span className="rounded-full border border-brand-accent/22 bg-brand-accent/10 px-2 py-1 text-[8px] font-black uppercase tracking-[0.18em] text-brand-accent/78">
+                      Link
+                    </span>
+                  )}
+                  {isSearching ? (
+                    <Loader2 className="animate-spin text-brand-accent" size={16} />
+                  ) : (
+                    <button
+                      type="submit"
+                      className="flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-white/42 transition-all hover:border-brand-accent/35 hover:bg-brand-accent/[0.08] hover:text-brand-accent"
+                      title="Run search"
+                    >
+                      <Search size={12} />
+                    </button>
+                  )}
+                  {hasActiveSearchState && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchQuery('');
+                        clearDiscoveryResults();
+                      }}
+                      className="flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-white/38 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
+                      title="Clear search"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+              </form>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 min-w-fit order-3 no-drag">
+            <div className="relative" ref={sleepTimerMenuRef}>
               <button
-                onClick={() => window.aether?.minimize?.()}
-                className="flex h-8 w-8 items-center justify-center rounded-xl text-white/45 transition-all hover:bg-white/10 hover:text-white"
-                title="Minimize"
+                onClick={toggleSleepTimerMenu}
+                className={`${headerIconButtonClass} ${sleepTimerValue > 0 ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`}
+                title={sleepTimerValue > 0 ? `Sleep timer active • ${sleepRemainingStr || `${sleepTimerValue}m`}` : 'Sleep timer'}
               >
-                <span className="translate-y-[-1px] text-sm leading-none">-</span>
+                <Clock size={14} />
+              </button>
+
+              {isSleepTimerMenuOpen && (
+                <div className="absolute right-0 mt-2 z-[340] w-44 rounded-2xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-2 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
+                  {[15, 30, 60, 120].map((minutes) => (
+                    <button
+                      key={`sleep-${minutes}`}
+                      onClick={() => handleSetSleepTimer(minutes)}
+                      className={`w-full text-left px-3 py-2 rounded-xl text-sm transition-colors ${sleepTimerValue === minutes ? 'text-brand-accent bg-brand-accent/10' : 'text-white/75 hover:text-brand-accent hover:bg-white/5'}`}
+                    >
+                      Sleep in {minutes} min
+                    </button>
+                  ))}
+                  <div className="my-1 border-t border-white/10" />
+                  <button
+                    onClick={() => handleSetSleepTimer(0)}
+                    className="w-full text-left px-3 py-2 rounded-xl text-sm text-red-300 hover:bg-red-500/10 transition-colors"
+                  >
+                    Turn off
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className={`hidden md:flex items-center gap-1 rounded-[1.15rem] border p-1 no-drag ${isDualLayoutLocked ? 'border-white/8 bg-white/[0.03]' : 'border-white/12 bg-white/[0.04]'}`} title={isDualLayoutLocked ? 'Layout switching is unavailable while Dual View is active' : 'Workspace layout'}>
+              <button
+                onClick={() => setIsVerticalStack(false)}
+                disabled={isDualLayoutLocked}
+                className={`rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${!isVerticalStack ? 'bg-brand-accent text-black shadow-[0_0_16px_rgba(0,255,191,0.28)]' : isDualLayoutLocked ? 'text-white/20 cursor-not-allowed' : 'text-white/45 hover:text-brand-accent'}`}
+              >
+                Studio
               </button>
               <button
-                onClick={toggleWindowMaximize}
-                className="flex h-8 w-8 items-center justify-center rounded-xl text-white/45 transition-all hover:bg-white/10 hover:text-white"
-                title="Restore"
+                onClick={() => setIsVerticalStack(true)}
+                disabled={isDualLayoutLocked}
+                className={`rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${isVerticalStack ? 'bg-brand-accent text-black shadow-[0_0_16px_rgba(0,255,191,0.28)]' : isDualLayoutLocked ? 'text-white/20 cursor-not-allowed' : 'text-white/45 hover:text-brand-accent'}`}
               >
-                <Minimize2 size={12} />
-              </button>
-              <button
-                onClick={() => window.aether?.closeWindow?.()}
-                className="flex h-8 w-8 items-center justify-center rounded-xl text-white/45 transition-all hover:bg-red-500/20 hover:text-red-300"
-                title="Close"
-              >
-                <X size={12} />
+                Stack
               </button>
             </div>
-          )}
-        </div>
-      </header>
+
+            {isStandalone && (
+              <button
+                onClick={() => {
+                  closeHeaderSurfaces();
+                  setLockError('');
+                  setIsLockModalOpen(true);
+                }}
+                className={`${headerIconButtonClass} ${lockStatus.enabled ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`}
+                title="App Lock"
+              >
+                <Lock size={16} />
+              </button>
+            )}
+          </div>
+        </header>
       )}
 
       <AnimatePresence>
@@ -6816,97 +7930,182 @@ function App() {
             className="fixed inset-0 z-[350] flex items-center justify-center p-4 md:p-8"
           >
             <div className="absolute inset-0 bg-black/85 backdrop-blur-2xl" onClick={() => setIsSoundCapsuleOpen(false)} />
-            <div className="w-full max-w-2xl max-h-[88vh] glass-card bg-[#090b0f]/96 border border-brand-accent/20 rounded-[2.2rem] relative z-10 overflow-hidden flex flex-col shadow-[0_28px_100px_rgba(0,0,0,0.55)]">
-               <div className="flex items-center justify-between gap-4 p-5 md:p-6 border-b border-white/8 bg-black/25 backdrop-blur-md">
-                   <div className="flex items-center gap-4 min-w-0">
-                     <div className="w-11 h-11 rounded-2xl bg-brand-accent/10 border border-brand-accent/25 flex items-center justify-center shrink-0">
-                       <Activity size={18} className="text-brand-accent" />
-                     </div>
-                     <div className="min-w-0">
-                       <div className="text-[9px] font-black uppercase tracking-[0.32em] text-white/30">LIFETIME ANALYTICS</div>
-                       <div className="text-xl md:text-2xl font-black uppercase tracking-tight text-brand-accent truncate">Sound Capsule</div>
-                     </div>
-                   </div>
-                   <button onClick={() => setIsSoundCapsuleOpen(false)} className="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close"><X size={18} /></button>
+            <div className="w-full max-w-5xl max-h-[90vh] glass-card bg-[#090b0f]/96 border border-brand-accent/20 rounded-[2.2rem] relative z-10 overflow-hidden flex flex-col shadow-[0_28px_100px_rgba(0,0,0,0.55)]">
+              <div className="flex items-center justify-between gap-4 p-5 md:p-6 border-b border-white/8 bg-black/25 backdrop-blur-md">
+                <div className="flex items-center gap-4 min-w-0">
+                  <div className="w-11 h-11 rounded-2xl bg-brand-accent/10 border border-brand-accent/25 flex items-center justify-center shrink-0">
+                    <Activity size={18} className="text-brand-accent" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-[9px] font-black uppercase tracking-[0.32em] text-white/30">PLAYBACK INTELLIGENCE</div>
+                    <div className="text-xl md:text-2xl font-black uppercase tracking-tight text-brand-accent truncate">Signal Ledger</div>
+                    <div className="mt-1 text-[10px] font-black uppercase tracking-[0.18em] text-white/34">
+                      {soundLedgerView.activeDays > 0 ? `${soundLedgerView.activeDays} active days • ${soundLedgerView.totalSessions} sessions captured` : 'Listening patterns appear as you play'}
+                    </div>
+                  </div>
                 </div>
-                
-                <div className="flex-1 overflow-y-auto p-6 md:p-8 flex flex-col gap-8 custom-scrollbar">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="glass-card bg-brand-accent/5 border border-brand-accent/20 rounded-[1.5rem] p-6 text-center flex flex-col items-center justify-center shadow-neon">
-                      <div className="text-[10px] font-black uppercase tracking-[0.25em] text-white/40 mb-2">Total Listening Time</div>
-                      <div className="text-4xl font-black text-brand-accent drop-shadow-[0_0_12px_rgba(0,255,191,0.5)]">{soundCapsuleData.totalMinutes}</div>
-                      <div className="text-[11px] font-bold text-white/30 mt-1 uppercase tracking-widest">Minutes</div>
-                    </div>
-                    <div className="glass-card bg-brand-accent/5 border border-brand-accent/20 rounded-[1.5rem] p-6 text-center flex flex-col items-center justify-center">
-                      <div className="text-[10px] font-black uppercase tracking-[0.25em] text-white/40 mb-2">Total Plays</div>
-                      <div className="text-4xl font-black text-brand-accent">{Object.values(soundCapsuleData.tracks).reduce((a,b)=>a+b.count,0)}</div>
-                      <div className="text-[11px] font-bold text-white/30 mt-1 uppercase tracking-widest">Tracks</div>
-                    </div>
-                  </div>
-                  
-                  <div>
-                    <div className="text-[11px] font-black uppercase tracking-[0.25em] text-brand-accent mb-4 border-b border-brand-accent/10 pb-2">Top Artists</div>
-                    <div className="flex flex-wrap gap-2">
-                      {Object.entries(soundCapsuleData.artists || {}).sort((a,b)=>b[1].count-a[1].count).slice(0, 10).map(([name, data], idx) => (
-                        <div key={name} className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-2 hover:bg-white/10 transition-colors">
-                          <span className="text-brand-accent font-black text-[10px]">#{idx + 1}</span>
-                          <span className="text-white font-black text-xs uppercase tracking-widest truncate max-w-[120px]">{name}</span>
-                          <span className="text-brand-accent/30 text-[9px] ml-1 font-black">{data.count} PLAY{data.count!==1?'S':''}</span>
+                <button onClick={() => setIsSoundCapsuleOpen(false)} className="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close"><X size={18} /></button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-5 md:p-6 lg:p-7 custom-scrollbar">
+                <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
+                  <div className="xl:col-span-8 flex flex-col gap-5">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="glass-card bg-brand-accent/6 border border-brand-accent/20 rounded-[1.6rem] p-5">
+                        <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/38">Listening Time</div>
+                        <div className="mt-4 text-3xl md:text-4xl font-black text-brand-accent">{formatPlaybackDuration(soundLedgerView.totalMs)}</div>
+                        <div className="mt-2 text-[10px] uppercase tracking-[0.18em] text-white/34">Across {soundLedgerView.activeDays || 0} recent active days</div>
+                      </div>
+                      <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.6rem] p-5">
+                        <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/38">Qualified Plays</div>
+                        <div className="mt-4 text-3xl md:text-4xl font-black text-white">{soundLedgerView.totalTracksPlayed}</div>
+                        <div className="mt-2 text-[10px] uppercase tracking-[0.18em] text-white/34">{soundLedgerView.totalSessions} playback sessions tracked</div>
+                      </div>
+                      <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.6rem] p-5">
+                        <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/38">Peak Windows</div>
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          {soundLedgerView.topWindow.length > 0 ? soundLedgerView.topWindow.map((entry) => (
+                            <span key={entry.hour} className="rounded-full border border-brand-accent/18 bg-brand-accent/10 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent">
+                              {entry.label} • {entry.count}
+                            </span>
+                          )) : (
+                            <span className="text-[10px] uppercase tracking-[0.18em] text-white/28">Collecting signal…</span>
+                          )}
                         </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div>
-                      <div className="text-[11px] font-black uppercase tracking-[0.25em] text-brand-accent mb-4 border-b border-brand-accent/10 pb-2">Peak Listening</div>
-                      <div className="space-y-2">
-                        {(() => {
-                           const trends = soundCapsuleData.hourlyTrends || {};
-                           const sorted = Object.entries(trends).sort((a,b) => b[1] - a[1]);
-                           if (sorted.length === 0) return <div className="text-[10px] text-white/30 uppercase tracking-widest">Collecting signal...</div>;
-                           return sorted.slice(0, 3).map(([h, count]) => {
-                             const hour = parseInt(h);
-                             const label = hour === 0 ? 'Midnight' : hour === 12 ? 'Noon' : hour > 12 ? `${hour-12} PM` : `${hour} AM`;
-                             return (
-                               <div key={h} className="flex items-center justify-between bg-white/[0.02] border border-white/5 rounded-lg p-2 px-3">
-                                 <span className="text-[11px] text-white/80 font-bold uppercase">{label}</span>
-                                 <span className="text-[9px] text-brand-accent font-black tracking-widest">{count} PLAYS</span>
-                               </div>
-                             );
-                           });
-                        })()}
                       </div>
                     </div>
-                    <div>
-                      <div className="text-[11px] font-black uppercase tracking-[0.25em] text-brand-accent mb-4 border-b border-brand-accent/10 pb-2">Genre Pulse</div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {Object.entries(soundCapsuleData.genres || {}).sort((a,b)=>b[1]-a[1]).slice(0, 8).map(([genre, count]) => (
-                           <span key={genre} className="px-2 py-1 bg-brand-accent/10 border border-brand-accent/20 text-brand-accent text-[8px] font-black uppercase tracking-widest rounded-md">
-                             {genre}
-                           </span>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
 
-                  <div>
-                    <div className="text-[11px] font-black uppercase tracking-[0.25em] text-brand-accent mb-4 border-b border-brand-accent/10 pb-2">Your Anthems</div>
-                    <div className="flex flex-col gap-2">
-                      {Object.entries(soundCapsuleData.tracks || {}).sort((a,b)=>b[1].count-a[1].count).slice(0, 15).map(([id, t], idx) => (
-                        <div key={id} className="flex items-center gap-4 bg-white/5 border border-white/10 rounded-2xl p-3 hover:bg-white/10 hover:border-brand-accent/30 transition-all group">
-                          <img src={getProxyUrl(t.thumbnail)} className="w-12 h-12 rounded-xl object-cover shadow-md group-hover:scale-105 transition-transform" alt="" />
-                          <div className="flex-1 min-w-0">
-                            <div className="text-[10px] text-brand-accent font-black mb-1 tracking-widest">#{idx + 1} • {t.count} PLAYS</div>
-                            <div className="text-sm font-black text-white truncate uppercase tracking-tight">{t.title}</div>
-                            <div className="text-[10px] text-white/40 uppercase tracking-widest mt-0.5 truncate">{t.author}</div>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                      <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Recent Week</div>
+                            <div className="mt-1 text-[11px] text-white/34 uppercase tracking-[0.14em]">Daily listening bars + play counts</div>
                           </div>
-                          {t.lastListened && <div className="text-[8px] font-mono text-white/20 whitespace-nowrap hidden sm:block">Recently: {new Date(t.lastListened).toLocaleDateString()}</div>}
+                          <div className="text-[10px] text-white/30 uppercase tracking-[0.16em]">{Math.round(soundLedgerView.totalMs / 60000)} min total</div>
                         </div>
-                      ))}
+                        <div className="mt-5 grid grid-cols-7 gap-2">
+                          {soundLedgerView.recentWeek.map((entry) => (
+                            <div key={entry.key} className="rounded-[1.3rem] border border-white/8 bg-black/20 px-2 py-3 flex flex-col items-center gap-3">
+                              <div className="h-28 w-full flex items-end justify-center">
+                                <div
+                                  className="w-full max-w-[26px] rounded-full bg-gradient-to-t from-brand-accent via-brand-accent/80 to-white shadow-[0_0_18px_rgba(0,255,191,0.18)]"
+                                  style={{ height: `${entry.minutesMs > 0 ? 18 + ((entry.minutesMs / soundLedgerView.weekMaxMs) * 82) : 12}%` }}
+                                />
+                              </div>
+                              <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/50">{entry.label}</div>
+                              <div className="text-[9px] font-mono text-brand-accent">{Math.round(entry.minutesMs / 60000)}m</div>
+                              <div className="text-[8px] uppercase tracking-[0.16em] text-white/28">{entry.plays}p</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Hourly Pulse</div>
+                            <div className="mt-1 text-[11px] text-white/34 uppercase tracking-[0.14em]">When you most often press play</div>
+                          </div>
+                          <Signal size={16} className="text-brand-accent/70" />
+                        </div>
+                        <div className="mt-5 grid grid-cols-12 gap-1.5">
+                          {soundLedgerView.peakHours.map((entry) => (
+                            <div key={entry.hour} className="flex flex-col items-center gap-2">
+                              <div className="h-24 w-full flex items-end justify-center">
+                                <div
+                                  className={`w-full rounded-full ${entry.count > 0 ? 'bg-brand-accent/85 shadow-[0_0_14px_rgba(0,255,191,0.14)]' : 'bg-white/[0.06]'}`}
+                                  style={{ height: `${entry.count > 0 ? 12 + ((entry.count / soundLedgerView.peakHourMax) * 88) : 10}%` }}
+                                />
+                              </div>
+                              <div className="text-[8px] font-mono text-white/28">{entry.label}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
+                      <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Recent Sessions</div>
+                      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {soundLedgerView.recentSessions.length > 0 ? soundLedgerView.recentSessions.map((session) => (
+                          <div key={session.id} className="rounded-[1.4rem] border border-white/10 bg-black/20 p-3 flex items-center gap-3">
+                            <img src={getProxyUrl(session.thumbnail)} className="w-14 h-14 rounded-xl object-cover bg-white/[0.03]" alt="" />
+                            <div className="min-w-0 flex-1">
+                              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent">
+                                {formatPlaybackDuration(session.playedMs)} • {session.completed ? 'completed' : 'session'}
+                              </div>
+                              <div className="mt-1 text-sm font-black text-white truncate uppercase tracking-tight">{session.title}</div>
+                              <div className="mt-1 text-[10px] uppercase tracking-[0.16em] text-white/35 truncate">{session.author}</div>
+                            </div>
+                          </div>
+                        )) : (
+                          <div className="md:col-span-2 rounded-[1.4rem] border border-dashed border-white/10 bg-black/20 p-5 text-[11px] uppercase tracking-[0.18em] text-white/28">
+                            Finish a couple of real listens and this panel will start showing your latest sessions.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="xl:col-span-4 flex flex-col gap-4">
+                    <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
+                      <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Top Artists</div>
+                      <div className="mt-4 flex flex-col gap-2.5">
+                        {soundLedgerView.topArtists.length > 0 ? soundLedgerView.topArtists.map(([name, entry], idx) => (
+                          <div key={name} className="rounded-[1.25rem] border border-white/10 bg-black/20 px-3.5 py-3 flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent">#{idx + 1}</div>
+                              <div className="mt-1 text-sm font-black text-white truncate uppercase tracking-tight">{name}</div>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-[10px] font-black uppercase tracking-[0.16em] text-white/48">{entry.count} plays</div>
+                              <div className="mt-1 text-[10px] font-mono text-white/28">{formatPlaybackDuration(entry.totalMs)}</div>
+                            </div>
+                          </div>
+                        )) : (
+                          <div className="rounded-[1.25rem] border border-dashed border-white/10 bg-black/20 p-4 text-[10px] uppercase tracking-[0.18em] text-white/28">
+                            Artist rankings appear after a few qualified sessions.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
+                      <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Genre Pulse</div>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {soundLedgerView.genreMix.length > 0 ? soundLedgerView.genreMix.map(([genre, count]) => (
+                          <span key={genre} className="rounded-full border border-brand-accent/18 bg-brand-accent/10 px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent">
+                            {genre} • {count}
+                          </span>
+                        )) : (
+                          <span className="text-[10px] uppercase tracking-[0.18em] text-white/28">No pattern clusters yet</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
+                      <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Most Replayed</div>
+                      <div className="mt-4 flex flex-col gap-2.5">
+                        {soundLedgerView.topTracks.length > 0 ? soundLedgerView.topTracks.map(([id, entry], idx) => (
+                          <div key={id} className="rounded-[1.25rem] border border-white/10 bg-black/20 p-3 flex items-center gap-3">
+                            <img src={getProxyUrl(entry.thumbnail)} className="w-12 h-12 rounded-xl object-cover bg-white/[0.03]" alt="" />
+                            <div className="min-w-0 flex-1">
+                              <div className="text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent">#{idx + 1} • {entry.count} plays</div>
+                              <div className="mt-1 text-sm font-black text-white truncate uppercase tracking-tight">{entry.title}</div>
+                              <div className="mt-1 text-[10px] uppercase tracking-[0.16em] text-white/35 truncate">{entry.author}</div>
+                            </div>
+                          </div>
+                        )) : (
+                          <div className="rounded-[1.25rem] border border-dashed border-white/10 bg-black/20 p-4 text-[10px] uppercase tracking-[0.18em] text-white/28">
+                            Repeats land here once a track gets replayed.
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
+              </div>
             </div>
           </motion.div>
         )}
@@ -7123,15 +8322,15 @@ function App() {
           >
             <div className="flex items-center justify-between mb-3">
               <div className="text-[10px] tracking-[0.24em] uppercase font-black text-brand-accent">Diagnostics</div>
-              <button onClick={() => setIsDiagnosticsOpen(false)} className="text-white/40 hover:text-brand-accent transition-colors">
+              <button onClick={() => setIsDiagnosticsOpen(false)} className="flex h-8 w-8 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-white/45 transition-all hover:border-brand-accent/35 hover:text-brand-accent">
                 <X size={14} />
               </button>
             </div>
 
-            <div className="flex items-center gap-2 mb-3">
+            <div className="flex flex-wrap items-center gap-2 mb-4">
               <button
                 onClick={handleResetPlaybackEngine}
-                className="px-3 py-1.5 rounded-xl border border-brand-accent/30 bg-brand-accent/10 text-brand-accent text-[10px] font-black uppercase tracking-[0.16em] hover:bg-brand-accent/20 transition-all"
+                className={`${diagnosticsActionButtonClass} border-brand-accent/30 bg-brand-accent/10 text-brand-accent hover:bg-brand-accent/18`}
               >
                 Reset Engine
               </button>
@@ -7139,14 +8338,14 @@ function App() {
                 <button
                   onClick={handleRunRuntimeRepair}
                   disabled={isRuntimeRepairing}
-                  className="px-3 py-1.5 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 text-[10px] font-black uppercase tracking-[0.16em] hover:border-brand-accent/35 hover:text-brand-accent transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                  className={diagnosticsActionButtonClass}
                 >
                   {repairActionLabel}
                 </button>
               )}
               <button
                 onClick={() => setSkipEvents([])}
-                className="px-3 py-1.5 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 text-[10px] font-black uppercase tracking-[0.16em] hover:border-white/30 transition-all"
+                className={diagnosticsActionButtonClass}
               >
                 Clear Events
               </button>
@@ -7154,7 +8353,7 @@ function App() {
                 <button
                   onClick={handleUpdateAction}
                   disabled={isUpdateBusy || updateInfo?.status === 'checking' || updateInfo?.status === 'downloading'}
-                  className={`px-3 py-1.5 rounded-xl border text-[10px] font-black uppercase tracking-[0.16em] transition-all disabled:opacity-60 disabled:cursor-not-allowed ${updateInfo?.downloaded ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : updateInfo?.available ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent hover:bg-brand-accent/20' : 'border-white/15 bg-white/[0.03] text-white/70 hover:border-white/30'}`}
+                  className={`${diagnosticsActionButtonClass} ${updateInfo?.downloaded ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : updateInfo?.available ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent hover:bg-brand-accent/20' : ''}`}
                   title={updateInfo?.message || 'Check for updates'}
                 >
                   <span className="inline-flex items-center gap-1.5">
@@ -7233,7 +8432,7 @@ function App() {
                 <div className={diagnosticPathBlockClass}>{diagnosticsApiBase}</div>
                 <button
                   onClick={() => handleCopyDiagnosticsValue(diagnosticsApiBase, 'API base copied')}
-                  className="mt-2 inline-flex items-center rounded-lg border border-white/12 bg-white/[0.03] px-2 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-white/60 hover:border-brand-accent/30 hover:text-brand-accent transition-all"
+                  className={diagnosticsCopyButtonClass}
                 >
                   Copy
                 </button>
@@ -7251,7 +8450,7 @@ function App() {
                     {engineStatus?.ytDlpPath && (
                       <button
                         onClick={() => handleCopyDiagnosticsValue(engineStatus.ytDlpPath, 'yt-dlp path copied')}
-                        className="mt-2 inline-flex items-center rounded-lg border border-white/12 bg-white/[0.03] px-2 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-white/60 hover:border-brand-accent/30 hover:text-brand-accent transition-all"
+                        className={diagnosticsCopyButtonClass}
                       >
                         Copy Path
                       </button>
@@ -7267,7 +8466,7 @@ function App() {
                     {engineStatus?.ffmpegPath && (
                       <button
                         onClick={() => handleCopyDiagnosticsValue(engineStatus.ffmpegPath, 'FFmpeg path copied')}
-                        className="mt-2 inline-flex items-center rounded-lg border border-white/12 bg-white/[0.03] px-2 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-white/60 hover:border-brand-accent/30 hover:text-brand-accent transition-all"
+                        className={diagnosticsCopyButtonClass}
                       >
                         Copy Path
                       </button>
@@ -7286,14 +8485,14 @@ function App() {
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button
                         onClick={handleImportCookies}
-                        className="px-2.5 py-1.5 rounded-lg border border-brand-accent/30 text-brand-accent bg-brand-accent/10 hover:bg-brand-accent/20 transition-all"
+                        className={`${diagnosticsActionButtonClass} border-brand-accent/30 bg-brand-accent/10 text-brand-accent hover:bg-brand-accent/18`}
                       >
                         Upload Cookies
                       </button>
                       {engineStatus?.cookiesPath && (
                         <button
                           onClick={() => handleCopyDiagnosticsValue(engineStatus.cookiesPath, 'Cookie path copied')}
-                          className="px-2.5 py-1.5 rounded-lg border border-white/15 text-white/70 bg-white/[0.03] hover:border-brand-accent/30 hover:text-brand-accent transition-all"
+                          className={diagnosticsActionButtonClass}
                         >
                           Copy Path
                         </button>
@@ -7306,7 +8505,7 @@ function App() {
                             window.open('https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies', '_blank');
                           }
                         }}
-                        className="px-2.5 py-1.5 rounded-lg border border-white/15 text-white/70 bg-white/[0.03] hover:border-white/30 transition-all"
+                        className={diagnosticsActionButtonClass}
                       >
                         Cookie Guide
                       </button>
@@ -7493,7 +8692,7 @@ function App() {
           {/* PLAYER CARD */}
           {isDualWorkspaceMode ? (
             <div
-              className={`glass-card relative overflow-hidden shrink-0 rounded-[2.35rem] border border-white/[0.08] px-4 py-4 md:px-5 md:py-4 transition-all duration-500 ${isAuraMode ? 'bg-white/[0.02] border-white/[0.14] backdrop-blur-[28px] shadow-[0_20px_70px_rgba(0,0,0,0.26)]' : 'bg-[#080b10]/88'}`}
+              className={`glass-card relative overflow-hidden shrink-0 rounded-[2.35rem] border border-white/[0.08] px-4 py-4 md:px-5 md:py-4 transition-all duration-500 ${isAuraMode ? (isAuraLite ? 'bg-white/[0.02] border-white/[0.12] backdrop-blur-[16px] shadow-[0_14px_40px_rgba(0,0,0,0.22)]' : 'bg-white/[0.02] border-white/[0.14] backdrop-blur-[28px] shadow-[0_20px_70px_rgba(0,0,0,0.26)]') : 'bg-[#080b10]/88'}`}
               style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder } : undefined}
             >
               {currentTrack ? (
@@ -7521,7 +8720,12 @@ function App() {
                       <button onClick={() => handleControl('previous')} className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/60 transition-all hover:border-brand-accent/30 hover:text-brand-accent active:scale-95" title="Previous">
                         <Rewind size={18} fill="currentColor" />
                       </button>
-                      <button onClick={() => handleControl(isPlaying ? 'pause' : 'resume')} className="flex h-12 w-12 items-center justify-center rounded-[1.2rem] bg-brand-accent text-black shadow-[0_0_20px_rgba(0,255,191,0.32)] transition-all hover:scale-[1.03] active:scale-95" title={isPlaying ? 'Pause' : 'Play'}>
+                      <button
+                        onClick={() => handleControl(isPlaying ? 'pause' : 'resume')}
+                        className="flex h-12 w-12 items-center justify-center rounded-[1.2rem] text-black transition-all hover:scale-[1.03] active:scale-95"
+                        style={{ background: trackControlAccent, boxShadow: `0 0 22px ${trackControlGlow}` }}
+                        title={isPlaying ? 'Pause' : 'Play'}
+                      >
                         {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-0.5" />}
                       </button>
                       <button onClick={() => handleControl('skip')} className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/60 transition-all hover:border-brand-accent/30 hover:text-brand-accent active:scale-95" title="Next">
@@ -7543,8 +8747,8 @@ function App() {
                         className="h-full rounded-full transition-all"
                         style={{
                           width: `${currentTrack ? (currentTime / (currentTrack.totalDurationMs || currentTrack.duration || 1)) * 100 : 0}%`,
-                          background: themeColor,
-                          boxShadow: `0 0 12px ${themeColor}`,
+                          background: trackProgressAccent,
+                          boxShadow: `0 0 14px ${trackProgressGlow}`,
                         }}
                       />
                     </div>
@@ -7554,19 +8758,22 @@ function App() {
                       <div className="flex items-center rounded-full border border-white/10 bg-white/[0.04] p-1">
                         <button
                           onClick={() => switchVideoMode(null)}
-                          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] transition-all ${videoMode === null ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.34)]' : 'text-white/45 hover:text-white'}`}
+                          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] transition-all ${videoMode === null ? 'text-black' : 'text-white/45 hover:text-white'}`}
+                          style={videoMode === null ? { background: trackControlAccent, boxShadow: `0 0 14px ${trackControlGlow}` } : undefined}
                         >
                           <Music size={10} /> Audio
                         </button>
                         <button
                           onClick={() => switchVideoMode('dual')}
-                          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] transition-all ${videoMode === 'dual' ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.34)]' : 'text-white/45 hover:text-white'}`}
+                          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] transition-all ${videoMode === 'dual' ? 'text-black' : 'text-white/45 hover:text-white'}`}
+                          style={videoMode === 'dual' ? { background: trackControlAccent, boxShadow: `0 0 14px ${trackControlGlow}` } : undefined}
                         >
                           <Columns2 size={10} /> Dual
                         </button>
                         <button
                           onClick={() => switchVideoMode('cinema')}
-                          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] transition-all ${videoMode === 'cinema' ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.34)]' : 'text-white/45 hover:text-white'}`}
+                          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] transition-all ${videoMode === 'cinema' ? 'text-black' : 'text-white/45 hover:text-white'}`}
+                          style={videoMode === 'cinema' ? { background: trackControlAccent, boxShadow: `0 0 14px ${trackControlGlow}` } : undefined}
                         >
                           <Clapperboard size={10} /> Cinema
                         </button>
@@ -7581,7 +8788,7 @@ function App() {
             </div>
           ) : (
           <div
-            className={`glass-card flex relative overflow-hidden group shrink-0 transition-all duration-700 flex-col sm:flex-row flex-none rounded-[3.5rem] shadow-2xl transition-all ${playerCardClass} ${isAuraMode ? 'bg-white/[0.015] border-white/[0.14] backdrop-blur-[30px] shadow-[0_24px_90px_rgba(0,0,0,0.32)]' : 'border-white/5'}`}
+            className={`glass-card flex relative overflow-hidden group shrink-0 transition-all duration-700 flex-col sm:flex-row flex-none rounded-[3.5rem] shadow-2xl transition-all ${playerCardClass} ${isAuraMode ? (isAuraLite ? 'bg-white/[0.015] border-white/[0.12] backdrop-blur-[18px] shadow-[0_18px_54px_rgba(0,0,0,0.26)]' : 'bg-white/[0.015] border-white/[0.14] backdrop-blur-[30px] shadow-[0_24px_90px_rgba(0,0,0,0.32)]') : 'border-white/5'}`}
             style={isAuraMode ? { boxShadow: auraCardShadow, borderColor: auraCardBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
           >
             {isAuraMode && (
@@ -7595,7 +8802,7 @@ function App() {
             )}
         {/* TOP BAR / NAVIGATION */}
             {currentTrack && (
-              <div className="absolute inset-0 blur-[120px] opacity-10 pointer-events-none group-hover:opacity-20 transition-opacity">
+              <div className={`absolute inset-0 pointer-events-none transition-opacity ${isAuraLite ? 'blur-[52px] opacity-[0.05]' : 'blur-[120px] opacity-10 group-hover:opacity-20'}`}>
                 <img src={getProxyUrl(currentTrack.thumbnail)} alt="" className="w-full h-full object-cover" />
               </div>
             )}
@@ -7638,7 +8845,7 @@ function App() {
                     </div>
 
                     {/* COMPACT VOLUME UNIT */}
-                    <div className={`w-full flex flex-col gap-2 px-2 p-3 rounded-2xl border ${isAuraMode ? 'bg-white/[0.03] border-white/[0.14] backdrop-blur-xl' : 'bg-white/5 border-white/5'}`}>
+                    <div className={`w-full flex flex-col gap-2 px-2 p-3 rounded-2xl border ${isAuraMode ? (isAuraLite ? 'bg-white/[0.03] border-white/[0.12] backdrop-blur-md' : 'bg-white/[0.03] border-white/[0.14] backdrop-blur-xl') : 'bg-white/5 border-white/5'}`}>
                        <div className="flex items-center justify-between">
                           <button onClick={() => handleControl('mute')} className="hover:text-brand-accent transition-colors active:scale-90">
                             <Volume2 size={12} className={volume === 0 ? 'text-red-500' : 'text-brand-accent/50'} />
@@ -7653,25 +8860,25 @@ function App() {
                  <div className="flex flex-col flex-1 min-w-0 py-0">
                     <div className="mb-6">
                         <div className="flex items-center justify-between gap-4 mb-2">
-                             <div className="label-caps mb-0 text-brand-accent/60 text-[9px] flex items-center gap-2 tracking-[0.28em] uppercase font-black">
+                           <div className="label-caps mb-0 text-brand-accent/60 text-[9px] flex items-center gap-2 tracking-[0.28em] uppercase font-black">
                               <span className="w-1 h-1 rounded-full bg-brand-accent animate-pulse" />
                                {isAudioBuffering ? "Buffering" : "Now Playing"}
                            </div>
                            <div className="flex items-center gap-1 no-drag ml-auto">
-                             <button disabled={queue.length === 0} onClick={() => handleControl('clear')} className="p-2 text-white/20 hover:text-red-500 transition-colors disabled:opacity-25 disabled:cursor-not-allowed" title="Clear Queue"><Trash2 size={14} /></button>
-                             <button onClick={cycleRepeatMode} className={`relative p-2 transition-colors ${repeatMode === 'off' ? 'text-white/20 hover:text-brand-accent' : 'text-brand-accent'}`} title={repeatModeLabel}>
+                             <button disabled={queue.length === 0} onClick={() => handleControl('clear')} className={playerMetaActionButtonClass} title="Clear Queue"><Trash2 size={14} /></button>
+                             <button onClick={cycleRepeatMode} className={`${playerMetaActionButtonClass} relative ${repeatMode === 'off' ? '' : 'border-brand-accent/30 bg-brand-accent/[0.1] text-brand-accent'}`} title={repeatModeLabel}>
                                <Repeat size={14} />
                                {repeatModeBadge && <span className="absolute right-0 top-0 text-[8px] font-black">{repeatModeBadge}</span>}
                              </button>
                              <button onClick={() => {
                                if (!canOpenCurrentSource) return;
                                window.aether?.openExternal(currentTrackSourceUrl);
-                             }} disabled={!canOpenCurrentSource} className="p-2 text-white/20 hover:text-brand-accent transition-colors disabled:opacity-25 disabled:cursor-not-allowed" title="Open Source"><ExternalLink size={14} /></button>
-                             <button onClick={handleDownloadCurrentTrack} disabled={!canDownloadCurrentTrack || isDownloadingTrack} className="p-2 text-white/20 hover:text-brand-accent transition-colors disabled:opacity-25 disabled:cursor-not-allowed" title={isDownloadingTrack ? 'Exporting…' : 'Export Audio to File'}><Download size={14} className={isDownloadingTrack ? 'animate-pulse' : ''} /></button>
-                             <button onClick={() => { setLibraryActionTarget({ type: 'track', items: [currentTrack] }); setIsLibraryOverlayOpen(true); }} className="p-2 text-white/20 hover:text-brand-accent transition-colors" title="Save to Library Overlay"><Plus size={14} /></button>
+                             }} disabled={!canOpenCurrentSource} className={playerMetaActionButtonClass} title="Open Source"><ExternalLink size={14} /></button>
+                             <button onClick={handleDownloadCurrentTrack} disabled={!canDownloadCurrentTrack || isDownloadingTrack} className={playerMetaActionButtonClass} title={isDownloadingTrack ? 'Exporting…' : 'Export Audio to File'}><Download size={14} className={isDownloadingTrack ? 'animate-pulse' : ''} /></button>
+                             <button onClick={() => { setLibraryActionTarget({ type: 'track', items: [currentTrack] }); setIsLibraryOverlayOpen(true); }} className={playerMetaActionButtonClass} title="Save to Library Overlay"><Plus size={14} /></button>
                              <div className="w-px h-3 bg-white/10 mx-1" />
-                               <button onClick={() => setIsPlayerOverlayOpen(true)} className="p-2 text-white/40 hover:text-brand-accent transition-colors" title="Open Player Overlay"><ListMusic size={16} /></button>
-                             <button onClick={() => setIsFocusedMode(!isFocusedMode)} className={`p-2 transition-colors ${isFocusedMode ? 'text-brand-accent' : 'text-white/40 hover:text-brand-accent'}`} title="Toggle Focus Mode"><Target size={16} /></button>
+                               <button onClick={() => setIsPlayerOverlayOpen(true)} className={playerMetaActionButtonClass} title="Open Player Overlay"><ListMusic size={16} /></button>
+                             <button onClick={() => setIsFocusedMode(!isFocusedMode)} className={`${playerMetaActionButtonClass} ${isFocusedMode ? 'border-brand-accent/30 bg-brand-accent/[0.1] text-brand-accent' : ''}`} title="Toggle Focus Mode"><Target size={16} /></button>
                            </div>
                         </div>
                         <h1 className={`${playerTitleClass} font-black text-white/95 leading-none uppercase tracking-tighter mb-2 line-clamp-2 transition-all duration-700`} style={{ textShadow: visualizerMode === 'pulse' ? `0 0 20px ${themeColor}44` : 'none' }}>{currentTrack.title}</h1>
@@ -7685,7 +8892,7 @@ function App() {
                               const pos = (e.clientX - rect.left) / rect.width;
                               handleSeek(pos * (currentTrack.totalDurationMs || currentTrack.duration || 0));
                           }}>
-                              <motion.div initial={{ width: 0 }} animate={{ width: `${(currentTime / (currentTrack.totalDurationMs || currentTrack.duration || 1)) * 100}%` }} className="absolute inset-0 left-0 bg-brand-accent shadow-[0_0_15px_rgba(45,212,191,0.5)]" />
+                              <motion.div initial={{ width: 0 }} animate={{ width: `${(currentTime / (currentTrack.totalDurationMs || currentTrack.duration || 1)) * 100}%` }} className="absolute inset-0 left-0" style={{ background: trackProgressAccent, boxShadow: `0 0 16px ${trackProgressGlow}` }} />
                           </div>
                           <div className="flex justify-between text-[10px] font-mono text-white/30 font-black tracking-widest uppercase">
                               <span>{formatTime(currentTime)}</span>
@@ -7695,12 +8902,13 @@ function App() {
 
                         {/* COMPACT TRANSPORT CLUSTER - CENTERED */}
                         <div className="flex items-center justify-center w-full mt-2 relative">
-                           <div className={`flex items-center backdrop-blur-3xl border p-2 rounded-3xl gap-4 relative z-10 ${isAuraMode ? 'bg-white/[0.04] border-white/[0.16] shadow-[0_12px_40px_rgba(0,0,0,0.22)]' : 'bg-white/5 border-white/5'}`}>
+                           <div className={`flex items-center ${isAuraLite ? 'backdrop-blur-xl' : 'backdrop-blur-3xl'} border p-2 rounded-3xl gap-4 relative z-10 ${isAuraMode ? 'border-white/[0.16] shadow-[0_12px_40px_rgba(0,0,0,0.22)]' : 'border-white/5'}`} style={{ background: trackControlSurface }}>
                               <button onClick={() => handleControl('previous')} className="p-3 hover:text-brand-accent transition-colors active:scale-90"><Rewind size={22} fill="currentColor" /></button>
                               <button 
                                 ref={playButtonRef}
                                 onClick={() => handleControl(isPlaying ? 'pause' : 'resume')} 
-                                className={`w-16 h-16 bg-brand-accent text-black rounded-2xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all relative overflow-hidden ${isAuraMode ? 'shadow-[0_0_30px_rgba(0,255,191,0.4)] hover:shadow-[0_0_40px_rgba(0,255,191,0.6)]' : 'shadow-xl shadow-brand-accent/20'}`}
+                                className="w-16 h-16 text-black rounded-2xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all relative overflow-hidden"
+                                style={{ background: trackControlAccent, boxShadow: `0 0 32px ${trackControlGlow}` }}
                               >
                                 {isAuraMode && <div ref={beatRingsRef} className="absolute inset-0" />}
                                 {isPlaying ? <Pause size={28} fill="currentColor" /> : <Play size={28} fill="currentColor" className="ml-1" />}
@@ -7717,9 +8925,10 @@ function App() {
                                  onClick={() => switchVideoMode(null)}
                                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
                                    videoMode === null
-                                     ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.4)]'
+                                     ? 'text-black'
                                      : 'text-white/40 hover:text-white'
                                  }`}
+                                 style={videoMode === null ? { background: trackControlAccent, boxShadow: `0 0 14px ${trackControlGlow}` } : undefined}
                                >
                                  <Music size={11} /> Audio
                                </button>
@@ -7727,9 +8936,10 @@ function App() {
                                  onClick={() => switchVideoMode('dual')}
                                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
                                    videoMode === 'dual'
-                                     ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.4)]'
+                                     ? 'text-black'
                                      : 'text-white/40 hover:text-white'
                                  }`}
+                                 style={videoMode === 'dual' ? { background: trackControlAccent, boxShadow: `0 0 14px ${trackControlGlow}` } : undefined}
                                >
                                  <Columns2 size={11} /> Dual
                                </button>
@@ -7737,9 +8947,10 @@ function App() {
                                  onClick={() => switchVideoMode('cinema')}
                                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
                                    videoMode === 'cinema'
-                                     ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.4)]'
+                                     ? 'text-black'
                                      : 'text-white/40 hover:text-white'
                                  }`}
+                                 style={videoMode === 'cinema' ? { background: trackControlAccent, boxShadow: `0 0 14px ${trackControlGlow}` } : undefined}
                                >
                                  <Clapperboard size={11} /> Cinema
                                </button>
@@ -7839,7 +9050,7 @@ function App() {
               </div>
             </div>
             
-            <div className={`flex-1 overflow-y-auto scroll-smooth relative ${lyricsViewportClass}`} ref={lyricsContainerRef} onWheel={() => setIsAutoScrollPaused(true)} onTouchStart={() => setIsAutoScrollPaused(true)}>
+            <div className={`flex-1 overflow-y-auto relative ${lyricsViewportClass}`} ref={lyricsContainerRef} onWheel={() => setIsAutoScrollPaused(true)} onTouchStart={() => setIsAutoScrollPaused(true)}>
               {isDualWorkspaceMode && (
                 <motion.div
                   aria-hidden
@@ -7873,8 +9084,8 @@ function App() {
                     const isActive = idx === activeLyricIndex;
                     const distance = Math.abs(idx - activeLyricIndex);
                     const lyricLineClass = isDualWorkspaceMode
-                      ? `max-w-[min(92%,760px)] px-3 md:px-5 text-2xl sm:text-3xl lg:text-5xl font-black leading-tight w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] transition-all duration-700 transform-gpu origin-center ${isActive ? 'text-brand-accent scale-[1.1] opacity-100 drop-shadow-[0_0_32px_rgba(0,255,191,0.42)]' : distance === 1 ? 'text-white/48 opacity-60 scale-[1.03]' : distance === 2 ? 'text-white/28 opacity-30 scale-100 blur-[0.8px]' : 'text-white/18 opacity-16 scale-[0.98] blur-[1.4px]'}`
-                      : `text-base sm:text-lg lg:text-xl font-bold transition-all duration-700 transform leading-snug py-1.5 relative ${isActive ? 'text-brand-accent scale-105 opacity-100 drop-shadow-[0_0_15px_rgba(0,255,191,0.5)]' : distance === 1 ? 'text-white/75 opacity-90' : distance === 2 ? 'text-white/45 opacity-65 blur-[0.4px]' : 'text-white/28 opacity-45 blur-[1px]'} cursor-default`;
+                      ? `max-w-[min(92%,760px)] px-3 md:px-5 text-2xl sm:text-3xl lg:text-5xl font-black leading-tight w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] transition-[transform,opacity,filter,color,text-shadow] duration-450 ease-[cubic-bezier(0.22,1,0.36,1)] transform-gpu origin-center will-change-[transform,opacity,filter] ${isActive ? 'text-brand-accent scale-[1.06] opacity-100 drop-shadow-[0_0_24px_rgba(0,255,191,0.34)]' : distance === 1 ? 'text-white/52 opacity-68 scale-[1.02]' : distance === 2 ? 'text-white/30 opacity-34 scale-100 blur-[0.45px]' : 'text-white/18 opacity-18 scale-[0.985] blur-[0.85px]'}`
+                      : `text-base sm:text-lg lg:text-xl font-bold transition-[transform,opacity,filter,color,text-shadow] duration-380 ease-[cubic-bezier(0.22,1,0.36,1)] transform-gpu leading-snug py-1.5 relative will-change-[transform,opacity,filter] ${isActive ? 'text-brand-accent scale-[1.035] opacity-100 drop-shadow-[0_0_12px_rgba(0,255,191,0.34)]' : distance === 1 ? 'text-white/78 opacity-92' : distance === 2 ? 'text-white/48 opacity-68 blur-[0.25px]' : 'text-white/30 opacity-48 blur-[0.7px]'} cursor-default`;
                     return (
                       <div 
                         key={idx} 
@@ -7915,7 +9126,7 @@ function App() {
 
         {/* RIGHT COLUMN */}
         {showSecondaryColumn && (
-          <div className={`flex flex-col gap-4 min-w-0 ${isVerticalStack ? '!w-full !max-w-full !flex-none pb-20' : 'w-[33.333%] h-full overflow-hidden flex-none'}`}>
+          <div className={`flex flex-col gap-4 min-w-0 ${secondaryColumnClass}`}>
             {/* QUEUE */}
             <div
               className={`${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col ${isAutoplayMenuOpen ? 'overflow-visible z-[340]' : 'overflow-hidden'} transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}
@@ -7952,7 +9163,7 @@ function App() {
                                return [current, ...rest];
                             });
                             if (!isStandalone) {
-                                axios.post(`${API_BASE}/api/control/${DEFAULT_GUILD_ID}`, { action: 'shuffle' }).catch(()=>{});
+                                axios.post(`${API_BASE}/api/control/${getEffectiveGuildId()}`, { action: 'shuffle' }).catch(()=>{});
                             }
                         }
                     }}
@@ -8044,24 +9255,34 @@ function App() {
             style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
           >
             <div className={`p-3 border-b border-white/5 flex items-center justify-between ${panelHeaderClass}`}>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 min-w-0">
                 <Globe size={18} className="text-brand-accent" />
-                <span className="label-caps mb-0 text-[10px]">Neural Discovery</span>
+                <div className="min-w-0">
+                  <span className="label-caps mb-0 text-[10px]">Neural Discovery</span>
+                  <div className="mt-1 truncate text-[8px] font-black uppercase tracking-[0.18em] text-white/32">{discoveryCountLabel}</div>
+                </div>
               </div>
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setIsViewingFullDiscovery(true)}
-                  className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-brand-accent/20 hover:text-brand-accent"
+                  className={panelActionIconButtonClass}
                   title="View Full Discovery"
                 >
-                  <Maximize2 size={10} />
+                  <Maximize2 size={12} />
                 </button>
-                {(searchResults.length > 0 || hasCompletedSearch) && <button onClick={clearDiscoveryResults} className="p-2 px-4 glass-card text-[9px] font-black text-red-500 hover:bg-red-500/10 active:scale-95 transition-all border-red-500/20">FLUSH</button>}
+                {hasActiveSearchState && (
+                  <button
+                    onClick={clearDiscoveryResults}
+                    className="flex h-8 items-center justify-center rounded-xl border border-red-500/20 bg-white/5 px-3 text-[9px] font-black uppercase tracking-[0.18em] text-red-400 transition-all hover:bg-red-500/10"
+                  >
+                    Flush
+                  </button>
+                )}
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 pb-6">
               <AnimatePresence>
-                {(searchQuery ? searchResults : neuralRecommendations).map((t) => (
+                {activeDiscoveryTracks.map((t) => (
                    <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} key={t.id} className="glass-card p-4 flex items-center gap-4 hover:border-brand-accent group overflow-hidden relative transition-all active:scale-[0.98] border-white/5">
                      <img src={getProxyUrl(t.thumbnail)} className="w-14 h-14 rounded-2xl object-cover z-10" alt="" />
                      <div className="flex-1 min-w-0 z-10">
@@ -8080,7 +9301,7 @@ function App() {
                     </motion.div>
                 ))}
               </AnimatePresence>
-                {!isSearching && searchResults.length === 0 && neuralRecommendations.length === 0 && !hasCompletedSearch && (
+                {!isSearching && activeDiscoveryTracks.length === 0 && !hasCompletedSearch && (
                 <div className="h-full flex flex-col items-center justify-center gap-4 opacity-10 text-center py-4">
                    <div className="relative">
                       <Search size={32} strokeWidth={1} />
@@ -8090,7 +9311,7 @@ function App() {
                    {isDoodleMode && <img src={catDoodlePeek} alt="doodle" className="h-10 w-auto opacity-75 select-none pointer-events-none" draggable={false} />}
                 </div>
               )}
-                {!isSearching && searchResults.length === 0 && hasCompletedSearch && (
+                {!isSearching && isSearchActive && searchResults.length === 0 && hasCompletedSearch && (
                  <div className="h-full flex flex-col items-center justify-center gap-4 text-center py-4 opacity-40">
                    <div className="relative text-brand-accent/70">
                      <Search size={30} strokeWidth={1.4} />
@@ -8108,32 +9329,66 @@ function App() {
 
           {/* STUDIO LIBRARY */}
             <div
+              ref={libraryPanelRef}
               className={`glass-card flex flex-col overflow-hidden studio-vault-container relative shadow-inner library-panel transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass} ${isVerticalStack ? 'min-h-[500px] flex-none' : 'h-full min-h-0'}`}
               style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
             >
-            <div className={`px-2.5 py-2 border-b border-white/5 flex items-center justify-between gap-1.5 ${panelHeaderClass}`}>
-              <div className="flex items-center gap-2 min-w-0">
-                <HardDrive size={16} className="text-brand-accent shrink-0" />
-                <span className="label-caps mb-0 text-[10px] tracking-widest truncate">Studio Library</span>
+            <div className={`px-4 py-4 border-b border-white/5 ${panelHeaderClass}`}>
+              <div className="flex flex-col gap-4">
+                <div className={`flex gap-3 ${isLibraryPanelCondensed ? 'flex-col items-stretch' : 'items-center justify-between'}`}>
+                  <div className="flex min-w-0 flex-1 items-start gap-3">
+                    <div className="flex h-11 w-11 flex-none items-center justify-center rounded-[1.35rem] border border-brand-accent/22 bg-brand-accent/10 text-brand-accent shadow-[0_0_18px_rgba(0,255,191,0.12)]">
+                      <HardDrive size={16} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="label-caps mb-0 text-[10px] tracking-[0.14em] truncate shrink">Studio Library</span>
+                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[8px] font-black uppercase tracking-[0.18em] text-white/58 whitespace-nowrap shrink-0">
+                          {vaultNodeCount} vaults
+                        </span>
+                      </div>
+                      {isLibraryPanelCondensed ? (
+                        <div className="mt-1.5 space-y-1.5 text-[8px] font-black uppercase tracking-[0.18em] text-white/34">
+                          <div className="truncate">{smartMixHint}</div>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span>{libraryInsights.unique} unique</span>
+                            <span className="text-white/18">•</span>
+                            <span>{libraryInsights.duplicates} dupes</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mt-1.5 flex min-w-0 items-center gap-1.5 text-[8px] font-black uppercase tracking-[0.18em] text-white/34 truncate">
+                          <span className="truncate">{smartMixHint}</span>
+                          <span className="text-white/18 shrink-0">•</span>
+                          <span className="shrink-0">{libraryInsights.unique} unique</span>
+                          <span className="text-white/18 shrink-0">•</span>
+                          <span className="shrink-0">{libraryInsights.duplicates} dupes</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className={`flex items-center gap-1.5 rounded-[1.4rem] border border-white/10 bg-white/[0.035] px-1.5 py-1 no-drag ${isLibraryPanelCondensed ? 'w-full flex-wrap justify-start' : 'shrink-0'}`}>
+                    <button onClick={handleGenerateSmartMix} disabled={!smartMixPlan.tracks.length} className={studioPanelActionButtonClass} title={`Generate Smart Mix • ${smartMixHint}`}><Zap size={14} /></button>
+                    <button onClick={handleCleanVault} disabled={isVaultCleaning} className={studioPanelActionButtonClass} title="Repair Vault (dedupe + remove unavailable + refresh metadata)"><RefreshCw size={14} className={isVaultCleaning ? 'animate-spin' : ''} /></button>
+                    <button onClick={() => setIsLibraryOverlayOpen(true)} className={studioPanelActionButtonClass} title="Open Vault Overlay"><ListMusic size={12} /></button>
+                    <button onClick={() => { closeHeaderSurfaces(); setSpotifyImportUrl(''); setSpotifyImportProgress({ stage: 'idle', progress: 0, message: '' }); setSpotifyImportLogs([]); setIsSpotifyImportOpen(true); }} className={studioPanelActionButtonClass} title="Import Spotify Playlist"><Music size={12} /></button>
+                    <button onClick={handleImportVault} className={studioPanelActionButtonClass} title="Import Vault (.aether)"><Upload size={12} /></button>
+                  </div>
+                </div>
+
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="text-[8px] font-black uppercase tracking-[0.2em] text-white/35">Nodes</span>
+                  <span className="rounded-full border border-brand-accent/20 bg-brand-accent/10 px-2.5 py-1 text-[9px] font-mono text-brand-accent">{libraryInsights.unique} unique</span>
+                  <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[9px] font-mono text-white/68">{libraryInsights.total} total</span>
+                  <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[9px] font-mono text-white/68">{libraryInsights.duplicates} dupes</span>
+                  {!isLibraryPanelCondensed && libraryInsights.topArtists.length > 0 && (
+                    <span className="truncate text-left text-[8px] font-mono text-white/34">
+                      Top: {libraryInsights.topArtists.map(([artist]) => artist).join(' • ')}
+                    </span>
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-1 shrink-0">
-                <button onClick={handleGenerateSmartMix} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Generate Smart Mix"><Zap size={10} /></button>
-                <button onClick={handleCleanVault} disabled={isVaultCleaning} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors disabled:opacity-40 flex items-center justify-center" title="Clean Vault (dedupe + remove unavailable + normalize metadata)"><RefreshCw size={10} className={isVaultCleaning ? 'animate-spin' : ''} /></button>
-                <button onClick={() => setIsLibraryOverlayOpen(true)} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Open Vault Overlay"><ListMusic size={10} /></button>
-                <button onClick={() => { closeHeaderSurfaces(); setSpotifyImportUrl(''); setSpotifyImportProgress({ stage: 'idle', progress: 0, message: '' }); setSpotifyImportLogs([]); setIsSpotifyImportOpen(true); }} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Import Spotify Playlist"><Music size={10} /></button>
-                <button onClick={handleImportVault} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Import Vault (.aether)"><Upload size={10} /></button>
-              </div>
-            </div>
-            <div className="px-4 py-2 border-b border-white/5 bg-white/[0.02] flex flex-col items-center">
-              <div className="flex min-w-0 items-center justify-center gap-2 overflow-hidden">
-                <span className="text-[8px] font-black uppercase tracking-[0.2em] text-white/40">Nodes</span>
-                <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-brand-accent/10 border border-brand-accent/20 text-brand-accent">{libraryInsights.unique} unique</span>
-                <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/70">{libraryInsights.total} total</span>
-                <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/70">{libraryInsights.duplicates} dupes</span>
-              </div>
-              {libraryInsights.topArtists.length > 0 && (
-                <div className="mt-1 text-[8px] font-mono text-white/40 text-center truncate w-full">Top: {libraryInsights.topArtists.map(([artist]) => artist).join(' • ')}</div>
-              )}
             </div>
             {/* SAFE SCROLL WRAPPER */}
             <div className={`flex-1 min-h-0 relative ${isVerticalStack ? 'h-[500px]' : ''}`}>
@@ -8588,6 +9843,9 @@ function App() {
                     <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
                       <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Status</div>
                       <div className="text-[12px] text-brand-accent font-black">Enabled</div>
+                      <div className="mt-2 text-[10px] text-white/45">
+                        Recovery: master key{lockStatus.recoveryOtpEnabled ? ' + mobile authenticator OTP' : ''}
+                      </div>
                     </div>
 
                     {lockStatus.touchIdAvailable && (
@@ -8638,38 +9896,144 @@ function App() {
                   </>
                 ) : (
                   <>
-                    <input
-                      type="password"
-                      value={lockPasswordInput}
-                      onChange={(e) => setLockPasswordInput(e.target.value)}
-                      placeholder="Set password"
-                      className="w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50"
-                    />
-                    <input
-                      type="password"
-                      value={lockPasswordConfirm}
-                      onChange={(e) => setLockPasswordConfirm(e.target.value)}
-                      placeholder="Confirm password"
-                      className="w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50"
-                    />
-                    {lockStatus.touchIdAvailable && (
-                      <label className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 cursor-pointer">
-                        <span className="text-[11px] text-white/70">Enable Touch ID unlock</span>
+                    {!generatedRecoveryKey ? (
+                      <>
                         <input
-                          type="checkbox"
-                          checked={lockUseTouchId}
-                          onChange={(e) => setLockUseTouchId(e.target.checked)}
-                          className="accent-brand-accent"
+                          type="password"
+                          value={lockPasswordInput}
+                          onChange={(e) => setLockPasswordInput(e.target.value)}
+                          placeholder="Set password (min 4 chars)"
+                          className="w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50"
                         />
-                      </label>
+                        <input
+                          type="password"
+                          value={lockPasswordConfirm}
+                          onChange={(e) => setLockPasswordConfirm(e.target.value)}
+                          placeholder="Confirm password"
+                          className="w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50"
+                        />
+                        {lockStatus.touchIdAvailable && (
+                          <label className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 cursor-pointer">
+                            <span className="text-[11px] text-white/70">Enable Touch ID unlock</span>
+                            <input
+                              type="checkbox"
+                              checked={lockUseTouchId}
+                              onChange={(e) => setLockUseTouchId(e.target.checked)}
+                              className="accent-brand-accent"
+                            />
+                          </label>
+                        )}
+                        <button
+                          onClick={handleGenerateRecoveryKeyAndPrompt}
+                          disabled={isLockBusy || !lockPasswordInput || !lockPasswordConfirm}
+                          className="w-full px-5 py-2.5 rounded-xl bg-brand-accent text-black font-black text-sm disabled:opacity-50 transition-all active:scale-[0.98]"
+                        >
+                          Enable Lock
+                        </button>
+                      </>
+                    ) : (
+                      <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                        <div className="rounded-2xl border border-brand-accent/30 bg-brand-accent/5 p-5">
+                          <div className="flex items-center gap-3 mb-3 text-brand-accent">
+                            <ShieldAlert size={20} />
+                            <div className="text-xs font-black uppercase tracking-widest">Master Recovery Key</div>
+                          </div>
+                          <div className="text-[11px] text-white/60 leading-relaxed mb-4">
+                            If you forget your password, this key is the <b>only way</b> to regain access to Aether Studio. Store it safely in a password manager or write it down.
+                          </div>
+                          
+                          <div className="relative group">
+                            <div className="w-full bg-black/40 rounded-xl border border-white/10 px-4 py-4 font-mono text-base text-center tracking-widest text-brand-accent select-all">
+                              {generatedRecoveryKey}
+                            </div>
+                            <button
+                              onClick={() => {
+                                navigator.clipboard.writeText(generatedRecoveryKey);
+                                setHasCopiedRecoveryKey(true);
+                              }}
+                              className="absolute right-2 top-2 h-10 w-10 flex items-center justify-center rounded-lg bg-white/5 border border-white/10 text-white/40 hover:text-white hover:border-white/20 transition-all active:scale-95"
+                              title="Copy to clipboard"
+                            >
+                              {hasCopiedRecoveryKey ? <Check size={16} className="text-brand-accent" /> : <Copy size={16} />}
+                            </button>
+                          </div>
+                        </div>
+
+                        {generatedRecoveryOtp && (
+                          <div className="rounded-2xl border border-white/12 bg-white/[0.03] p-5">
+                            <div className="flex items-center gap-3 mb-3 text-brand-accent">
+                              <Fingerprint size={20} />
+                              <div className="text-xs font-black uppercase tracking-widest">Mobile Authenticator OTP</div>
+                            </div>
+                            <div className="text-[11px] text-white/60 leading-relaxed mb-4">
+                              Add this setup key to Google Authenticator, 1Password, Authy, or any TOTP app. This gives you a 6-digit mobile recovery code if you forget your password.
+                            </div>
+
+                            <div className="w-full bg-black/35 rounded-xl border border-white/10 px-4 py-4 font-mono text-sm text-center tracking-[0.24em] text-brand-accent break-all">
+                              {generatedRecoveryOtp.secret}
+                            </div>
+
+                            <div className="mt-3 flex gap-2">
+                              <button
+                                onClick={() => {
+                                  navigator.clipboard.writeText(generatedRecoveryOtp.secret);
+                                  setHasCopiedRecoveryOtp(true);
+                                }}
+                                className="flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/68 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
+                              >
+                                {hasCopiedRecoveryOtp ? 'Setup Key Copied' : 'Copy Setup Key'}
+                              </button>
+                              <button
+                                onClick={() => {
+                                  navigator.clipboard.writeText(generatedRecoveryOtp.otpauthUrl);
+                                  setHasCopiedRecoveryOtp(true);
+                                }}
+                                className="flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/68 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
+                              >
+                                Copy App Link
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        <label className="flex items-start gap-3 cursor-pointer group">
+                          <input
+                            type="checkbox"
+                            checked={hasCopiedRecoveryKey || hasCopiedRecoveryOtp}
+                            onChange={(e) => {
+                              const next = e.target.checked;
+                              setHasCopiedRecoveryKey(next);
+                              if (generatedRecoveryOtp) setHasCopiedRecoveryOtp(next);
+                            }}
+                            className="mt-0.5 accent-brand-accent h-4 w-4"
+                          />
+                          <span className="text-[10px] text-white/40 group-hover:text-white/60 transition-colors uppercase tracking-wider leading-normal">
+                            I have saved at least one recovery method in a safe place.
+                          </span>
+                        </label>
+
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              setGeneratedRecoveryKey('');
+                              setGeneratedRecoveryOtp(null);
+                              setHasCopiedRecoveryKey(false);
+                              setHasCopiedRecoveryOtp(false);
+                            }}
+                            className="flex-1 px-5 py-2.5 rounded-xl border border-white/10 bg-white/[0.03] text-white/50 font-black text-sm hover:text-white hover:border-white/20 transition-colors"
+                          >
+                            Back
+                          </button>
+                          <button
+                            onClick={handleConfirmEnableLock}
+                            disabled={isLockBusy || (!hasCopiedRecoveryKey && !hasCopiedRecoveryOtp)}
+                            className="flex-[2] px-5 py-2.5 rounded-xl bg-brand-accent text-black font-black text-sm disabled:opacity-50 transition-all active:scale-[0.98]"
+                          >
+                            Activate Lock
+                          </button>
+                        </div>
+                      </div>
                     )}
-                    <button
-                      onClick={handleEnableLock}
-                      disabled={isLockBusy || !lockPasswordInput || !lockPasswordConfirm}
-                      className="w-full px-5 py-2.5 rounded-xl bg-brand-accent text-black font-black text-sm disabled:opacity-50"
-                    >
-                      Enable Lock
-                    </button>
                   </>
                 )}
 
@@ -8931,13 +10295,9 @@ function App() {
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-black/30 p-4 md:p-5 flex flex-col md:flex-row gap-4 md:gap-5">
                   <img
-                    src={sharedScene.thumbnail || (sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : '')}
+                    src={getProxyUrl(sharedScene.thumbnail || (sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : ''))}
                     alt="scene"
                     className="w-full md:w-40 h-40 rounded-2xl object-cover border border-white/10"
-                    onError={(e) => {
-                      const fallback = sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : '';
-                      if (fallback && e.currentTarget.src !== fallback) e.currentTarget.src = fallback;
-                    }}
                   />
                   <div className="flex-1 min-w-0">
                     <div className="font-black text-brand-accent text-lg truncate">{sharedScene.title || 'Aether Scene'}</div>
@@ -8966,20 +10326,25 @@ function App() {
               </div>
               <motion.div initial={{ scale: 0.95, y: 18 }} animate={{ scale: 1, y: 0 }} className="w-full max-w-6xl max-h-[88vh] glass-card bg-[#090b0f]/96 border border-brand-accent/20 rounded-[2.2rem] relative z-10 overflow-hidden flex flex-col shadow-[0_28px_100px_rgba(0,0,0,0.55)]">
                 <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-brand-accent/70 to-transparent" />
-                <div className="flex items-center justify-between gap-4 p-5 md:p-6 border-b border-white/8 bg-black/25 backdrop-blur-md">
-                    <div className="flex items-center gap-4 min-w-0">
+                <div className="flex flex-col gap-4 p-5 md:p-6 border-b border-white/8 bg-black/25 backdrop-blur-md md:flex-row md:items-center md:justify-between">
+                    <div className="flex items-center gap-4 min-w-0 flex-1">
                       <div className="w-11 h-11 rounded-2xl bg-brand-accent/10 border border-brand-accent/25 flex items-center justify-center shrink-0">
                         <HardDrive size={18} className="text-brand-accent" />
                       </div>
                       <div className="min-w-0">
                         <div className="text-[9px] font-black uppercase tracking-[0.32em] text-white/30">Neural Library Overlay</div>
                         <div className="text-xl md:text-2xl font-black uppercase tracking-tight text-brand-accent truncate">Studio Library</div>
+                        <div className="mt-2 flex flex-wrap items-center gap-2 text-[8px] font-black uppercase tracking-[0.18em] text-white/35">
+                          <span className="rounded-full border border-brand-accent/20 bg-brand-accent/10 px-2 py-1 text-brand-accent">{vaultNodeCount} vaults</span>
+                          <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1">{libraryInsights.unique} unique</span>
+                          <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1">{smartMixHint}</span>
+                        </div>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 flex-wrap justify-end">
-                      <button onClick={handleImportVault} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all" title="Import Vault (.aether)">Import</button>
-                      <button onClick={handleGenerateSmartMix} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all" title="Generate Smart Mix">Smart Mix</button>
-                      <button onClick={handleCleanVault} disabled={isVaultCleaning} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all disabled:opacity-40" title="Clean Vault">Clean</button>
+                    <div className="flex w-full items-center gap-2 flex-wrap justify-start rounded-[1.5rem] border border-white/8 bg-white/[0.03] px-2 py-1.5 md:w-auto md:justify-end">
+                      <button onClick={handleImportVault} className={panelActionIconButtonClass} title="Import Vault (.aether)"><Upload size={14} /></button>
+                      <button onClick={handleGenerateSmartMix} disabled={!smartMixPlan.tracks.length} className={panelActionIconButtonClass} title={`Generate Smart Mix • ${smartMixHint}`}><Zap size={14} /></button>
+                      <button onClick={handleCleanVault} disabled={isVaultCleaning} className={panelActionIconButtonClass} title="Repair Vault"><RefreshCw size={14} className={isVaultCleaning ? 'animate-spin' : ''} /></button>
                       <button onClick={() => { setIsLibraryOverlayOpen(false); setLibraryActionTarget(null); }} className="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close">
                         <X size={18} />
                       </button>
@@ -8992,6 +10357,7 @@ function App() {
                         <div>
                           <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Quick Actions</div>
                           <div className="text-[12px] font-black uppercase tracking-widest text-brand-accent">Add to Vault</div>
+                          <div className="mt-1 text-[9px] uppercase tracking-[0.18em] text-white/28">Create a new vault or drop the pending context into an existing one.</div>
                         </div>
                         <div className="flex items-center gap-2">
                           <button onClick={() => setIsLibraryOverlayOpen(false)} className="p-2 rounded-xl bg-white/5 border border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/40 transition-all" title="Close Overlay">
@@ -9144,7 +10510,7 @@ function App() {
                         <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 flex flex-col gap-3 bg-gradient-to-b from-brand-accent/5 to-transparent">
                           <div className="rounded-2xl border border-white/8 bg-black/20 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
                             <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Library Stats</div>
-                            <div className="mt-3 grid grid-cols-3 gap-3 text-center">
+                            <div className="mt-3 grid grid-cols-1 gap-3 text-center sm:grid-cols-3">
                               <div className="rounded-xl bg-white/5 border border-white/8 p-3"><div className="text-brand-accent font-black text-lg">{libraryInsights.unique}</div><div className="text-[8px] uppercase tracking-[0.24em] text-white/30">Unique</div></div>
                               <div className="rounded-xl bg-white/5 border border-white/8 p-3"><div className="text-brand-accent font-black text-lg">{libraryInsights.total}</div><div className="text-[8px] uppercase tracking-[0.24em] text-white/30">Total</div></div>
                               <div className="rounded-xl bg-white/5 border border-white/8 p-3"><div className="text-brand-accent font-black text-lg">{libraryInsights.duplicates}</div><div className="text-[8px] uppercase tracking-[0.24em] text-white/30">Dupes</div></div>
@@ -9339,11 +10705,11 @@ function App() {
                         <Globe size={20} className="text-brand-accent" />
                         <div>
                           <h2 className="text-lg font-black uppercase tracking-tighter text-white">Neural Discovery</h2>
-                          <p className="text-brand-accent text-xs font-bold tracking-widest uppercase opacity-60">{searchResults.length} RESULT{searchResults.length !== 1 ? 'S' : ''}</p>
+                          <p className="text-brand-accent text-xs font-bold tracking-widest uppercase opacity-60">{discoveryCountLabel}</p>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
-                        {(searchResults.length > 0 || hasCompletedSearch) && (
+                        {hasActiveSearchState && (
                           <button
                             onClick={clearDiscoveryResults}
                             className="px-3 py-2 rounded-lg bg-white/5 hover:bg-red-500/20 text-[10px] font-black uppercase tracking-[0.22em] text-white/50 hover:text-red-400 transition-all"
@@ -9361,7 +10727,7 @@ function App() {
                     </div>
                     <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
                       <div className="flex flex-col gap-2">
-                        {searchResults.length > 0 ? searchResults.map((track, idx) => (
+                        {activeDiscoveryTracks.length > 0 ? activeDiscoveryTracks.map((track, idx) => (
                           <motion.div
                             key={`discovery-full-${track.id}-${idx}`}
                             className="group glass-card p-4 flex items-center gap-4 rounded-xl transition-all bg-white/5 border border-white/10 hover:border-brand-accent/30 hover:bg-brand-accent/5"
@@ -9390,7 +10756,7 @@ function App() {
                               <HardDrive size={14} />
                             </button>
                           </motion.div>
-                        )) : hasCompletedSearch ? (
+                        )) : (isSearchActive && hasCompletedSearch) ? (
                           <div className="h-40 flex flex-col items-center justify-center gap-3 text-center">
                             <Search size={28} className="text-brand-accent/60" strokeWidth={1.4} />
                             <div>
@@ -9608,18 +10974,18 @@ function App() {
             </AnimatePresence>
       <div className="fixed inset-0 pointer-events-none z-[-2] overflow-hidden select-none bg-black">
          {/* Baseline Neural Glow (Optimized) */}
-         <div className="absolute inset-0 bg-brand-accent/5 backdrop-blur-[60px] animate-pulse" />
+         <div className={`absolute inset-0 ${isAuraLite ? 'bg-[radial-gradient(circle_at_50%_22%,rgba(0,255,191,0.08),transparent_52%)]' : 'bg-brand-accent/5 backdrop-blur-[60px] animate-pulse'}`} />
          
          {/* Global Neural Aura (Pulse) - NOVA Optimized */}
-         <div className="absolute inset-0 flex items-center justify-center scale-150 transform-gpu will-change-transform">
+         <div className={`absolute inset-0 flex items-center justify-center transform-gpu will-change-transform ${isAuraLite ? 'scale-110' : 'scale-150'}`}>
             <canvas 
                ref={pulseCanvasRef} 
                width={400} 
                height={400} 
-            className={`w-[800px] h-[800px] transition-opacity duration-1000 ${visualizerMode === 'pulse' ? 'opacity-55' : 'opacity-0'}`} 
+            className={`${isAuraLite ? 'w-[540px] h-[540px]' : 'w-[800px] h-[800px]'} transition-opacity duration-1000 ${visualizerMode === 'pulse' ? (isAuraLite ? 'opacity-28' : 'opacity-55') : 'opacity-0'}`} 
             />
          </div>
-         <div className="absolute inset-0 bg-black/60" />
+         <div className={`absolute inset-0 ${isAuraLite ? 'bg-black/70' : 'bg-black/60'}`} />
             </div>
 
 
@@ -9646,9 +11012,7 @@ function App() {
 
             <div className="relative h-full w-full pointer-events-auto">
               <div
-                 className={`relative flex h-full w-full overflow-hidden transition-all duration-1000 ${
-                   !isVideoReady && videoMode ? 'opacity-0 scale-[0.98]' : 'opacity-100 scale-100'
-                 } ${videoMode === 'cinema' ? 'rounded-none bg-black' : 'rounded-[2.25rem] border border-white/[0.08] bg-[#06090d]/92 backdrop-blur-[28px] shadow-[0_28px_90px_rgba(0,0,0,0.5)]'}`}
+                 className={`relative flex h-full w-full overflow-hidden transition-all duration-500 ${videoMode === 'cinema' ? 'rounded-none bg-black' : 'rounded-[2.25rem] border border-white/[0.08] bg-[#06090d]/92 backdrop-blur-[28px] shadow-[0_28px_90px_rgba(0,0,0,0.5)]'}`}
               >
                 <div className={`relative flex-1 min-h-0 ${videoMode === 'cinema' ? '' : 'm-3 rounded-[1.8rem] overflow-hidden border border-white/[0.08] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.02)]'}`}>
                   {currentTrack?.thumbnail && (
@@ -9666,11 +11030,19 @@ function App() {
                     }}
                   />
 
+                  {currentTrack?.thumbnail && (
+                    <img
+                      src={getProxyUrl(currentTrack.thumbnail)}
+                      alt=""
+                      className={`absolute inset-0 z-[1] h-full w-full transition-opacity duration-300 ${visualVideoFit === 'cover' ? 'object-cover' : 'object-contain'} ${isVideoReady ? 'opacity-0' : 'opacity-75'}`}
+                    />
+                  )}
+
                   <video
                     ref={(el) => { localVideoRef.current = el; }}
                     playsInline
                     onCanPlay={() => setIsVideoReady(true)}
-                    className={`absolute inset-0 h-full w-full ${visualVideoFit === 'cover' ? 'object-cover' : 'object-contain'}`}
+                    className={`absolute inset-0 z-[2] h-full w-full transition-opacity duration-300 ${visualVideoFit === 'cover' ? 'object-cover' : 'object-contain'} ${isVideoReady ? 'opacity-100' : 'opacity-0'}`}
                   />
 
                   {isAudioBuffering && (
@@ -9814,8 +11186,8 @@ function App() {
                               className="h-full rounded-full transition-all"
                               style={{
                                 width: `${currentTrack ? (currentTime / (currentTrack.totalDurationMs || currentTrack.duration || 1)) * 100 : 0}%`,
-                                background: themeColor,
-                                boxShadow: `0 0 12px ${themeColor}`,
+                                background: trackProgressAccent,
+                                boxShadow: `0 0 14px ${trackProgressGlow}`,
                               }}
                             />
                           </div>
@@ -9833,8 +11205,8 @@ function App() {
                             </button>
                             <button
                               onClick={() => handleControl(isPlaying ? 'pause' : 'resume')}
-                              className="flex h-14 w-14 items-center justify-center rounded-2xl text-black transition-all active:scale-95 hover:scale-105 shadow-[0_0_24px_rgba(0,255,191,0.5)]"
-                              style={{ background: themeColor }}
+                              className="flex h-14 w-14 items-center justify-center rounded-2xl text-black transition-all active:scale-95 hover:scale-105"
+                              style={{ background: trackControlAccent, boxShadow: `0 0 26px ${trackControlGlow}` }}
                             >
                               {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" className="ml-1" />}
                             </button>

@@ -8,8 +8,8 @@
   --color-brand-border: rgba(255, 255, 255, 0.1);
   --color-brand-text-dim: rgba(255, 255, 255, 0.4);
   
-  --font-inter: "Inter", "Outfit", sans-serif;
-  --font-mono: "JetBrains Mono", "ui-monospace", monospace;
+  --font-inter: "Avenir Next", "Segoe UI Variable Text", "SF Pro Display", "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", "Cascadia Code", "ui-monospace", monospace;
   
   --radius-2xl: 1.25rem;
   --radius-3xl: 1.5rem;
