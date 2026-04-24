@@ -2416,8 +2416,11 @@ function App() {
       setIsAudioBuffering(true);
     };
     audio.onended = () => {
-      console.log("[Aether/Audio] Web ended", { title: currentTrack.title });
-      axios.post(`${API_BASE}/api/control/${DEFAULT_GUILD_ID}`, { action: 'skip' })
+      // Pass the track ID so the backend skip guard can deduplicate concurrent
+      // skip calls from multiple web tabs finishing the same song simultaneously.
+      const skipTrackId = currentTrack?.id || currentTrack?.youtubeId || currentTrack?.actualUrl || currentTrack?.url || '';
+      console.log("[Aether/Audio] Web ended", { title: currentTrack.title, skipTrackId });
+      axios.post(`${API_BASE}/api/control/${DEFAULT_GUILD_ID}`, { action: 'skip', skipTrackId })
         .then(() => fetchQueue())
         .catch((err) => console.error("[Aether/Audio] Web skip failed", err));
     };
@@ -4388,14 +4391,7 @@ function App() {
     const startedAt = performance.now();
     try {
       const guildId = getEffectiveGuildId();
-      console.log("[Aether/Queue] Fetching queue", { guildId, isStandalone, currentTime, currentTrackTitle });
       const resp = await axios.get(`${API_BASE}/api/queue/${guildId}`);
-      console.log("[Aether/Queue] Response", {
-        isPlaying: resp.data?.isPlaying,
-        currentMs: resp.data?.currentMs,
-        queueLength: resp.data?.songs?.length,
-        topTrack: resp.data?.songs?.[0]?.title,
-      });
       
       // Only pull remote queue if acting as Discord client (Standalone manages its own state)
       if (resp.data.songs && !isStandalone) setQueue(resp.data.songs);
@@ -4414,7 +4410,12 @@ function App() {
       
       const serverMs = resp.data.currentMs || 0;
       if (!isStandalone && queueLength > 0 && (Math.abs(currentTime - serverMs) > 1000 || currentTime === 0)) setCurrentTime(serverMs);
-      if (!isStandalone && typeof resp.data.isPlaying === 'boolean') setIsPlaying(resp.data.isPlaying);
+      // Only adopt isPlaying=true from the server (a new song started / resumed).
+      // Never let another tab's paused heartbeat silence your local audio.
+      // Each tab manages its own pause/resume independently after unlock.
+      if (!isStandalone && resp.data.isPlaying === true && !isPlaying) {
+        setIsPlaying(true);
+      }
 
       const track = resp.data.songs && resp.data.songs[0];
       if (track && track.title !== currentTrackTitle) {

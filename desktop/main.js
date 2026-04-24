@@ -583,39 +583,77 @@ const getBundledPath = (relPath) => {
 };
 
 const getUserDataBinaryPath = (binaryName) => path.join(app.getPath('userData'), 'bin', binaryName);
+const getBinaryStat = (filePath) => {
+    try {
+        return filePath ? fs.statSync(filePath) : null;
+    } catch {
+        return null;
+    }
+};
+const ensureExecutablePermissions = (filePath) => {
+    if (!filePath || process.platform === 'win32' || !fs.existsSync(filePath)) return filePath;
+    try {
+        fs.chmodSync(filePath, 0o755);
+    } catch (e) {
+        logDebug('chmod failed', { filePath, error: e?.message || String(e) });
+    }
+    return filePath;
+};
 
 // --- BULLETPROOF NATIVE BINARY EXTRACTOR ---
 // Sidesteps read-only /Applications restrictions and Python deprecations
-const unpackNativeEngine = (binaryName) => {
+const unpackNativeEngine = (binaryName, options = {}) => {
+    const { force = false } = options;
     const sourcePath = getBundledPath(`desktop/bin/${binaryName}`);
     const targetExecutable = getUserDataBinaryPath(binaryName);
-    
+    const sourceStat = getBinaryStat(sourcePath);
+
+    if (!sourceStat?.isFile?.()) {
+        logDebug('bundled binary missing for unpack', { binaryName, sourcePath });
+        return null;
+    }
+
     try {
-        if (fs.existsSync(sourcePath)) {
-            fs.mkdirSync(path.dirname(targetExecutable), { recursive: true });
-            // Read from bundled resources, inject into user space, force execute
-            const asm = fs.readFileSync(sourcePath);
-            fs.writeFileSync(targetExecutable, asm);
-            if (process.platform !== 'win32') {
-                try { fs.chmodSync(targetExecutable, 0o755); } catch (e) {
-                    fs.appendFileSync(path.join(app.getPath('desktop'), 'AetherDebug.log'), `\n[Chmod Fault]\n${e.message}\n`);
-                }
-            }
-            if (process.platform === 'win32') {
-                try {
-                    // Copying into userData usually strips Mark-of-the-Web; this helps avoid manual Unblock-File.
-                    fs.utimesSync(targetExecutable, new Date(), new Date());
-                } catch {}
-            }
-            return targetExecutable;
-        } else {
-            fs.appendFileSync(path.join(app.getPath('desktop'), 'AetherDebug.log'), `\n[Unpack Missing]\nsourcePath does not exist: ${sourcePath}\n`);
+        const targetStat = getBinaryStat(targetExecutable);
+        if (!force && targetStat?.isFile?.() && targetStat.size > 0) {
+            return ensureExecutablePermissions(targetExecutable);
         }
+
+        fs.mkdirSync(path.dirname(targetExecutable), { recursive: true });
+        const tmpTarget = `${targetExecutable}.${process.pid}.${Date.now()}.tmp`;
+        fs.copyFileSync(sourcePath, tmpTarget);
+        ensureExecutablePermissions(tmpTarget);
+
+        try {
+            if (force && fs.existsSync(targetExecutable)) {
+                try { fs.rmSync(targetExecutable, { force: true }); } catch {}
+            }
+            if (!fs.existsSync(targetExecutable)) {
+                fs.renameSync(tmpTarget, targetExecutable);
+            } else {
+                try { fs.unlinkSync(tmpTarget); } catch {}
+            }
+        } catch (renameError) {
+            logDebug('binary unpack rename failed', {
+                binaryName,
+                sourcePath,
+                targetExecutable,
+                error: renameError?.message || String(renameError),
+            });
+            return ensureExecutablePermissions(tmpTarget);
+        }
+
+        if (process.platform === 'win32') {
+            try {
+                fs.utimesSync(targetExecutable, new Date(), new Date());
+            } catch {}
+        }
+        return ensureExecutablePermissions(targetExecutable);
     } catch (e) {
-        fs.appendFileSync(path.join(app.getPath('desktop'), 'AetherDebug.log'), `\n[Engine Unpack Fault]\n${e.message}\n`);
+        logDebug('binary unpack failed', { binaryName, sourcePath, targetExecutable, error: e?.message || String(e) });
         console.error(`[Aether] Execution unpack fault: ${e.message}`);
     }
-    return getBundledPath(`desktop/bin/${binaryName}`);
+    return null;
 };
 
 const resolveFfmpegPath = () => {
@@ -794,9 +832,7 @@ const ensureYtDlpPath = async () => {
             const target = path.join(binDir, binaryName);
 
             if (fs.existsSync(target)) {
-                if (process.platform !== 'win32') {
-                    try { fs.chmodSync(target, 0o755); } catch {}
-                }
+                ensureExecutablePermissions(target);
                 if (isSpawnableCommand(target)) {
                     ytdlpPath = target;
                     logDebug('yt-dlp resolved from userData bin', { target });
@@ -811,15 +847,32 @@ const ensureYtDlpPath = async () => {
                     : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
 
             logDebug('yt-dlp bootstrap download starting', { downloadUrl });
-            await downloadFileWithRedirects(downloadUrl, target);
-            if (process.platform !== 'win32') {
-                try { fs.chmodSync(target, 0o755); } catch {}
+            const tempTarget = `${target}.${process.pid}.${Date.now()}.tmp`;
+            await downloadFileWithRedirects(downloadUrl, tempTarget);
+            ensureExecutablePermissions(tempTarget);
+
+            let selectedTarget = tempTarget;
+            try {
+                if (!fs.existsSync(target)) {
+                    fs.renameSync(tempTarget, target);
+                    selectedTarget = target;
+                }
+            } catch (renameError) {
+                logDebug('yt-dlp bootstrap rename skipped', {
+                    target,
+                    tempTarget,
+                    error: renameError?.message || String(renameError),
+                });
             }
 
-            if (isSpawnableCommand(target)) {
-                ytdlpPath = target;
-                console.log(`[Aether] yt-dlp bootstrapped at ${target}`);
-                logDebug('yt-dlp bootstrapped', { target });
+            if (process.platform === 'win32') {
+                try { fs.utimesSync(selectedTarget, new Date(), new Date()); } catch {}
+            }
+
+            if (isSpawnableCommand(selectedTarget)) {
+                ytdlpPath = selectedTarget;
+                console.log(`[Aether] yt-dlp bootstrapped at ${selectedTarget}`);
+                logDebug('yt-dlp bootstrapped', { target: selectedTarget });
                 return true;
             }
         } catch (e) {
@@ -1230,6 +1283,20 @@ streamApp.use(cors());
 streamApp.use('/offline', express.static(offlineEngine.downloadDir));
 streamApp.use(express.json());
 
+// ── Client tagging ────────────────────────────────────────────────────────────
+// Cloudflare tunnel injects cf-ray / cf-connecting-ip on every proxied request.
+// Requests from Electron (localhost) never have these headers.
+const clientTag = (req) => {
+    const cfRay = req.headers['cf-ray'];
+    const cfIp  = req.headers['cf-connecting-ip'];
+    if (cfRay || cfIp) {
+        const ip = cfIp || 'unknown';
+        const ray = cfRay ? cfRay.split('-')[0] : '?';
+        return `[WEB 🌐 ${ip} #${ray}]`;
+    }
+    return '[LOCAL 🖥️ ]';
+};
+
 let remoteState = { isPlaying: false, currentTime: 0, track: null };
 
 streamApp.post('/api/device/sync', (req, res) => {
@@ -1312,18 +1379,19 @@ streamApp.get('/stream', async (req, res) => {
     const startTime = Date.now();
     const videoUrl = req.query.url;
     const seekTime = parseFloat(req.query.t || '0');
+    const tag = clientTag(req);
 
     // Extract track ID only from YouTube share links (youtube.com?v=XXXXX)
     const trackIdMatch = videoUrl.match(/(?:youtube\.com|youtu\.be).*[?&]v=([A-Za-z0-9_-]{11})/);
     const trackId = trackIdMatch ? trackIdMatch[1] : null;
     const isYouTubeLink = !!trackId;
-    
-    console.log(`[Aether] Stream request for url: ${videoUrl}, isYouTubeLink: ${isYouTubeLink}, trackId: ${trackId || 'direct-stream'}`);
+
+    console.log(`${tag} /stream ${trackId || 'direct'} seek=${seekTime}s`);
 
     let cachedFile = null;
     if (isYouTubeLink) {
         cachedFile = offlineEngine.getFilePath(trackId);
-        if (cachedFile) console.log(`[Aether] Cache hit for ${trackId}: ${cachedFile}`);
+        if (cachedFile) console.log(`${tag} cache hit for ${trackId}`);
     }
 
     if (cachedFile) {
@@ -1367,7 +1435,7 @@ streamApp.get('/stream', async (req, res) => {
         }
 
         res.on('finish', () => {
-            console.log(`[Aether] Cached stream for ${trackId} took ${Date.now() - startTime}ms`);
+            console.log(`${tag} cached stream done ${trackId} +${Date.now() - startTime}ms`);
         });
         return;
     }
@@ -1380,11 +1448,9 @@ streamApp.get('/stream', async (req, res) => {
         return;
     }
 
-    console.log(`[Aether] Cache miss for ${trackId || 'direct-stream'}, streaming from yt-dlp`);
+    console.log(`${tag} cache miss — yt-dlp live stream ${trackId || 'direct'}`);
     // Fallback to yt-dlp streaming
     const cookiesPath = getResolvedCookiesPath();
-    
-    console.log(`[Aether] Streaming: ${videoUrl} @ ${seekTime}s`);
 
     const args = [
         videoUrl,
@@ -1424,7 +1490,7 @@ streamApp.get('/stream', async (req, res) => {
     proc.stdout.on('data', () => {
         if (!firstChunkTime) {
             firstChunkTime = Date.now();
-            console.log(`[Aether] First streaming chunk after ${firstChunkTime - startTime}ms for ${trackId}`);
+            console.log(`${tag} first chunk in ${firstChunkTime - startTime}ms for ${trackId}`);
         }
     });
 
@@ -1459,14 +1525,10 @@ streamApp.get('/stream', async (req, res) => {
     proc.on('close', (code) => {
         activeStreamProcesses.delete(proc);
         const streamTotal = Date.now() - startTime;
-        const ytdlpTotal = Date.now() - ytdlpStart;
-        const remuxDur = remuxStart ? Date.now() - remuxStart : null;
-        const suffix = isYouTubeLink ? ` ytdlp=${ytdlpTotal}ms remux=${remuxDur != null ? remuxDur + 'ms' : 'unknown'}` : '';
-        console.log(`[Aether] yt-dlp stream closed ${trackId || 'direct'} code=${code} total=${streamTotal}ms${suffix}`);
+        console.log(`${tag} stream closed ${trackId || 'direct'} code=${code} total=${streamTotal}ms`);
     });
 
     req.on('close', () => {
-        console.log(`[Aether] Stream request closed for ${trackId} after ${Date.now() - startTime}ms`);
         activeStreamProcesses.delete(proc);
         proc.kill('SIGKILL');
     });
@@ -1600,33 +1662,26 @@ streamApp.get('/api/proxy', async (req, res) => {
 // --- NEURAL ENGINE HANDLERS (CONVERGED V9.0.0) ---
 streamApp.use(express.json());
 
-// 1. QUEUE STATUS
+// 1. QUEUE STATUS — only log when there are actually songs (poll spam suppressed)
 streamApp.get('/api/queue/:id', (req, res) => {
     const queue = getQueue(req.params.id);
-    console.log('[Aether/API] GET /api/queue', {
-        id: req.params.id,
-        songs: queue.songs?.length || 0,
-        isPlaying: queue.isPlaying,
-        currentMs: queue.currentMs,
-    });
+    if ((queue.songs?.length || 0) > 0) {
+        console.log(`${clientTag(req)} queue poll — ${queue.songs.length} song(s) playing=${queue.isPlaying}`);
+    }
     res.json(queue);
 });
 
-// 2. SEARCH (Direct Integration)
+// 2. SEARCH
 streamApp.get('/api/search', async (req, res) => {
+    const tag = clientTag(req);
     try {
-        console.log('[Aether/API] GET /api/search', { q: req.query.q });
+        console.log(`${tag} search "${String(req.query.q || '').slice(0, 50)}"`);
         const results = await search(req.query.q, ytdlpPath);
         const count = results?.length || 0;
-        console.log('[Aether/API] GET /api/search result', { q: req.query.q, count });
-        logDebug('api search completed', { query: String(req.query.q || '').slice(0, 60), count, searchPath: ytdlpPath || 'unresolved' });
-        if (count === 0) {
-            logDebug('api search returned no results', { query: String(req.query.q || '').slice(0, 60), searchPath: ytdlpPath || 'unresolved' });
-        }
+        console.log(`${tag} search returned ${count} result(s)`);
         res.json(results);
     } catch (e) {
-        console.error('[Aether/API] GET /api/search failed', e.message);
-        logDebug('api search failed', { query: String(req.query.q || '').slice(0, 60), error: e?.message || String(e) });
+        console.error(`${tag} search failed: ${e.message}`);
         res.json([]);
     }
 });
@@ -1635,12 +1690,7 @@ streamApp.get('/api/search', async (req, res) => {
 streamApp.post('/api/add/:id', (req, res) => {
     const queue = getQueue(req.params.id);
     const { track } = req.body;
-    console.log('[Aether/API] POST /api/add', {
-        id: req.params.id,
-        title: track?.title,
-        author: track?.author,
-        url: track?.actualUrl || track?.url,
-    });
+    console.log(`${clientTag(req)} ➕ added "${track?.title || 'unknown'}" by ${track?.author || '?'} → queue pos ${queue.songs.length + 1}`);
     queue.songs.push(track);
     if (queue.songs.length === 1) {
         queue.currentMs = 0;
@@ -1651,21 +1701,48 @@ streamApp.post('/api/add/:id', (req, res) => {
 // 4. CONTROL (Pause/Skip/Seek)
 streamApp.post('/api/control/:id', (req, res) => {
     const queue = getQueue(req.params.id);
-    const { action, time } = req.body;
-    console.log('[Aether/API] POST /api/control', { id: req.params.id, action, time });
-    
+    const { action, time, skipTrackId } = req.body;
+    console.log(`${clientTag(req)} ⏯ control: ${action}${time != null ? ` @${time}s` : ''} (queue: ${queue.songs.length} songs)`);
+
     switch (action) {
         case 'pause': queue.isPlaying = false; break;
         case 'resume': queue.isPlaying = true; break;
         case 'seek': queue.seekOffset = time; break;
-        case 'skip': 
-            queue.songs.shift(); 
+        case 'skip': {
+            // ── Multi-user skip guard ────────────────────────────────────────────
+            // Web clients pass skipTrackId = the track they believe is current.
+            // If another tab already advanced the queue, the IDs won't match and
+            // this skip is silently ignored (prevents N tabs eating N songs at once).
+            // A 500ms cooldown further absorbs near-simultaneous duplicate skips.
+            // Clients that don't pass skipTrackId (older calls) skip unconditionally.
+            const now = Date.now();
+            const cooldownMs = 500;
+            const tooSoon = queue.lastSkipAt && (now - queue.lastSkipAt) < cooldownMs;
+
+            if (tooSoon) {
+                console.log(`${clientTag(req)} skip suppressed — cooldown (${now - queue.lastSkipAt}ms < ${cooldownMs}ms)`);
+                break;
+            }
+
+            if (skipTrackId && queue.songs.length > 0) {
+                const head = queue.songs[0];
+                const headId = head?.id || head?.youtubeId || head?.actualUrl || head?.url || '';
+                if (headId && headId !== skipTrackId) {
+                    console.log(`${clientTag(req)} skip suppressed — trackId mismatch (want ${skipTrackId}, head is ${headId})`);
+                    break;
+                }
+            }
+
+            queue.songs.shift();
             queue.seekOffset = 0;
+            queue.lastSkipAt = now;
             if (queue.songs.length === 0) {
                 queue.isPlaying = false;
                 queue.currentMs = 0;
             }
             break;
+        }
+
         case 'shuffle':
             if (queue.songs.length > 1) {
                 const q = queue.songs;
@@ -1677,47 +1754,53 @@ streamApp.post('/api/control/:id', (req, res) => {
             }
             break;
     }
-    
-    // Broadcast to Frontend
+
     if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('aether:control', action);
     }
     res.json({ success: true });
 });
 
-// 5. HEARTBEAT (Frontend State Sync)
+// 5. HEARTBEAT — silent unless playback state flips (avoids spam)
 streamApp.post('/api/heartbeat/:id', (req, res) => {
     const queue = getQueue(req.params.id);
     const { currentTime, isPlaying } = req.body;
-    console.log('[Aether/API] POST /api/heartbeat', { id: req.params.id, currentTime, isPlaying });
+    const wasPlaying = queue.isPlaying;
     queue.currentMs = currentTime;
     queue.isPlaying = isPlaying;
+    // Only log when play/pause state changes, not on every tick
+    if (wasPlaying !== isPlaying) {
+        console.log(`${clientTag(req)} heartbeat state flip → ${isPlaying ? 'playing' : 'paused'}`);
+    }
     res.json({ success: true });
 });
 
-// 6. LYRICS (Converged Sync)
+// 6. LYRICS
 streamApp.get('/api/lyrics', async (req, res) => {
     const { track, artist, duration, url, query } = req.query;
+    const tag = clientTag(req);
     try {
-        console.log('[Aether/API] GET /api/lyrics', { track, artist, duration, url, query });
+        console.log(`${tag} lyrics "${String(track || '').slice(0, 40)}" by ${String(artist || '?').slice(0, 30)}`);
         const durationSec = Number.isFinite(Number(duration)) ? Number(duration) : 0;
         const results = await fetchSyncedLyrics(track, artist, durationSec, query, url);
-        console.log('[Aether/API] GET /api/lyrics result', { track, artist, hasLyrics: !!results?.lyrics?.length, count: results?.lyrics?.length || 0, source: results?.source });
+        const count = results?.lyrics?.length || 0;
+        console.log(`${tag} lyrics → ${count} line(s) from ${results?.source || 'unknown'}`);
         res.json(results?.lyrics || []);
     } catch (e) {
-        console.error('[Aether/API] GET /api/lyrics failed', e.message);
+        console.error(`${tag} lyrics failed: ${e.message}`);
         res.json([]);
     }
 });
 
-// 7. METADATA (Converged Sync)
+// 7. METADATA
 streamApp.get('/api/metadata', async (req, res) => {
+    const tag = clientTag(req);
     try {
-        console.log('[Aether/API] GET /api/metadata', { url: req.query.url });
+        console.log(`${tag} metadata ${String(req.query.url || '').slice(0, 60)}`);
         const meta = await getMetadata(req.query.url, ytdlpPath);
         res.json(meta);
     } catch (e) {
-        console.error('[Aether/API] GET /api/metadata failed', e.message);
+        console.error(`${tag} metadata failed: ${e.message}`);
         res.status(500).end();
     }
 });
