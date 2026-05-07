@@ -173,7 +173,78 @@ const applyWindowsTitleBarOverlay = (win, compact = false) => {
 };
 
 const APP_LOCK_STORE_KEY = 'appLock';
+const APP_LOCK_RECOVERY_STORE_KEY = 'appLockRecovery';
 const SESSION_PLAYBACK_STORE_KEY = 'aether.sessionPlayback.v1';
+
+
+const getRecoveryRecord = () => {
+    try {
+        const rec = store.get(APP_LOCK_RECOVERY_STORE_KEY);
+        return rec && typeof rec === 'object' ? rec : null;
+    } catch {
+        return null;
+    }
+};
+
+const setRecoveryRecord = (patch = {}) => {
+    const current = getRecoveryRecord() || {};
+    const next = {
+        ...current,
+        ...patch,
+        updatedAt: Date.now(),
+    };
+    store.set(APP_LOCK_RECOVERY_STORE_KEY, next);
+    return next;
+};
+
+const hashTextScrypt = (text, saltHex) => {
+    const salt = Buffer.from(String(saltHex || ''), 'hex');
+    const out = crypto.scryptSync(String(text || ''), salt, 32);
+    return out.toString('hex');
+};
+
+const constantTimeEqualHex = (aHex, bHex) => {
+    try {
+        const a = Buffer.from(String(aHex || ''), 'hex');
+        const b = Buffer.from(String(bHex || ''), 'hex');
+        if (a.length !== b.length) return false;
+        return crypto.timingSafeEqual(a, b);
+    } catch {
+        return false;
+    }
+};
+
+// Ephemeral recovery state (not persisted)
+let recoveryResetToken = null; // { token, expiresAt }
+
+
+const WORDLIST = [
+    'aurora','neon','atlas','ember','nova','lumen','orbit','echo','pulse','cipher','flux','zenith','quartz','sable','horizon','ripple',
+    'vanta','solace','prism','vector','tundra','mosaic','sonic','drift','cobalt','nimbus','glint','lattice','cascade','titan','argon','lyra',
+    'sierra','komet','kairo','nexus','meridian','obsidian','helios','cosmos','mirage','saffron','harbor','wisp','halcyon','emberglow','velvet','arcade',
+    'starlit','aether','studio','gravity','signal','frequency','harmony','tempo','chorus','verse','bridge','spectrum','crystal','midnight','radiant','serene'
+];
+
+const generateRecoveryPhrase = () => {
+    const words = [];
+    for (let i = 0; i < 8; i += 1) {
+        const idx = crypto.randomInt(0, WORDLIST.length);
+        words.push(WORDLIST[idx]);
+    }
+    return words.join('-');
+};
+
+const mintRecoveryToken = () => {
+    const token = crypto.randomBytes(24).toString('hex');
+    recoveryResetToken = { token, expiresAt: Date.now() + (10 * 60 * 1000) };
+    return token;
+};
+
+const verifyRecoveryToken = (token) => {
+    if (!recoveryResetToken?.token) return false;
+    if (Date.now() > recoveryResetToken.expiresAt) return false;
+    return String(token || '') === recoveryResetToken.token;
+};
 let autoUpdater = null;
 const updateState = {
     enabled: false,
@@ -1461,6 +1532,10 @@ streamApp.get('/stream', async (req, res) => {
         '--quiet'
     ];
 
+    if (seekTime > 0) {
+        args.push('--download-sections', `*${seekTime}-`);
+    }
+
     const ytdlpStart = Date.now();
     let remuxStart = null;
     let firstChunkTime = null;
@@ -1553,12 +1628,19 @@ streamApp.get('/videostream', async (req, res) => {
     const trackIdMatch = videoUrl.match(/[?&]v=([A-Za-z0-9_-]{11})/);
     const trackId = trackIdMatch ? trackIdMatch[1] : 'direct';
 
+    const quality = req.query.quality || '720';
+    let formatString = '22/18/best[height<=720][ext=mp4]/best';
+    if (quality === '1080') {
+        formatString = 'best[height<=1080][ext=mp4]/22/best';
+    } else if (quality === '480') {
+        formatString = '18/best[height<=480][ext=mp4]/best';
+    }
+
     // Extract direct CDN URL — this is fast (~1-3s), no download
     const args = [
         videoUrl,
         '--get-url',
-        // 22 = 720p combined, 18 = 360p combined. Prioritize these for audio inclusion.
-        '--format', '22/18/best[height<=720][ext=mp4]/best',
+        '--format', formatString,
         '--no-check-certificates',
         '--no-warnings',
         '--quiet',
@@ -2366,6 +2448,60 @@ app.whenReady().then(async () => {
         };
         store.set(APP_LOCK_STORE_KEY, next);
         return { success: true, touchIdEnabled: next.touchIdEnabled };
+    });
+
+    ipcMain.handle('aether:lock-recovery-status', () => {
+        const rec = getRecoveryRecord();
+        const phrase = rec?.phrase?.hash ? { enabled: true, createdAt: rec.phrase.createdAt || null } : { enabled: false, createdAt: null };
+        return { success: true, phrase };
+    });
+
+    // Compatibility: phone recovery has been removed.
+    ipcMain.handle('aether:lock-recovery-link-phone-start', async () => ({ success: false, error: 'Phone recovery has been removed. Use email + backup phrase.' }));
+    ipcMain.handle('aether:lock-recovery-link-phone-verify', async () => ({ success: false, error: 'Phone recovery has been removed. Use email + backup phrase.' }));
+
+    ipcMain.handle('aether:lock-recovery-phrase-generate', () => {
+        const lock = getLockRecord();
+        if (!lock?.enabled) return { success: false, error: 'App lock is not enabled.' };
+        const phrase = generateRecoveryPhrase();
+        const salt = crypto.randomBytes(16).toString('hex');
+        const hash = hashTextScrypt(phrase, salt);
+        setRecoveryRecord({ phrase: { salt, hash, createdAt: Date.now() } });
+        return { success: true, phrase };
+    });
+
+    ipcMain.handle('aether:lock-recovery-phrase-verify', (event, { phrase }) => {
+        const lock = getLockRecord();
+        if (!lock?.enabled) return { success: false, error: 'App lock is not enabled.' };
+        const rec = getRecoveryRecord();
+        if (!rec?.phrase?.hash || !rec?.phrase?.salt) return { success: false, error: 'No backup phrase set.' };
+        const provided = String(phrase || '').trim();
+        if (!provided) return { success: false, error: 'Enter your backup phrase.' };
+        const providedHash = hashTextScrypt(provided, rec.phrase.salt);
+        const ok = constantTimeEqualHex(providedHash, rec.phrase.hash);
+        if (!ok) return { success: false, error: 'Invalid backup phrase.' };
+        const token = mintRecoveryToken();
+        return { success: true, token };
+    });
+
+    ipcMain.handle('aether:lock-recovery-reset-password', (event, { token, newPassword, useTouchId }) => {
+        const lock = getLockRecord();
+        if (!lock?.enabled) return { success: false, error: 'App lock is not enabled.' };
+        if (!verifyRecoveryToken(token)) return { success: false, error: 'Recovery token expired. Re-verify recovery method.' };
+        const pass = String(newPassword || '');
+        if (pass.length < 4) return { success: false, error: 'Password must be at least 4 characters.' };
+
+        const salt = crypto.randomBytes(16).toString('hex');
+        const hash = hashLockPassword(pass, salt);
+        store.set(APP_LOCK_STORE_KEY, {
+            enabled: true,
+            salt,
+            hash,
+            touchIdEnabled: !!useTouchId && canPromptTouchId(),
+            updatedAt: Date.now(),
+        });
+        recoveryResetToken = null;
+        return { success: true };
     });
 
 

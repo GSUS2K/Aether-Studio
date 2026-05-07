@@ -4,6 +4,7 @@ LAPTOP_BACKEND_SETUP.md
 .env.local
 .env
 .env.*
+!.env.example
 WEB_DEPLOYMENT.md
 dist
 frontend/dist
@@ -18,3 +19,6 @@ HOMEBREW_RELEASE_SETUP.md
 desktop/bin/
 COMPLETE_CODEBASE_EXPLANATION.md
 HOW_TO_WORK_ON_AETHER.md
+.env.example
+# Microsoft Store bulk assets
+aether_store_listing.csv

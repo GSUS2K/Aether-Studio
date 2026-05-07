@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, Component } from 'react';
 // NOTE: Many async operations and state changes below may be subject to race conditions if triggered rapidly.
 // Consider debouncing or locking for critical flows (e.g., downloads, updates, queue changes).
-import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, VolumeX, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles, Clapperboard, Columns2, Repeat } from 'lucide-react';
+import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, VolumeX, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles, Clapperboard, Columns2, Repeat, MessageSquare, Send, Layers, Eye, Hand, MousePointer2, Camera, Copy, Check } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'framer-motion';
 import { setupDiscordSdk } from './discord';
@@ -39,6 +39,14 @@ const MANUAL_LYRICS_STORAGE_KEY = 'aether.manualLyrics.v1';
 const LOCK_PREFS_STORAGE_KEY = 'aether.lockPrefs.v1';
 const SHORTCUTS_STORAGE_KEY = 'aether.shortcuts.v1';
 const GLOBAL_SHORTCUTS_ENABLED_STORAGE_KEY = 'aether.globalMediaShortcuts.enabled';
+const FEEDBACK_STORAGE_KEY = 'aether.feedbackOutbox.v1';
+const FEEDBACK_ISSUE_URL = 'https://github.com/GSUS2K/Aether-Studio/issues/new';
+const DEFAULT_FEEDBACK_DRAFT = Object.freeze({
+  type: 'Problem',
+  summary: '',
+  details: '',
+  contact: '',
+});
 const DEFAULT_SHORTCUTS = Object.freeze({
   playPause: 'Mod+Alt+Space',
   previous: 'Mod+Alt+ArrowLeft',
@@ -73,6 +81,12 @@ const AURA_PRESETS = Object.freeze([
   { id: 'balanced', label: 'Balanced', fieldBoost: 1, fieldFlare: 1, hueShift: 1, kickGlow: 1, ringCooldownMs: 300, ringThreshold: 0.78, ringScale: 0.6, ringDurationMs: 420 },
   { id: 'cinematic', label: 'Cinematic', fieldBoost: 1.26, fieldFlare: 1.2, hueShift: 1.2, kickGlow: 1.15, ringCooldownMs: 260, ringThreshold: 0.74, ringScale: 0.66, ringDurationMs: 380 },
 ]);
+const AURA_PRESETS_MAP = Object.freeze(
+  AURA_PRESETS.reduce((acc, preset) => {
+    acc[preset.id] = preset;
+    return acc;
+  }, {})
+);
 const DOODLE_PRESETS = Object.freeze([
   { id: 'subtle', label: 'Cozy', badge: 'CZ' },
   { id: 'medium', label: 'Floaty', badge: 'FL' },
@@ -615,6 +629,61 @@ class ErrorBoundary extends Component {
 }
 
 function App() {
+  // --- App Lock Recovery (Electron only) ---
+  const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState(false);
+  const [isLockModalOpen, setIsLockModalOpen] = useState(false);
+
+  const [userError, setUserError] = useState('');
+
+  const [lockRecoveryStatus, setLockRecoveryStatus] = useState({
+    phrase: { enabled: false, createdAt: null },
+  });
+  const [lockRecoveryStatusError, setLockRecoveryStatusError] = useState('');
+  const [recoverySetupError, setRecoverySetupError] = useState('');
+
+  const [recoveryPhrase, setRecoveryPhrase] = useState('');
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [recoveryError, setRecoveryError] = useState('');
+  const [recoveryToken, setRecoveryToken] = useState('');
+  const [recoveryNewPassword, setRecoveryNewPassword] = useState('');
+  const [recoveryNewPasswordConfirm, setRecoveryNewPasswordConfirm] = useState('');
+  const [recoveryResetBusy, setRecoveryResetBusy] = useState(false);
+
+  const [phraseBusy, setPhraseBusy] = useState(false);
+  const [phraseGenerated, setPhraseGenerated] = useState('');
+  const [phraseCopied, setPhraseCopied] = useState(false);
+
+  // Clear ephemeral recovery state when modals close
+  useEffect(() => {
+    if (!isLockModalOpen) {
+      setPhraseGenerated('');
+      setPhraseCopied(false);
+    }
+  }, [isLockModalOpen]);
+
+
+  const refreshLockRecoveryStatus = useCallback(async () => {
+    if (!window.aether?.getLockRecoveryStatus) return;
+    setLockRecoveryStatusError('');
+    try {
+      const res = await window.aether.getLockRecoveryStatus();
+      if (res?.success) {
+        setLockRecoveryStatus({
+          phrase: res.phrase || { enabled: false, createdAt: null },
+        });
+      } else {
+        setLockRecoveryStatusError(res?.error || 'Failed to load recovery status.');
+      }
+    } catch (e) {
+      setLockRecoveryStatusError(e?.message || 'Failed to load recovery status.');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!window.aether?.getLockRecoveryStatus) return;
+    refreshLockRecoveryStatus();
+  }, [refreshLockRecoveryStatus]);
+
   const [auth, setAuth] = useState(null);
   const discordSdkRef = useRef(null);
   const [queue, setQueue] = useState([]);
@@ -687,6 +756,20 @@ function App() {
   const [doodleIntensity, setDoodleIntensity] = useState('medium');
   const [auraPreset, setAuraPreset] = useState('balanced');
   const [isLooksPanelOpen, setIsLooksPanelOpen] = useState(false);
+  const [isAuraStageOpen, setIsAuraStageOpen] = useState(false);
+  const [isDepthMotionEnabled, setIsDepthMotionEnabled] = useState(true);
+  const [isGestureLabOpen, setIsGestureLabOpen] = useState(false);
+  const [isGestureControlEnabled, setIsGestureControlEnabled] = useState(false);
+  const [isFaceControlEnabled, setIsFaceControlEnabled] = useState(false);
+  const [faceControlStatus, setFaceControlStatus] = useState('Camera off');
+  const [faceControlSignal, setFaceControlSignal] = useState({ x: 0, y: 0, confidence: 0, source: 'idle' });
+  const [cameraHandSignal, setCameraHandSignal] = useState({ x: 0, y: 0, motion: 0, last: 'idle' });
+  const [gestureNotice, setGestureNotice] = useState('');
+  const [inspectTarget, setInspectTarget] = useState(null);
+  const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
+  const [feedbackDraft, setFeedbackDraft] = useState(DEFAULT_FEEDBACK_DRAFT);
+  const [feedbackStatus, setFeedbackStatus] = useState('');
+  const [isFeedbackSending, setIsFeedbackSending] = useState(false);
   const [uptime, setUptime] = useState("00:00:00");
   const [isLyricsExpanded, setIsLyricsExpanded] = useState(false);
   const [typedBuffer, setTypedBuffer] = useState("");
@@ -694,6 +777,8 @@ function App() {
   const [sharedScene, setSharedScene] = useState(null);
   const [isSharedSceneOpen, setIsSharedSceneOpen] = useState(false);
   const [vaultPulse, setVaultPulse] = useState({ bass: 0, mids: 0, highs: 0, energy: 0, spin: 0, stamp: 'AETHER-PULSE' });
+  const vaultPulseRef = useRef(vaultPulse);
+  const lastVaultStateUpdateRef = useRef(0);
   const [vaultSpectrum, setVaultSpectrum] = useState(() => Array(8).fill(0.12));
   const [playlists, setPlaylists] = useState({});
   const [playlistOrder, setPlaylistOrder] = useState([]);
@@ -715,6 +800,14 @@ function App() {
   const [globalMediaShortcutsEnabled, setGlobalMediaShortcutsEnabled] = useState(false);
   const [isTipsOverlayOpen, setIsTipsOverlayOpen] = useState(false);
   const looksPanelRef = useRef(null);
+  const gestureStateRef = useRef({ pointerDown: null, lastActionAt: 0, noticeTimer: null, lastTapAt: 0 });
+  const gestureRuntimeRef = useRef({ handleControl: null, appendRecentEvent: null });
+  const touchGestureRef = useRef({ touches: {}, pinchStartDist: 0, twoFingerStart: null, active: false });
+  const faceVideoRef = useRef(null);
+  const faceStreamRef = useRef(null);
+  const faceLoopRef = useRef(0);
+  const faceActionRef = useRef({ lastActionAt: 0, lastZone: 'center', centeredFrames: 0 });
+  const cameraMotionRef = useRef({ prevLuma: null, active: false, startX: 0, startY: 0, lastX: 0, lastY: 0, startAt: 0, lastSeenAt: 0, lastActionAt: 0 });
   const [hideFirstRunTips, setHideFirstRunTips] = useState(false);
   const [tipsDontShowAgain, setTipsDontShowAgain] = useState(false);
   const [draggedPlaylistName, setDraggedPlaylistName] = useState(null);
@@ -730,7 +823,14 @@ function App() {
   const [sleepDeadline, setSleepDeadline] = useState(null);
   const [sleepRemainingStr, setSleepRemainingStr] = useState('');
   const [isSleepTimerMenuOpen, setIsSleepTimerMenuOpen] = useState(false);
+  const [isSleepTimerOverlayOpen, setIsSleepTimerOverlayOpen] = useState(false);
+  const [sleepFadeEnabled, setSleepFadeEnabled] = useState(true);
+  const [sleepCustomMinutes, setSleepCustomMinutes] = useState('');
+  const [stopAfterTrack, setStopAfterTrack] = useState(false);
   const sleepTimerMenuRef = useRef(null);
+  const mixtapeVaultRef = useRef(null);
+  const [isQualityDropdownOpen, setIsQualityDropdownOpen] = useState(false);
+  const qualityDropdownRef = useRef(null);
   const [localIp, setLocalIp] = useState('');
   const [isMiniPlayer, setIsMiniPlayer] = useState(false);
   const [repeatMode, setRepeatMode] = useState('off');
@@ -751,7 +851,6 @@ function App() {
   const [skipEvents, setSkipEvents] = useState([]);
   const [lockStatus, setLockStatus] = useState({ enabled: false, touchIdAvailable: false, touchIdEnabled: false });
   const [isAppLocked, setIsAppLocked] = useState(false);
-  const [isLockModalOpen, setIsLockModalOpen] = useState(false);
   const [lockPasswordInput, setLockPasswordInput] = useState('');
   const [lockPasswordConfirm, setLockPasswordConfirm] = useState('');
   const [lockDisablePassword, setLockDisablePassword] = useState('');
@@ -768,6 +867,11 @@ function App() {
   const [engineStatus, setEngineStatus] = useState(null);
   const [offlineDownloads, setOfflineDownloads] = useState([]);
   const [isOfflineDownloadsBusy, setIsOfflineDownloadsBusy] = useState(false);
+  
+  const isStandalone = !!window.aether;
+  const [videoMode, setVideoMode] = useState(null); // null | 'dual' | 'cinema'
+  const currentTrack = queue?.[0];
+
   
   const fileInputRef = useRef(null);
   const [isAutoplayEnabled, setIsAutoplayEnabled] = useState(true);
@@ -806,8 +910,151 @@ function App() {
   const playButtonRef = useRef(null);
   const beatRingsRef = useRef(null);
   const lastBeatRingTimeRef = useRef(0);
-  const mixtapeVaultRef = useRef(null);
   const vaultTelemetryRef = useRef({ lastStateAt: 0 });
+
+  const isAuraMode = visualizerMode === 'pulse';
+  
+  const immersiveBeatIntensity = useMemo(() => isAuraMode
+    ? clamp01((vaultPulse.energy * 0.9) + (vaultPulse.bass * 0.45) + (vaultPulse.highs * 0.12))
+    : 0, [isAuraMode, vaultPulse.energy, vaultPulse.bass, vaultPulse.highs]);
+
+  const auraCardShadow = useMemo(() => isAuraMode
+    ? `0 24px 60px rgba(0,0,0,0.30), inset 0 0 ${10 + immersiveBeatIntensity * 30}px rgba(0,255,191,${0.06 + immersiveBeatIntensity * 0.24})`
+    : undefined, [isAuraMode, immersiveBeatIntensity]);
+
+  const auraPanelShadow = useMemo(() => isAuraMode
+    ? `0 12px 30px rgba(0,0,0,0.24), inset 0 0 ${6 + immersiveBeatIntensity * 18}px rgba(0,255,191,${0.05 + immersiveBeatIntensity * 0.18})`
+    : undefined, [isAuraMode, immersiveBeatIntensity]);
+
+  const auraCardBorder = useMemo(() => isAuraMode ? `rgba(130, 255, 221, ${0.16 + immersiveBeatIntensity * 0.20})` : undefined, [isAuraMode, immersiveBeatIntensity]);
+  const auraPanelBorder = useMemo(() => isAuraMode ? `rgba(130, 255, 221, ${0.11 + immersiveBeatIntensity * 0.16})` : undefined, [isAuraMode, immersiveBeatIntensity]);
+  const auraPresetConfig = AURA_PRESETS.find((preset) => preset.id === auraPreset) || AURA_PRESETS[1];
+  const auraFieldStyle = useMemo(() => isAuraMode ? {
+    '--aura-field-boost': String(clamp01((0.22 + immersiveBeatIntensity * 0.78) * auraPresetConfig.fieldBoost)),
+    '--aura-field-flare': String(clamp01((0.18 + immersiveBeatIntensity * 0.46) * auraPresetConfig.fieldFlare)),
+    '--aura-field-drift': `${(8 + immersiveBeatIntensity * 18).toFixed(2)}px`,
+  } : undefined, [isAuraMode, immersiveBeatIntensity, auraPresetConfig]);
+
+  const soundLedgerView = useMemo(() => {
+    const data = normalizePlaybackLedgerData(soundCapsuleData);
+    const totalTracksPlayed = data.totalPlays || Object.values(data.tracks || {}).reduce((total, entry) => total + Math.max(0, Math.floor(Number(entry?.count) || 0)), 0);
+    const totalMs = Math.max(0, Math.floor(Number(data.totalMs) || (Number(data.totalMinutes) || 0) * 60000));
+    const recentWeek = Array.from({ length: 7 }, (_, index) => {
+      const date = new Date();
+      date.setDate(date.getDate() - (6 - index));
+      const key = getLocalDateKey(date);
+      return {
+        key,
+        label: date.toLocaleDateString(undefined, { weekday: 'short' }).slice(0, 3).toUpperCase(),
+        minutesMs: Math.max(0, Math.floor(Number(data.dailyMinutes?.[key]) || 0)),
+        plays: Math.max(0, Math.floor(Number(data.dailyPlays?.[key]) || 0)),
+      };
+    });
+    const peakHours = Array.from({ length: 24 }, (_, hour) => ({
+      hour,
+      label: hour === 0 ? '12A' : hour === 12 ? '12P' : hour > 12 ? `${hour - 12}P` : `${hour}A`,
+      count: Math.max(0, Math.floor(Number(data.hourlyTrends?.[hour]) || 0)),
+    }));
+    const topArtists = Object.entries(data.artists || {})
+      .sort((left, right) => {
+        const countDiff = Math.max(0, Math.floor(Number(right[1]?.count) || 0)) - Math.max(0, Math.floor(Number(left[1]?.count) || 0));
+        if (countDiff !== 0) return countDiff;
+        return Math.max(0, Math.floor(Number(right[1]?.totalMs) || 0)) - Math.max(0, Math.floor(Number(left[1]?.totalMs) || 0));
+      })
+      .slice(0, 6);
+    const topTracks = Object.entries(data.tracks || {})
+      .sort((left, right) => {
+        const countDiff = Math.max(0, Math.floor(Number(right[1]?.count) || 0)) - Math.max(0, Math.floor(Number(left[1]?.count) || 0));
+        if (countDiff !== 0) return countDiff;
+        return Math.max(0, Math.floor(Number(right[1]?.totalMs) || 0)) - Math.max(0, Math.floor(Number(left[1]?.totalMs) || 0));
+      })
+      .slice(0, 8);
+    const genreMix = Object.entries(data.genres || {})
+      .sort((left, right) => Math.max(0, Math.floor(Number(right[1]) || 0)) - Math.max(0, Math.floor(Number(left[1]) || 0)))
+      .slice(0, 6);
+    const recentSessions = Array.isArray(data.recentSessions) ? data.recentSessions.slice(0, 6) : [];
+    const weekMaxMs = Math.max(1, ...recentWeek.map((entry) => entry.minutesMs));
+    const peakHourMax = Math.max(1, ...peakHours.map((entry) => entry.count));
+    const topWindow = [...Array.from({ length: 24 }, (_, hour) => ({
+      hour,
+      label: hour === 0 ? '12A' : hour === 12 ? '12P' : hour > 12 ? `${hour - 12}P` : `${hour}A`,
+      count: Math.max(0, Math.floor(Number(data.hourlyTrends?.[hour]) || 0)),
+    }))]
+      .sort((left, right) => right.count - left.count)
+      .filter((entry) => entry.count > 0)
+      .slice(0, 3);
+
+    return {
+      totalTracksPlayed,
+      totalMs,
+      totalSessions: Math.max(0, Math.floor(Number(data.totalSessions) || totalTracksPlayed)),
+      activeDays: recentWeek.filter((entry) => entry.minutesMs > 0 || entry.plays > 0).length,
+      recentWeek,
+      weekMaxMs,
+      peakHours,
+      peakHourMax,
+      topArtists,
+      topTracks,
+      genreMix,
+      recentSessions,
+      topWindow,
+    };
+  }, [soundCapsuleData]);
+
+  const isPlaylistInspect = inspectTarget?.type === 'playlist';
+  const showVisualStage = Boolean(isStandalone && currentTrack && videoMode);
+  const isDualVisualMode = showVisualStage && videoMode === 'dual';
+  const isDualWorkspaceMode = isDualVisualMode && !isVerticalStack;
+  const isDualLayoutLocked = videoMode === 'dual';
+  const isImmersiveLyricsLocked = Boolean(showVisualStage);
+  const showSecondaryColumn = !isFocusedMode && !isDualVisualMode;
+
+  const normalizeTrackIdentity = useCallback((track) => {
+    if (!track) return '';
+    if (track.youtubeId) return `yt:${track.youtubeId}`;
+    if (track.id) return `id:${track.id}`;
+    const title = String(track.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const author = String(track.author || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    return `meta:${title}|${author}`;
+  }, []);
+
+  const inspectPlaylistTracks = useMemo(() => isPlaylistInspect && Array.isArray(inspectTarget?.tracks) ? inspectTarget.tracks.filter(Boolean) : [], [isPlaylistInspect, inspectTarget?.tracks]);
+  const inspectTrack = isPlaylistInspect ? null : inspectTarget?.track || null;
+  const inspectSourceUrl = useMemo(() => {
+    if (!inspectTrack) return '';
+    const explicitUrl = inspectTrack.actualUrl || inspectTrack.url || '';
+    if (explicitUrl) return explicitUrl;
+    const youtubeId = inspectTrack.youtubeId || extractYouTubeId(inspectTrack.id) || extractYouTubeId(inspectTrack.thumbnail);
+    return youtubeId ? `https://www.youtube.com/watch?v=${youtubeId}` : '';
+  }, [inspectTrack]);
+  const getInspectSourceUrl = (track) => {
+    if (!track) return '';
+    const explicitUrl = track.actualUrl || track.url || '';
+    if (explicitUrl) return explicitUrl;
+    const youtubeId = track.youtubeId || extractYouTubeId(track.id) || extractYouTubeId(track.thumbnail);
+    return youtubeId ? `https://www.youtube.com/watch?v=${youtubeId}` : '';
+  };
+  const inspectPlaylistSourceUrls = useMemo(() => inspectPlaylistTracks.map(getInspectSourceUrl).filter(Boolean), [inspectPlaylistTracks]);
+  const inspectPlaylistTracklistText = useMemo(() => inspectPlaylistTracks.map((track, index) => {
+    const sourceUrl = getInspectSourceUrl(track);
+    return `${index + 1}. ${track.title || 'Unknown Track'} - ${track.author || 'Unknown Artist'}${sourceUrl ? ` - ${sourceUrl}` : ''}`;
+  }).join('\n'), [inspectPlaylistTracks]);
+  const inspectVaultNames = useMemo(() => inspectTrack
+    ? Object.entries(playlists)
+      .filter(([, tracks]) => (tracks || []).some((track) => normalizeTrackIdentity(track) === normalizeTrackIdentity(inspectTrack)))
+      .map(([name]) => name)
+    : [], [inspectTrack, playlists, normalizeTrackIdentity]);
+  const inspectPlaylistDurationMs = useMemo(() => inspectPlaylistTracks.reduce((total, track) => total + Math.max(0, Number(track?.totalDurationMs || track?.duration || 0)), 0), [inspectPlaylistTracks]);
+  const inspectPlaylistArtistCount = useMemo(() => new Set(inspectPlaylistTracks.map((track) => String(track?.author || 'Unknown Artist').trim()).filter(Boolean)).size, [inspectPlaylistTracks]);
+  const inspectPlaylistQueuedCount = useMemo(() => inspectPlaylistTracks.filter((track) => queue.some((queuedTrack) => normalizeTrackIdentity(queuedTrack) === normalizeTrackIdentity(track))).length, [inspectPlaylistTracks, queue, normalizeTrackIdentity]);
+
+
+
+
+
+
+
+
   const restoreVerticalStackAfterVideoRef = useRef(false);
   const currentTrackRef = useRef(null);
   const prevTrackRef = useRef(null); // Neural Memory Ref (NOVA
@@ -822,22 +1069,24 @@ function App() {
   const manualTransportAdvanceRef = useRef({ trackKey: '', at: 0, action: '' });
   const warmupRetryRef = useRef(new Map());
   const videoEndGuardRef = useRef({ trackKey: '', settled: false, lastNearEndAt: 0, lastObservedMs: 0, lastProgressAt: 0 });
-  const isStandalone = !!window.aether;
+
   const [history, setHistory] = useState([]);
   const [isManualStop, setIsManualStop] = useState(false);
   const [streamPort, setStreamPort] = useState(3333);
+  const [videoQuality, setVideoQuality] = useState('720');
   const [playbackResetNonce, setPlaybackResetNonce] = useState(0);
   const [pendingResumeTime, setPendingResumeTime] = useState(null);
   // Web-only: browsers block audio.play() until a user gesture happens in the tab.
   // Standalone (Electron) starts unlocked. Web starts locked until user taps the overlay.
   const [webAudioUnlocked, setWebAudioUnlocked] = useState(!!window.aether);
   const [oauthPrompt, setOauthPrompt] = useState(null);
-  const [videoMode, setVideoMode] = useState(null); // null | 'dual' | 'cinema'
+
   const [isVideoReady, setIsVideoReady] = useState(false);
   const [dualFocusMode, setDualFocusMode] = useState(null); // null | 'video' | 'lyrics'
   const videoModeRef = useRef(null); // synchronous mirror — safe to read in audio callbacks
   const isPlayingRef = useRef(false); // live mirror of isPlaying for video handler closures
   const currentTimeRef = useRef(0);   // live mirror of currentTime for video handler closures
+  const liveStreamStartOffsetMsRef = useRef(0);
   const [cinemaControlsVisible, setCinemaControlsVisible] = useState(true);
   const cinemaHideTimerRef = useRef(null);
   const localVideoRef = useRef(null);
@@ -853,7 +1102,7 @@ function App() {
       return Math.max(0, Math.floor(localVideoRef.current.currentTime * 1000));
     }
     if (localAudioRef.current?.currentTime > 0) {
-      return Math.max(0, Math.floor(localAudioRef.current.currentTime * 1000));
+      return Math.max(0, liveStreamStartOffsetMsRef.current + Math.floor(localAudioRef.current.currentTime * 1000));
     }
     return Math.max(0, Math.floor(currentTimeRef.current || 0));
   }, []);
@@ -944,7 +1193,10 @@ function App() {
   // Reset isVideoReady on track change
   useEffect(() => {
     setIsVideoReady(false);
-  }, [queue?.[0]?.url, queue?.[0]?.youtubeId]);
+    if (!queue || queue.length === 0) {
+      if (videoModeRef.current) exitVideoMode();
+    }
+  }, [queue?.[0]?.url, queue?.[0]?.youtubeId, queue?.length, exitVideoMode]);
 
   const switchVideoMode = useCallback((nextMode) => {
     const next = nextMode || null;
@@ -1113,7 +1365,7 @@ function App() {
     if (!youtubeUrl) return;
 
     const streamBase = `http://localhost:${streamPort}`;
-    const targetSrc = `${streamBase}/videostream?url=${encodeURIComponent(youtubeUrl)}&_r=${playbackResetNonce}`;
+    const targetSrc = `${streamBase}/videostream?url=${encodeURIComponent(youtubeUrl)}&quality=${videoQuality}&_r=${playbackResetNonce}`;
 
     // Mute / pause the audio element — video owns output now
     if (localAudioRef.current) {
@@ -1231,7 +1483,7 @@ function App() {
         videoEndGuardRef.current = { trackKey: '', settled: false, lastNearEndAt: 0, lastObservedMs: 0, lastProgressAt: 0 };
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queue?.[0]?.id, queue?.[0]?.queueNonce, videoMode, streamPort, playbackResetNonce]);
+  }, [queue?.[0]?.id, queue?.[0]?.queueNonce, videoMode, streamPort, playbackResetNonce, videoQuality]);
 
   // Video play/pause sync — separate effect so it doesn't re-run src/seek logic
   useEffect(() => {
@@ -1268,7 +1520,7 @@ function App() {
   }, [videoMode, visualControlsPinned]);
 
   // --- AETHER STUDIO CORE: NEURAL ENGINE STATE (NOVA ---
-  const currentTrack = queue?.[0];
+
   const currentTrackSourceUrl = useMemo(() => {
     if (!currentTrack) return '';
     if (currentTrack.youtubeId) return `https://www.youtube.com/watch?v=${currentTrack.youtubeId}`;
@@ -1426,6 +1678,140 @@ function App() {
     setSkipEvents((prev) => [...prev.slice(-49), event]);
   }, [currentTrack?.title]);
 
+  const openTrackInspect = useCallback((track, source = 'track') => {
+    if (!track) return;
+    setInspectTarget({
+      type: 'track',
+      track,
+      source,
+      openedAt: Date.now(),
+    });
+  }, []);
+
+  const openPlaylistInspect = useCallback((playlistName, tracks = [], source = 'playlist') => {
+    const safeTracks = Array.isArray(tracks) ? tracks.filter(Boolean) : [];
+    if (safeTracks.length === 0) return;
+    setInspectTarget({
+      type: 'playlist',
+      playlistName: String(playlistName || 'Playlist'),
+      tracks: safeTracks,
+      source,
+      openedAt: Date.now(),
+    });
+  }, []);
+
+  const showGestureNotice = useCallback((message) => {
+    setGestureNotice(message);
+    if (gestureStateRef.current.noticeTimer) {
+      window.clearTimeout(gestureStateRef.current.noticeTimer);
+    }
+    gestureStateRef.current.noticeTimer = window.setTimeout(() => setGestureNotice(''), 1700);
+  }, []);
+
+  const updateFeedbackDraft = useCallback((patch) => {
+    setFeedbackDraft((prev) => ({ ...prev, ...patch }));
+    setFeedbackStatus('');
+  }, []);
+
+  const submitFeedback = useCallback(async () => {
+    const summary = feedbackDraft.summary.trim();
+    const details = feedbackDraft.details.trim();
+    if (!summary || !details) {
+      setFeedbackStatus('Add a short title and a little detail first.');
+      return;
+    }
+
+    const trackSnapshot = currentTrack ? {
+      title: currentTrack.title || '',
+      author: currentTrack.author || '',
+      url: currentTrack.actualUrl || currentTrack.url || '',
+      youtubeId: currentTrack.youtubeId || '',
+      positionMs: getActivePlaybackPositionMs(),
+    } : null;
+
+    const payload = {
+      id: `feedback-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type: feedbackDraft.type,
+      summary,
+      details,
+      contact: feedbackDraft.contact.trim(),
+      buildVersion: BUILD_VERSION,
+      uxVersion: UX_VERSION,
+      platform: platform || 'web',
+      isStandalone,
+      currentTrack: trackSnapshot,
+      diagnostics: {
+        playbackMode: videoMode || 'audio',
+        visualizerMode,
+        auraPreset,
+        queueLength: queue.length,
+        lyricsCount: lyrics.length,
+      },
+      createdAt: new Date().toISOString(),
+    };
+
+    setIsFeedbackSending(true);
+    setFeedbackStatus('Preparing feedback...');
+
+    try {
+      const persistEntry = async (entry) => {
+        if (isStandalone && window.aether?.store?.get && window.aether?.store?.set) {
+          const existing = await window.aether.store.get(FEEDBACK_STORAGE_KEY);
+          const list = Array.isArray(existing) ? existing : [];
+          await window.aether.store.set(FEEDBACK_STORAGE_KEY, [entry, ...list].slice(0, 30));
+          return;
+        }
+        const existingRaw = localStorage.getItem(FEEDBACK_STORAGE_KEY);
+        const existing = existingRaw ? JSON.parse(existingRaw) : [];
+        localStorage.setItem(FEEDBACK_STORAGE_KEY, JSON.stringify([entry, ...(Array.isArray(existing) ? existing : [])].slice(0, 30)));
+      };
+
+      const endpoint = import.meta.env.VITE_FEEDBACK_ENDPOINT?.trim();
+      if (endpoint) {
+        await axios.post(endpoint, payload, { timeout: 8000 });
+        await persistEntry({ ...payload, delivery: 'endpoint' });
+        setFeedbackStatus('Sent. Thanks for the report.');
+        appendRecentEvent('feedback_sent', payload.summary, { tone: 'success', title: payload.type });
+      } else {
+        const bodyLines = [
+          `Type: ${payload.type}`,
+          `Build: ${payload.buildVersion} / ${payload.uxVersion}`,
+          `Platform: ${payload.platform}${payload.isStandalone ? ' desktop' : ' web'}`,
+          '',
+          'Details:',
+          payload.details,
+          '',
+          payload.currentTrack ? `Track: ${payload.currentTrack.title} - ${payload.currentTrack.author}` : 'Track: none',
+          payload.currentTrack?.url ? `Source: ${payload.currentTrack.url}` : '',
+          `Queue: ${payload.diagnostics.queueLength}`,
+          `Mode: ${payload.diagnostics.playbackMode} / ${payload.diagnostics.visualizerMode}`,
+          payload.contact ? `Contact: ${payload.contact}` : '',
+        ].filter(Boolean);
+        const issueUrl = `${FEEDBACK_ISSUE_URL}?title=${encodeURIComponent(`[${payload.type}] ${payload.summary}`)}&body=${encodeURIComponent(bodyLines.join('\n'))}&labels=${encodeURIComponent('feedback')}`;
+        await persistEntry({ ...payload, delivery: 'github-issue-draft' });
+        if (isStandalone && window.aether?.openExternal) {
+          await window.aether.openExternal(issueUrl);
+        } else {
+          window.open(issueUrl, '_blank', 'noopener,noreferrer');
+        }
+        setFeedbackStatus('Opened a GitHub issue draft. Submit it there so it lands in the maintainer inbox.');
+        appendRecentEvent('feedback_issue_opened', payload.summary, { tone: 'success', title: payload.type });
+      }
+
+      setFeedbackDraft(DEFAULT_FEEDBACK_DRAFT);
+      setTimeout(() => {
+        setIsFeedbackOpen(false);
+        setFeedbackStatus('');
+      }, 1200);
+    } catch (error) {
+      console.warn('[Aether/Feedback] submit failed', error);
+      setFeedbackStatus(`Feedback failed: ${String(error?.message || error).slice(0, 80)}`);
+      appendRecentEvent('feedback_failed', error?.message || 'Feedback failed', { tone: 'error' });
+    } finally {
+      setIsFeedbackSending(false);
+    }
+  }, [appendRecentEvent, auraPreset, currentTrack, feedbackDraft, getActivePlaybackPositionMs, isStandalone, lyrics.length, platform, queue.length, videoMode, visualizerMode]);
+
   const noteSkipReason = useCallback((reason, meta = {}) => {
     console.log('[Aether/SkipReason]', reason, meta);
     setSkipReasonToast(reason);
@@ -1453,6 +1839,12 @@ function App() {
     if (except !== 'looks') setIsLooksPanelOpen(false);
     if (except !== 'sleep') setIsSleepTimerMenuOpen(false);
   }, []);
+
+  const openFeedbackPanel = useCallback(() => {
+    closeHeaderSurfaces('feedback');
+    setFeedbackStatus('');
+    setIsFeedbackOpen(true);
+  }, [closeHeaderSurfaces]);
 
   const openTipsOverlay = useCallback(() => {
     closeHeaderSurfaces('tips');
@@ -1737,6 +2129,97 @@ function App() {
       await refreshLockStatus();
     }
   }, [lockStatus.enabled, refreshLockStatus]);
+
+  const handleVerifyRecoveryPhrase = useCallback(async () => {
+    if (!window.aether?.verifyRecoveryPhrase) return;
+    const phrase = String(recoveryPhrase || '').trim();
+    if (!phrase) return;
+    setRecoveryError('');
+    setRecoveryBusy(true);
+    try {
+      const res = await window.aether.verifyRecoveryPhrase(phrase);
+      if (!res?.success) {
+        setRecoveryError(res?.error || 'Verification failed.');
+        return;
+      }
+      setRecoveryToken(String(res.token || ''));
+    } catch (e) {
+      setRecoveryError(e?.message || 'Verification failed.');
+    } finally {
+      setRecoveryBusy(false);
+    }
+  }, [recoveryPhrase]);
+
+  const handleResetPasswordFromRecovery = useCallback(async () => {
+    if (!window.aether?.resetAppLockPasswordWithRecovery) return;
+    if (!recoveryToken) {
+      setRecoveryError('Verify a recovery method first.');
+      return;
+    }
+    if (!recoveryNewPassword || recoveryNewPassword.length < 4) {
+      setRecoveryError('New password must be at least 4 characters.');
+      return;
+    }
+    if (recoveryNewPassword !== recoveryNewPasswordConfirm) {
+      setRecoveryError('Passwords do not match.');
+      return;
+    }
+    setRecoveryError('');
+    setRecoveryResetBusy(true);
+    try {
+      const res = await window.aether.resetAppLockPasswordWithRecovery({
+        token: recoveryToken,
+        newPassword: recoveryNewPassword,
+        useTouchId: !!lockUseTouchId,
+      });
+      if (!res?.success) {
+        setRecoveryError(res?.error || 'Failed to reset password.');
+        return;
+      }
+      setIsAppLocked(false);
+      setUnlockPasswordInput('');
+      setIsForgotPasswordOpen(false);
+      setRecoveryPhrase('');
+      setRecoveryToken('');
+      setRecoveryNewPassword('');
+      setRecoveryNewPasswordConfirm('');
+      await refreshLockStatus();
+    } catch (e) {
+      setRecoveryError(e?.message || 'Failed to reset password.');
+    } finally {
+      setRecoveryResetBusy(false);
+    }
+  }, [lockUseTouchId, recoveryNewPassword, recoveryNewPasswordConfirm, recoveryToken, refreshLockStatus]);
+
+  const handleCopyPhrase = useCallback(() => {
+    if (!phraseGenerated) return;
+    navigator.clipboard.writeText(phraseGenerated).then(() => {
+      setPhraseCopied(true);
+      setTimeout(() => setPhraseCopied(false), 2000);
+    }).catch(err => {
+      console.error('Failed to copy phrase:', err);
+    });
+  }, [phraseGenerated]);
+
+
+  const handleGenerateRecoveryPhrase = useCallback(async () => {
+    if (!window.aether?.generateRecoveryPhrase) return;
+    setPhraseBusy(true);
+    setRecoverySetupError('');
+    try {
+      const res = await window.aether.generateRecoveryPhrase();
+      if (!res?.success) {
+        setRecoverySetupError(res?.error || 'Failed to generate phrase.');
+        return;
+      }
+      setPhraseGenerated(String(res.phrase || ''));
+      await refreshLockRecoveryStatus();
+    } catch (e) {
+      setRecoverySetupError(e?.message || 'Failed to generate phrase.');
+    } finally {
+      setPhraseBusy(false);
+    }
+  }, [refreshLockRecoveryStatus]);
 
   useEffect(() => {
     return () => {
@@ -2166,14 +2649,7 @@ function App() {
     appendRecentEvent('sync_reset', 'Subtitle sync reset to 0ms', { tone: 'warning', title: currentTrack?.title || currentTrackTitle });
   }, [appendRecentEvent, currentTrack?.title, currentTrackPresetKey, currentTrackTitle, lyricOffsetPresets, persistLyricPresets]);
 
-  const normalizeTrackIdentity = useCallback((track) => {
-    if (!track) return '';
-    if (track.youtubeId) return `yt:${track.youtubeId}`;
-    if (track.id) return `id:${track.id}`;
-    const title = String(track.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-    const author = String(track.author || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-    return `meta:${title}|${author}`;
-  }, []);
+
 
   const getTrackActionKey = useCallback((track) => {
     if (!track || typeof track !== 'object') return '';
@@ -2351,7 +2827,14 @@ function App() {
   }, [currentTrackPresetKey, lyricOffsetMs, lyricOffsetPresets]);
 
   useEffect(() => {
-    if (isStandalone || !currentTrack?.title) return;
+    if (isStandalone || !currentTrack?.title) {
+      if (!isStandalone && localAudioRef.current) {
+        localAudioRef.current.pause();
+        localAudioRef.current.removeAttribute('src');
+        localAudioRef.current.load();
+      }
+      return;
+    }
     const streamStart = performance.now();
 
     const trackUrl = currentTrack.actualUrl || currentTrack.url;
@@ -2479,6 +2962,8 @@ function App() {
       autoplayMoodMode,
       isDoodleMode,
       doodleIntensity,
+      isDepthMotionEnabled,
+      isGestureControlEnabled,
       hideFirstRunTips,
       savedAt: Date.now(),
     };
@@ -2492,7 +2977,7 @@ function App() {
     } catch (e) {
       console.warn('[Aether/Session] Failed to persist UI prefs', e);
     }
-  }, [isStandalone, visualizerMode, auraPreset, isVerticalStack, isFocusedMode, miniPlayerInfoMode, isAutoplayEnabled, autoplayMoodMode, isDoodleMode, doodleIntensity, hideFirstRunTips]);
+  }, [isStandalone, visualizerMode, auraPreset, isVerticalStack, isFocusedMode, miniPlayerInfoMode, isAutoplayEnabled, autoplayMoodMode, isDoodleMode, doodleIntensity, isDepthMotionEnabled, isGestureControlEnabled, hideFirstRunTips]);
 
   useEffect(() => {
     if (!sessionReadyRef.current) return;
@@ -2555,6 +3040,8 @@ function App() {
           if (typeof savedUiPrefs.doodleIntensity === 'string' && ['subtle', 'medium', 'dreamy'].includes(savedUiPrefs.doodleIntensity)) {
             setDoodleIntensity(savedUiPrefs.doodleIntensity);
           }
+          if (typeof savedUiPrefs.isDepthMotionEnabled === 'boolean') setIsDepthMotionEnabled(savedUiPrefs.isDepthMotionEnabled);
+          if (typeof savedUiPrefs.isGestureControlEnabled === 'boolean') setIsGestureControlEnabled(savedUiPrefs.isGestureControlEnabled);
           if (typeof savedUiPrefs.hideFirstRunTips === 'boolean') {
             resolvedHideFirstRunTips = savedUiPrefs.hideFirstRunTips;
             setHideFirstRunTips(savedUiPrefs.hideFirstRunTips);
@@ -2688,6 +3175,8 @@ function App() {
           if (typeof savedUiPrefs.doodleIntensity === 'string' && ['subtle', 'medium', 'dreamy'].includes(savedUiPrefs.doodleIntensity)) {
             setDoodleIntensity(savedUiPrefs.doodleIntensity);
           }
+          if (typeof savedUiPrefs.isDepthMotionEnabled === 'boolean') setIsDepthMotionEnabled(savedUiPrefs.isDepthMotionEnabled);
+          if (typeof savedUiPrefs.isGestureControlEnabled === 'boolean') setIsGestureControlEnabled(savedUiPrefs.isGestureControlEnabled);
           if (typeof savedUiPrefs.hideFirstRunTips === 'boolean') {
             resolvedHideFirstRunTips = savedUiPrefs.hideFirstRunTips;
             setHideFirstRunTips(savedUiPrefs.hideFirstRunTips);
@@ -2812,7 +3301,16 @@ function App() {
   // --- AETHER: STANDALONE PLAYBACK LOOP (NOVA ---
   useEffect(() => {
     console.log("[Aether/Audio] Queue effect fired", { queueLength: queue?.length, currentTrack: queue?.[0]?.title, isPlaying, isStandalone });
-    if (!isStandalone || !queue || queue.length === 0) return;
+    if (!isStandalone || !queue || queue.length === 0) {
+      if (localAudioRef.current) {
+        localAudioRef.current.pause();
+        localAudioRef.current.removeAttribute('src');
+        localAudioRef.current.load();
+      }
+      setIsPlaying(false);
+      setCurrentTime(0);
+      return;
+    }
     const track = queue[0];
     if (!track || typeof track !== 'object') {
       setQueue(prev => (Array.isArray(prev) ? prev.filter(item => item && typeof item === 'object') : []));
@@ -2904,7 +3402,7 @@ function App() {
         };
         localAudioRef.current.ontimeupdate = () => {
             if (videoModeRef.current) return;
-            const nextMs = Math.max(0, Math.floor((localAudioRef.current?.currentTime || 0) * 1000));
+            const nextMs = Math.max(0, liveStreamStartOffsetMsRef.current + Math.floor((localAudioRef.current?.currentTime || 0) * 1000));
             currentTimeRef.current = nextMs;
             setCurrentTime(nextMs);
             if (isPlayingRef.current && nextMs >= 0) {
@@ -3005,7 +3503,7 @@ function App() {
 
         const streamUrl = isLocalDownloaded
           ? `${streamBase}/offline/${track.id}.m4a?_q=${streamNonce}${resetQuery}`
-          : `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&_q=${streamNonce}${resetQuery}`;
+          : `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&_q=${streamNonce}${resetQuery}${startSec > 0 ? `&t=${startSec}` : ''}`;
         prematureEndGuardRef.current = { trackId: track.id, retried: false };
         
         console.log("[Aether/Audio] Initializing Stream:", streamUrl, {
@@ -3014,18 +3512,25 @@ function App() {
             trackId: track.id,
         });
         
+        liveStreamStartOffsetMsRef.current = isLocalDownloaded ? 0 : Math.floor(startSec * 1000);
+        
         localAudioRef.current.crossOrigin = "anonymous";
         localAudioRef.current.src = streamUrl;
         
         // New tracks always start clean unless an explicit handoff/session resume asked otherwise.
-        if (startSec > 0) {
+        if (startSec > 0 && isLocalDownloaded) {
             localAudioRef.current.currentTime = startSec;
         } else {
             try {
               localAudioRef.current.currentTime = 0;
             } catch {}
-            currentTimeRef.current = 0;
-            setCurrentTime(0);
+            if (startSec === 0) {
+              currentTimeRef.current = 0;
+              setCurrentTime(0);
+            } else {
+              currentTimeRef.current = Math.floor(startSec * 1000);
+              setCurrentTime(Math.floor(startSec * 1000));
+            }
         }
         const startupWatchdog = setTimeout(() => {
           const audio = localAudioRef.current;
@@ -3328,7 +3833,7 @@ function App() {
         if (!analyserRef.current) {
           analyserRef.current = audioCtxRef.current.createAnalyser();
           analyserRef.current.fftSize = 256; 
-          analyserRef.current.smoothingTimeConstant = 0.85;
+          analyserRef.current.smoothingTimeConstant = 0.65;
         }
         if (!sourceRef.current && localAudioRef.current) {
           sourceRef.current = audioCtxRef.current.createMediaElementSource(localAudioRef.current);
@@ -3379,8 +3884,13 @@ function App() {
         analyserRef.current.getByteFrequencyData(dataArray);
 
         const bassRaw = (dataArray[1] + dataArray[2] + dataArray[3]) / (3 * 255);
-        const midsRaw = dataArray.slice(8, 28).reduce((a, b) => a + b, 0) / (20 * 255);
-        const highsRaw = dataArray.slice(30, 70).reduce((a, b) => a + b, 0) / (40 * 255);
+        let midsRawSum = 0;
+        for (let i = 8; i < 28; i++) midsRawSum += dataArray[i];
+        const midsRaw = midsRawSum / (20 * 255);
+
+        let highsRawSum = 0;
+        for (let i = 30; i < 70; i++) highsRawSum += dataArray[i];
+        const highsRaw = highsRawSum / (40 * 255);
 
         if (!auraEnergyRef.current) return;
         auraEnergyRef.current.bass = lerp(auraEnergyRef.current.bass, bassRaw, 0.22);
@@ -3410,7 +3920,7 @@ function App() {
 
         // AURA MODE: Propagate beat energy to transport & lyric underline
         if (auraModeActive && document.documentElement) {
-          const selectedAuraPreset = AURA_PRESETS.find((preset) => preset.id === liveAuraPreset) || AURA_PRESETS[1];
+          const selectedAuraPreset = AURA_PRESETS_MAP[liveAuraPreset] || AURA_PRESETS[1];
           const kickTransient = clamp01(Math.max(0, (bassRaw - bass) * 3.8) + Math.max(0, (bass - 0.66) * 1.9));
           const auraShiftDeg = ((kickTransient * 13.5) + (energy * 1.8)) * selectedAuraPreset.hueShift;
           document.documentElement.style.setProperty('--aura-beat-pulse', String(bass * 0.8 + energy * 0.3));
@@ -3487,7 +3997,7 @@ function App() {
             return clamp01((total / Math.max(count, 1)) / 255);
           });
 
-          setVaultPulse({
+          const pulseData = {
             bass,
             mids,
             highs,
@@ -3501,8 +4011,28 @@ function App() {
               `m=${Math.round(mids * 100)}`,
               `h=${Math.round(highs * 100)}`,
             ].join(' · '),
-          });
-          setVaultSpectrum((prev) => sampledBars.map((v, idx) => lerp(prev[idx] ?? 0, v, 0.45)));
+          };
+
+          vaultPulseRef.current = pulseData;
+
+          // High-frequency CSS variable updates for smooth Aura effects without React re-renders
+          if (isAuraMode) {
+            const root = document.documentElement;
+            root.style.setProperty('--vault-bass', String(bass));
+            root.style.setProperty('--vault-mids', String(mids));
+            root.style.setProperty('--vault-highs', String(highs));
+            root.style.setProperty('--vault-energy', String(energy));
+            root.style.setProperty('--vault-scale', String(1 + energy * 0.1));
+            root.style.setProperty('--vault-spin', `${spinDeg}deg`);
+          }
+
+          // Throttle React state updates to 10 FPS to keep labels/secondary UI updated without killing the main thread
+          const now = Date.now();
+          if (now - lastVaultStateUpdateRef.current > 100) {
+            setVaultPulse(pulseData);
+            setVaultSpectrum((prev) => sampledBars.map((v, idx) => lerp(prev[idx] ?? 0, v, 0.45)));
+            lastVaultStateUpdateRef.current = now;
+          }
         }
 
         if (liveVisualizerMode === 'bars' && ctx) {
@@ -4784,6 +5314,29 @@ function App() {
     };
   }, [activeLyricIndex, isAutoScrollPaused, isLyricsExpanded, centerCompactLyrics, centerImmersiveLyrics]);
 
+  // High-performance 60fps karaoke fill for Immersive Lyrics
+  useEffect(() => {
+    if (!isLyricsExpanded || !expandedActiveRef.current || activeLyricIndex < 0 || !lyrics[activeLyricIndex]) return;
+    
+    let raf;
+    const lyric = lyrics[activeLyricIndex];
+    const nextLyric = lyrics[activeLyricIndex + 1];
+    const durationMs = nextLyric ? Math.max(100, nextLyric.time - lyric.time) : 4000;
+    const startMs = lyric.time + (currentTrack?.introOffsetMs || 0) + (lyricOffsetMs || 0);
+
+    const updateKaraoke = () => {
+      if (expandedActiveRef.current) {
+        const currentMs = getActivePlaybackPositionMs();
+        const fillPercent = Math.max(0, Math.min(100, ((currentMs - startMs) / durationMs) * 100));
+        expandedActiveRef.current.style.backgroundImage = `linear-gradient(90deg, #00ffbf ${fillPercent}%, rgba(255,255,255,0.4) ${fillPercent}%)`;
+      }
+      raf = requestAnimationFrame(updateKaraoke);
+    };
+    raf = requestAnimationFrame(updateKaraoke);
+    
+    return () => cancelAnimationFrame(raf);
+  }, [isLyricsExpanded, activeLyricIndex, lyrics, currentTrack?.introOffsetMs, lyricOffsetMs, getActivePlaybackPositionMs]);
+
   const parseLRC = (lrcString) => {
     if (!lrcString) return [];
     const lines = lrcString.split('\n');
@@ -4924,6 +5477,22 @@ function App() {
       setIsSharedSceneOpen(false);
       return true;
     }
+    if (isFeedbackOpen) {
+      setIsFeedbackOpen(false);
+      return true;
+    }
+    if (isGestureLabOpen) {
+      setIsGestureLabOpen(false);
+      return true;
+    }
+    if (inspectTarget) {
+      setInspectTarget(null);
+      return true;
+    }
+    if (isAuraStageOpen) {
+      setIsAuraStageOpen(false);
+      return true;
+    }
     if (isLibraryOverlayOpen) {
       setIsLibraryOverlayOpen(false);
       setLibraryActionTarget(null);
@@ -4997,7 +5566,11 @@ function App() {
     closeTipsOverlay,
     exitVideoMode,
     isAutoplayMenuOpen,
+    inspectTarget,
+    isAuraStageOpen,
     isDiagnosticsOpen,
+    isFeedbackOpen,
+    isGestureLabOpen,
     isLibraryOverlayOpen,
     isLockBusy,
     isLockModalOpen,
@@ -5036,7 +5609,7 @@ function App() {
   }, [closeTopmostOverlay]);
 
   useEffect(() => {
-    if (!isLooksPanelOpen && !isSleepTimerMenuOpen) return;
+    if (!isLooksPanelOpen && !isSleepTimerMenuOpen && !isQualityDropdownOpen) return;
     const onPointerDown = (event) => {
       const target = event.target;
       if (isLooksPanelOpen && looksPanelRef.current && !looksPanelRef.current.contains(target)) {
@@ -5045,10 +5618,13 @@ function App() {
       if (isSleepTimerMenuOpen && sleepTimerMenuRef.current && !sleepTimerMenuRef.current.contains(target)) {
         setIsSleepTimerMenuOpen(false);
       }
+      if (isQualityDropdownOpen && qualityDropdownRef.current && !qualityDropdownRef.current.contains(target)) {
+        setIsQualityDropdownOpen(false);
+      }
     };
     window.addEventListener('pointerdown', onPointerDown);
     return () => window.removeEventListener('pointerdown', onPointerDown);
-  }, [isLooksPanelOpen, isSleepTimerMenuOpen]);
+  }, [isLooksPanelOpen, isSleepTimerMenuOpen, isQualityDropdownOpen]);
 
   useEffect(() => {
     if (!isStandalone) return;
@@ -5416,6 +5992,7 @@ function App() {
       }
       setTimeout(() => setLastAdded(null), 1800);
       setIsSleepTimerMenuOpen(false);
+      setIsSleepTimerOverlayOpen(false);
     }, [volume]);
 
   useEffect(() => {
@@ -5428,18 +6005,19 @@ function App() {
               setSleepRemainingStr('');
               handleControl('pause');
               if (localAudioRef.current) localAudioRef.current.volume = volume;
-          } else if (remainingMs <= 10000) {
+          } else if (sleepFadeEnabled && remainingMs <= 10000) {
               const fadeRatio = remainingMs / 10000;
               if (localAudioRef.current) localAudioRef.current.volume = volume * fadeRatio;
               setSleepRemainingStr('FADING...');
           } else {
+              if (localAudioRef.current && localAudioRef.current.volume !== volume) localAudioRef.current.volume = volume;
               const m = Math.floor(remainingMs / 60000);
               const s = Math.floor((remainingMs % 60000) / 1000);
               setSleepRemainingStr(`${m}:${s.toString().padStart(2, '0')}`);
           }
       }, 1000);
       return () => clearInterval(int);
-  }, [sleepDeadline, volume]);
+  }, [sleepDeadline, volume, sleepFadeEnabled]);
 
   const handleExportVault = async (playlistName) => {
       if (!isStandalone || !window.aether?.exportVault) return;
@@ -5532,18 +6110,40 @@ function App() {
     }
 
     if (localAudioRef.current) {
-      try {
-        localAudioRef.current.currentTime = seekSeconds;
-        pendingResumeTimeRef.current = null;
-        setPendingResumeTime(null);
-      } catch {
-        pendingResumeTimeRef.current = clampedMs;
-        setPendingResumeTime(clampedMs);
+      const track = queue?.[0];
+      const isLocalDownloaded = track && downloadedTracks.includes(track.id);
+
+      if (track && !isLocalDownloaded) {
+        // Server-side seek for live streaming
+        const streamNonce = encodeURIComponent(String(track.queueNonce || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`));
+        const resetQuery = `&_r=${playbackResetNonce}`;
+        const youtubeUrl = track.youtubeId ? `https://www.youtube.com/watch?v=${track.youtubeId}` : track.actualUrl || track.url;
+        const streamBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
+        const newSrc = `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&t=${seekSeconds}&_q=${streamNonce}${resetQuery}`;
+
+        console.log("[Aether/Seek] Live Stream Source Re-route:", newSrc);
+
+        liveStreamStartOffsetMsRef.current = clampedMs;
+        localAudioRef.current.src = newSrc;
+        if (isPlaying) {
+          localAudioRef.current.play().catch(() => {});
+        }
+      } else {
+        // Native client-side seek for downloaded/local tracks
+        try {
+          liveStreamStartOffsetMsRef.current = 0;
+          localAudioRef.current.currentTime = seekSeconds;
+          pendingResumeTimeRef.current = null;
+          setPendingResumeTime(null);
+        } catch {
+          pendingResumeTimeRef.current = clampedMs;
+          setPendingResumeTime(clampedMs);
+        }
       }
     }
 
     setCurrentTime(clampedMs);
-  }, []);
+  }, [queue, downloadedTracks, isPlaying, API_BASE, streamPort, playbackResetNonce, isStandalone]);
 
   const logSoundCapsulePlayback = useCallback(async (track, options = {}) => {
     if (!track || !isStandalone || !window.aether?.store) return;
@@ -5650,6 +6250,16 @@ function App() {
 
     if (reason === 'natural_end' || currentTimeRef.current > 30000 || (track.totalDurationMs && currentTimeRef.current > track.totalDurationMs * 0.5)) {
       logSoundCapsulePlayback(track, { reason });
+    }
+
+    if (reason === 'natural_end' && stopAfterTrack) {
+      setStopAfterTrack(false);
+      setIsPlaying(false);
+      if (localAudioRef.current) localAudioRef.current.pause();
+      if (localVideoRef.current) localVideoRef.current.pause();
+      setLastAdded('Sleep timer • Paused after track');
+      setTimeout(() => setLastAdded(null), 2000);
+      return;
     }
 
     if (reason === 'natural_end' && repeatMode === 'track') {
@@ -5850,12 +6460,10 @@ function App() {
     }
   }, [isStandalone, API_BASE, history, isAutoplayEnabled, getEffectiveGuildId, noteSkipReason, queue, currentTime, getTrackActionKey, seekActivePlaybackTo]);
 
-  const [uiPulse, setUiPulse] = useState(1);
   const [accentColor, setAccentColor] = useState('#00ffbf');
 
   useEffect(() => {
     if (!isPlaying) {
-      setUiPulse(1);
       uiPulseRef.current = 1;
       uiPulseSignalRef.current = { bass: 0, rms: 0 };
       uiPulsePeakRef.current = 0;
@@ -5893,7 +6501,6 @@ function App() {
         const target = (visualizerMode === 'pulse') ? (1 + energy * 0.22) : 1;
         const smoothing = target > uiPulseRef.current ? 0.62 : 0.2;
         uiPulseRef.current = lerp(uiPulseRef.current, target, smoothing);
-        setUiPulse(visualizerMode === 'pulse' ? uiPulseRef.current : 1);
       }
       animationFrame = requestAnimationFrame(updatePulse);
     };
@@ -5910,6 +6517,48 @@ function App() {
 
     seekActivePlaybackTo(time);
   }, [API_BASE, getEffectiveGuildId, seekActivePlaybackTo]);
+
+  const memoizedLyricsContent = useMemo(() => lyrics.map((line, idx) => {
+    const isActive = idx === activeLyricIndex;
+    const distance = Math.abs(idx - activeLyricIndex);
+    
+    // Optimized class selection to avoid building massive strings every render
+    let lyricLineClass = "";
+    if (isDualWorkspaceMode) {
+      lyricLineClass = "max-w-[min(92%,760px)] px-3 md:px-5 text-2xl sm:text-3xl lg:text-5xl font-black leading-tight w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] transition-[transform,opacity,filter,color,text-shadow] duration-450 ease-[cubic-bezier(0.22,1,0.36,1)] transform-gpu origin-center will-change-[transform,opacity,filter]";
+      if (isActive) lyricLineClass += " text-brand-accent scale-[1.06] opacity-100 drop-shadow-[0_0_24px_rgba(0,255,191,0.34)]";
+      else if (distance === 1) lyricLineClass += " text-white/52 opacity-68 scale-[1.02]";
+      else if (distance === 2) lyricLineClass += " text-white/30 opacity-34 scale-100 blur-[0.45px]";
+      else lyricLineClass += " text-white/18 opacity-18 scale-[0.985] blur-[0.85px]";
+    } else {
+      lyricLineClass = "text-base sm:text-lg lg:text-xl font-bold transition-[transform,opacity,filter,color,text-shadow] duration-380 ease-[cubic-bezier(0.22,1,0.36,1)] transform-gpu leading-snug py-1.5 relative will-change-[transform,opacity,filter]";
+      if (isActive) lyricLineClass += " text-brand-accent scale-[1.035] opacity-100 drop-shadow-[0_0_12px_rgba(0,255,191,0.34)]";
+      else if (distance === 1) lyricLineClass += " text-white/78 opacity-92";
+      else if (distance === 2) lyricLineClass += " text-white/48 opacity-68 blur-[0.25px]";
+      else lyricLineClass += " text-white/30 opacity-48 blur-[0.7px]";
+    }
+
+    return (
+      <div 
+        key={`${idx}-${line.time}`} 
+        ref={isActive ? activeLyricRef : null} 
+        className={`${lyricLineClass} cursor-pointer hover:!opacity-90 hover:!text-white/75 hover:!scale-[1.015] hover:-translate-y-[1px] transition-all`}
+        onClick={() => handleSeek(line.time + (currentTrack?.introOffsetMs || 0) + (lyricOffsetMs || 0))}
+        style={isDualWorkspaceMode ? { textWrap: 'balance', transitionDelay: `${Math.min(distance, 3) * 18}ms` } : { transitionDelay: `${Math.min(distance, 3) * 14}ms` }}
+      >
+        {line.text}
+        {isActive && isAuraMode && !isDualWorkspaceMode && (
+          <div 
+            className="absolute bottom-0 left-0 right-0 h-1 rounded-full bg-gradient-to-r from-transparent via-brand-accent to-transparent lyric-pulse-line"
+            style={{
+              animation: `lyric-shimmer ${0.4 + (parseFloat(String(vaultPulse.bass)) || 0) * 0.2}s ease-in-out infinite`,
+              transition: 'opacity 60ms ease-out'
+            }}
+          />
+        )}
+      </div>
+    );
+  }), [lyrics, activeLyricIndex, isDualWorkspaceMode, isAuraMode, vaultPulse.bass, handleSeek, currentTrack?.introOffsetMs, lyricOffsetMs]);
 
   const handleRemove = useCallback(async (index) => {
     if (isStandalone) {
@@ -5988,6 +6637,599 @@ function App() {
       return next;
     });
   }, [appendRecentEvent]);
+
+  useEffect(() => {
+    gestureRuntimeRef.current.handleControl = handleControl;
+    gestureRuntimeRef.current.appendRecentEvent = appendRecentEvent;
+  }, [appendRecentEvent, handleControl]);
+
+  useEffect(() => {
+    if (!isFaceControlEnabled) {
+      if (faceLoopRef.current) {
+        window.clearTimeout(faceLoopRef.current);
+        faceLoopRef.current = 0;
+      }
+      if (faceStreamRef.current) {
+        faceStreamRef.current.getTracks().forEach((track) => track.stop());
+        faceStreamRef.current = null;
+      }
+      if (faceVideoRef.current) {
+        faceVideoRef.current.srcObject = null;
+      }
+      faceActionRef.current = { lastActionAt: 0, lastZone: 'center', centeredFrames: 0 };
+      cameraMotionRef.current = { prevLuma: null, active: false, startX: 0, startY: 0, lastX: 0, lastY: 0, startAt: 0, lastSeenAt: 0, lastActionAt: 0 };
+      setFaceControlStatus('Camera off');
+      setFaceControlSignal({ x: 0, y: 0, confidence: 0, source: 'idle' });
+      setCameraHandSignal({ x: 0, y: 0, motion: 0, last: 'idle' });
+      return undefined;
+    }
+
+    let cancelled = false;
+    let detector = null;
+    const fallbackCanvas = document.createElement('canvas');
+    fallbackCanvas.width = 72;
+    fallbackCanvas.height = 54;
+    const fallbackCtx = fallbackCanvas.getContext('2d', { willReadFrequently: true });
+    const supportStatus = typeof window !== 'undefined' && 'FaceDetector' in window
+      ? 'Starting face and hand tracker...'
+      : 'Starting camera face/hand fallback...';
+    setFaceControlStatus(supportStatus);
+
+    const nudgeCameraVolume = (delta) => {
+      setVolume((prev) => {
+        const next = clamp01(prev + delta);
+        if (localAudioRef.current) localAudioRef.current.volume = next;
+        window.aether?.store?.set('volume', next);
+        return next;
+      });
+      setVolumeToast(true);
+      setTimeout(() => setVolumeToast(false), 900);
+    };
+
+    const setHeadPosition = (x, y) => {
+      const safeX = clamp01((x + 1) / 2) * 2 - 1;
+      const safeY = clamp01((y + 1) / 2) * 2 - 1;
+      document.documentElement.style.setProperty('--aether-head-x', String(safeX));
+      document.documentElement.style.setProperty('--aether-head-y', String(safeY));
+      return { safeX, safeY };
+    };
+
+    const runFaceAction = (zone) => {
+      const now = Date.now();
+      const actionState = faceActionRef.current;
+
+      if (zone === 'center') {
+        // Require 4 consecutive center frames before resetting (hysteresis)
+        actionState.centeredFrames = Math.min((actionState.centeredFrames || 0) + 1, 8);
+        if (actionState.centeredFrames >= 4) actionState.lastZone = 'center';
+        actionState.holdFrames = 0;
+        actionState.holdZone = null;
+        return;
+      }
+
+      actionState.centeredFrames = 0;
+
+      // Must hold the same zone for 3 consecutive frames to avoid jitter triggers
+      if (actionState.holdZone === zone) {
+        actionState.holdFrames = (actionState.holdFrames || 0) + 1;
+      } else {
+        actionState.holdZone = zone;
+        actionState.holdFrames = 1;
+      }
+      if (actionState.holdFrames < 3) return;
+
+      // Must return to center first, cooldown 1400ms
+      if (actionState.lastZone !== 'center' || now - actionState.lastActionAt < 1400) return;
+      actionState.lastZone = zone;
+      actionState.lastActionAt = now;
+      actionState.holdFrames = 0;
+
+      if (zone === 'left') {
+        gestureRuntimeRef.current.handleControl?.('previous');
+        showGestureNotice('👈 Face: previous track');
+        gestureRuntimeRef.current.appendRecentEvent?.('face_previous', 'Look left', { tone: 'transport' });
+      } else if (zone === 'right') {
+        gestureRuntimeRef.current.handleControl?.('skip');
+        showGestureNotice('👉 Face: next track');
+        gestureRuntimeRef.current.appendRecentEvent?.('face_next', 'Look right', { tone: 'transport' });
+      } else if (zone === 'up' || zone === 'down') {
+        nudgeCameraVolume(zone === 'up' ? 0.1 : -0.1);
+        showGestureNotice(zone === 'up' ? '👆 Face: volume up' : '👇 Face: volume down');
+        gestureRuntimeRef.current.appendRecentEvent?.('face_volume', zone === 'up' ? 'Look up' : 'Look down', { tone: 'neutral' });
+      }
+    };
+
+    const runCameraHandAction = (direction) => {
+      const now = Date.now();
+      const motionState = cameraMotionRef.current;
+      if (now - motionState.lastActionAt < 1200) return;
+      motionState.lastActionAt = now;
+      motionState.active = false;
+
+      if (direction === 'left') {
+        gestureRuntimeRef.current.handleControl?.('skip');
+        showGestureNotice('🤚 Wave left → next track');
+        gestureRuntimeRef.current.appendRecentEvent?.('hand_next', 'Camera swipe left', { tone: 'transport' });
+      } else if (direction === 'right') {
+        gestureRuntimeRef.current.handleControl?.('previous');
+        showGestureNotice('🤚 Wave right → previous track');
+        gestureRuntimeRef.current.appendRecentEvent?.('hand_previous', 'Camera swipe right', { tone: 'transport' });
+      } else if (direction === 'up' || direction === 'down') {
+        nudgeCameraVolume(direction === 'up' ? 0.1 : -0.1);
+        showGestureNotice(direction === 'up' ? '🤚 Wave up → vol up' : '🤚 Wave down → vol down');
+        gestureRuntimeRef.current.appendRecentEvent?.('hand_volume', direction === 'up' ? 'Camera swipe up' : 'Camera swipe down', { tone: 'neutral' });
+      }
+
+      setCameraHandSignal((prev) => ({ ...prev, last: `swipe ${direction}` }));
+    };
+
+    const sampleCameraFrame = (video) => {
+      if (!fallbackCtx) return { frame: null, avg: 0 };
+      fallbackCtx.drawImage(video, 0, 0, fallbackCanvas.width, fallbackCanvas.height);
+      const frame = fallbackCtx.getImageData(0, 0, fallbackCanvas.width, fallbackCanvas.height).data;
+      let avg = 0;
+      for (let i = 0; i < frame.length; i += 4) {
+        avg += (frame[i] * 0.299) + (frame[i + 1] * 0.587) + (frame[i + 2] * 0.114);
+      }
+      avg /= Math.max(1, frame.length / 4);
+      return { frame, avg };
+    };
+
+    const runCameraHandMotion = (frame) => {
+      if (!frame) return;
+      const width = fallbackCanvas.width;
+      const height = fallbackCanvas.height;
+      const motionState = cameraMotionRef.current;
+      const now = Date.now();
+      const luma = new Uint8Array(width * height);
+      let motionSum = 0;
+      let motionX = 0;
+      let motionY = 0;
+
+      for (let py = 0; py < height; py += 1) {
+        for (let px = 0; px < width; px += 1) {
+          const pixelIndex = (py * width) + px;
+          const frameIndex = pixelIndex * 4;
+          const nextLuma = Math.round((frame[frameIndex] * 0.299) + (frame[frameIndex + 1] * 0.587) + (frame[frameIndex + 2] * 0.114));
+          luma[pixelIndex] = nextLuma;
+          if (!motionState.prevLuma) continue;
+          const diff = Math.abs(nextLuma - motionState.prevLuma[pixelIndex]);
+          if (diff < 18) continue;
+          const edgeBias = 1 + Math.abs((px / width) - 0.5) * 0.35;
+          const weight = (diff - 12) * edgeBias;
+          motionSum += weight;
+          motionX += px * weight;
+          motionY += py * weight;
+        }
+      }
+
+      motionState.prevLuma = luma;
+      const normalizedMotion = clamp01(motionSum / 22000);
+      if (motionSum < 1000) {
+        if (motionState.active && now - motionState.lastSeenAt > 240) {
+          motionState.active = false;
+        }
+        setCameraHandSignal((prev) => ({ ...prev, motion: normalizedMotion, last: normalizedMotion > 0.02 ? prev.last : 'ready' }));
+        return;
+      }
+
+      const x = ((motionX / motionSum / width) - 0.5) * 2;
+      const y = ((motionY / motionSum / height) - 0.5) * 2;
+      motionState.lastSeenAt = now;
+
+      if (!motionState.active) {
+        motionState.active = true;
+        motionState.startX = x;
+        motionState.startY = y;
+        motionState.startAt = now;
+      }
+
+      motionState.lastX = x;
+      motionState.lastY = y;
+      setCameraHandSignal({ x, y, motion: normalizedMotion, last: 'tracking' });
+
+      const dx = x - motionState.startX;
+      const dy = y - motionState.startY;
+      const elapsed = now - motionState.startAt;
+      const absX = Math.abs(dx);
+      const absY = Math.abs(dy);
+      // Require clear axis dominance (1.8x) to avoid diagonal false positives
+      const dominant = absX > absY * 1.8 ? 'h' : absY > absX * 1.8 ? 'v' : null;
+      if (dominant && elapsed > 100 && elapsed < 1000 && (absX > 0.42 || absY > 0.42)) {
+        const direction = dominant === 'h' ? (dx < 0 ? 'left' : 'right') : (dy < 0 ? 'up' : 'down');
+        runCameraHandAction(direction);
+      } else if (elapsed >= 1000) {
+        motionState.active = false;
+      }
+    };
+
+    const scheduleLoop = () => {
+      if (!cancelled) {
+        faceLoopRef.current = window.setTimeout(detectLoop, 120);
+      }
+    };
+
+    const detectLoop = async () => {
+      if (cancelled) return;
+      const video = faceVideoRef.current;
+      if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+        scheduleLoop();
+        return;
+      }
+
+      try {
+        let x = 0;
+        let y = 0;
+        let confidence = 0;
+        let source = 'camera';
+        let status = 'Camera face/hand tracking active';
+        const { frame, avg } = sampleCameraFrame(video);
+        runCameraHandMotion(frame);
+
+        if (detector) {
+          const faces = await detector.detect(video);
+          if (cancelled) return;
+          const face = faces?.[0];
+          if (!face?.boundingBox) {
+            setFaceControlStatus('Looking for face; hand gestures active...');
+            setFaceControlSignal((prev) => ({ ...prev, confidence: 0, source: 'searching' }));
+            runFaceAction('center');
+            return;
+          }
+
+          const box = face.boundingBox;
+          const centerX = box.x + box.width / 2;
+          const centerY = box.y + box.height / 2;
+          x = ((centerX / video.videoWidth) - 0.5) * 2;
+          y = ((centerY / video.videoHeight) - 0.5) * 2;
+          confidence = clamp01((box.width * box.height) / Math.max(1, video.videoWidth * video.videoHeight) * 7);
+          source = 'face';
+          status = 'Face and hand tracking active';
+        } else if (fallbackCtx && frame) {
+          let sum = 0;
+          let sumX = 0;
+          let sumY = 0;
+          for (let py = 0; py < fallbackCanvas.height; py += 1) {
+            for (let px = 0; px < fallbackCanvas.width; px += 1) {
+              const i = ((py * fallbackCanvas.width) + px) * 4;
+              const r = frame[i];
+              const g = frame[i + 1];
+              const b = frame[i + 2];
+              const luma = (r * 0.299) + (g * 0.587) + (b * 0.114);
+              const skinBias = r > 55 && g > 35 && b > 20 && r > b * 1.08 && r > g * 0.82 ? 22 : 0;
+              const centerBias = 1 - (Math.abs((px / fallbackCanvas.width) - 0.5) * 0.22);
+              const weight = Math.max(0, (luma - avg) + skinBias) * centerBias;
+              if (weight <= 0) continue;
+              sum += weight;
+              sumX += px * weight;
+              sumY += py * weight;
+            }
+          }
+
+          if (sum < 180) {
+            setFaceControlStatus('Looking for camera subject; hand gestures active...');
+            setFaceControlSignal((prev) => ({ ...prev, confidence: 0, source: 'searching' }));
+            runFaceAction('center');
+            return;
+          }
+
+          x = ((sumX / sum / fallbackCanvas.width) - 0.5) * 2;
+          y = ((sumY / sum / fallbackCanvas.height) - 0.5) * 2;
+          confidence = clamp01(sum / 12000);
+          status = 'Camera face/hand fallback active';
+        }
+
+        const { safeX, safeY } = setHeadPosition(x, y);
+        setFaceControlSignal({ x: safeX, y: safeY, confidence, source });
+        setFaceControlStatus(status);
+
+        const absX = Math.abs(safeX);
+        const absY = Math.abs(safeY);
+        let zone = 'center';
+        // Tighter dead-band (0.42/0.46) + axis dominance for clean zone reads
+        if (absX > 0.42 || absY > 0.46) {
+          if (absX > absY * 1.3) zone = safeX < 0 ? 'left' : 'right';
+          else if (absY > absX * 1.3) zone = safeY < 0 ? 'up' : 'down';
+        }
+        runFaceAction(zone);
+      } catch (error) {
+        console.warn('[Aether/FaceControl] detection failed', error);
+        setFaceControlStatus(`Face tracking failed: ${String(error?.message || error).slice(0, 46)}`);
+      } finally {
+        scheduleLoop();
+      }
+    };
+
+    const startCamera = async () => {
+      try {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          setFaceControlStatus('Camera API unavailable');
+          return;
+        }
+        detector = 'FaceDetector' in window
+          ? new window.FaceDetector({ fastMode: true, maxDetectedFaces: 1 })
+          : null;
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 320 }, height: { ideal: 240 }, facingMode: 'user' },
+          audio: false,
+        });
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        faceStreamRef.current = stream;
+        const video = faceVideoRef.current;
+        if (video) {
+          video.srcObject = stream;
+          await video.play().catch(() => {});
+        }
+        showGestureNotice(detector ? 'Camera face + hand enabled' : 'Camera hand fallback enabled');
+        gestureRuntimeRef.current.appendRecentEvent?.('camera_control', detector ? 'Camera face and hand controls enabled' : 'Camera fallback controls enabled', { tone: 'neutral' });
+        detectLoop();
+      } catch (error) {
+        console.warn('[Aether/FaceControl] camera failed', error);
+        setFaceControlStatus(`Camera blocked: ${String(error?.message || error).slice(0, 54)}`);
+        setIsFaceControlEnabled(false);
+      }
+    };
+
+    startCamera();
+
+    return () => {
+      cancelled = true;
+      if (faceLoopRef.current) {
+        window.clearTimeout(faceLoopRef.current);
+        faceLoopRef.current = 0;
+      }
+      if (faceStreamRef.current) {
+        faceStreamRef.current.getTracks().forEach((track) => track.stop());
+        faceStreamRef.current = null;
+      }
+      if (faceVideoRef.current) {
+        faceVideoRef.current.srcObject = null;
+      }
+    };
+  }, [isFaceControlEnabled, showGestureNotice]);
+
+  useEffect(() => {
+    if (!isGestureControlEnabled) {
+      setIsFaceControlEnabled(false);
+      document.documentElement.style.setProperty('--aether-head-x', '0');
+      document.documentElement.style.setProperty('--aether-head-y', '0');
+      return undefined;
+    }
+
+    const isInteractiveTarget = (target) => {
+      if (!(target instanceof Element)) return false;
+      return Boolean(target.closest('button, input, textarea, select, option, a, [role="button"], [contenteditable="true"], .no-drag'));
+    };
+
+    const setHeadPosition = (x, y) => {
+      document.documentElement.style.setProperty('--aether-head-x', String(clamp01((x + 1) / 2) * 2 - 1));
+      document.documentElement.style.setProperty('--aether-head-y', String(clamp01((y + 1) / 2) * 2 - 1));
+    };
+
+    const nudgeVolume = (delta) => {
+      setVolume((prev) => {
+        const next = clamp01(prev + delta);
+        if (localAudioRef.current) localAudioRef.current.volume = next;
+        window.aether?.store?.set('volume', next);
+        return next;
+      });
+      setVolumeToast(true);
+      setTimeout(() => setVolumeToast(false), 900);
+    };
+
+    // ── Mouse / single-pointer swipe ─────────────────────────────────
+    const onPointerMove = (event) => {
+      if (event.pointerType === 'touch') return; // handled by touch events
+      const x = ((event.clientX / Math.max(window.innerWidth, 1)) - 0.5) * 2;
+      const y = ((event.clientY / Math.max(window.innerHeight, 1)) - 0.5) * 2;
+      setHeadPosition(x, y);
+    };
+
+    const onPointerDown = (event) => {
+      if (event.pointerType === 'touch') return;
+      if (isInteractiveTarget(event.target)) return;
+      gestureStateRef.current.pointerDown = { x: event.clientX, y: event.clientY, at: Date.now() };
+    };
+
+    const onPointerUp = (event) => {
+      if (event.pointerType === 'touch') return;
+      const start = gestureStateRef.current.pointerDown;
+      gestureStateRef.current.pointerDown = null;
+      if (!start || isInteractiveTarget(event.target)) return;
+      const dx = event.clientX - start.x;
+      const dy = event.clientY - start.y;
+      const elapsed = Date.now() - start.at;
+      const distance = Math.hypot(dx, dy);
+      const now = Date.now();
+
+      // Double-tap to toggle play/pause (< 250ms, didn't move much)
+      if (distance < 20 && elapsed < 250) {
+        if (now - gestureStateRef.current.lastTapAt < 380) {
+          gestureStateRef.current.lastTapAt = 0;
+          gestureRuntimeRef.current.handleControl?.('resume');
+          showGestureNotice('Gesture: play / pause');
+          gestureRuntimeRef.current.appendRecentEvent?.('gesture_tap', 'Double-tap', { tone: 'transport' });
+          return;
+        }
+        gestureStateRef.current.lastTapAt = now;
+        return;
+      }
+
+      // Directional swipe: must be fast (<700ms), long enough (>70px), cooldown
+      if (elapsed > 700 || distance < 70 || now - gestureStateRef.current.lastActionAt < 700) return;
+      gestureStateRef.current.lastActionAt = now;
+
+      const absX = Math.abs(dx);
+      const absY = Math.abs(dy);
+      // Require clear dominance in one axis (ratio > 1.6)
+      if (absX > absY * 1.6) {
+        if (dx < 0) {
+          gestureRuntimeRef.current.handleControl?.('skip');
+          showGestureNotice('Swipe → next track');
+          gestureRuntimeRef.current.appendRecentEvent?.('gesture_next', 'Swipe left', { tone: 'transport' });
+        } else {
+          gestureRuntimeRef.current.handleControl?.('previous');
+          showGestureNotice('Swipe → previous track');
+          gestureRuntimeRef.current.appendRecentEvent?.('gesture_previous', 'Swipe right', { tone: 'transport' });
+        }
+      } else if (absY > absX * 1.6) {
+        const delta = dy < 0 ? 0.1 : -0.1;
+        nudgeVolume(delta);
+        showGestureNotice(dy < 0 ? 'Swipe → volume up' : 'Swipe → volume down');
+        gestureRuntimeRef.current.appendRecentEvent?.('gesture_volume', dy < 0 ? 'Swipe up' : 'Swipe down', { tone: 'neutral' });
+      }
+    };
+
+    // ── 2-finger touch gestures ───────────────────────────────────────
+    const tg = touchGestureRef.current;
+
+    const getTouchDist = (t) => {
+      const ids = Object.keys(t.touches);
+      if (ids.length < 2) return 0;
+      const a = t.touches[ids[0]];
+      const b = t.touches[ids[1]];
+      return Math.hypot(b.x - a.x, b.y - a.y);
+    };
+
+    const getTouchMidpoint = (t) => {
+      const ids = Object.keys(t.touches);
+      if (ids.length < 2) return null;
+      const a = t.touches[ids[0]];
+      const b = t.touches[ids[1]];
+      return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    };
+
+    const onTouchStart = (e) => {
+      Array.from(e.changedTouches).forEach((t) => {
+        tg.touches[t.identifier] = { x: t.clientX, y: t.clientY };
+      });
+      if (Object.keys(tg.touches).length === 2) {
+        tg.pinchStartDist = getTouchDist(tg);
+        tg.twoFingerStart = getTouchMidpoint(tg);
+        tg.active = true;
+        tg.pinchTriggered = false;
+        tg.swipeTriggered = false;
+        tg.startAt = Date.now();
+        // Update stage depth with midpoint
+        if (tg.twoFingerStart) {
+          const x = ((tg.twoFingerStart.x / Math.max(window.innerWidth, 1)) - 0.5) * 2;
+          const y = ((tg.twoFingerStart.y / Math.max(window.innerHeight, 1)) - 0.5) * 2;
+          setHeadPosition(x, y);
+        }
+      }
+    };
+
+    const onTouchMove = (e) => {
+      Array.from(e.changedTouches).forEach((t) => {
+        if (tg.touches[t.identifier]) tg.touches[t.identifier] = { x: t.clientX, y: t.clientY };
+      });
+      if (!tg.active || Object.keys(tg.touches).length < 2) return;
+      // Update depth with midpoint
+      const mid = getTouchMidpoint(tg);
+      if (mid) {
+        const x = ((mid.x / Math.max(window.innerWidth, 1)) - 0.5) * 2;
+        const y = ((mid.y / Math.max(window.innerHeight, 1)) - 0.5) * 2;
+        setHeadPosition(x, y);
+      }
+
+      // Pinch detection (≥ 15% dist change from start)
+      if (!tg.pinchTriggered && !tg.swipeTriggered && tg.pinchStartDist > 40) {
+        const curDist = getTouchDist(tg);
+        const ratio = curDist / tg.pinchStartDist;
+        const now = Date.now();
+        if ((ratio < 0.78 || ratio > 1.28) && now - gestureStateRef.current.lastActionAt > 900) {
+          gestureStateRef.current.lastActionAt = now;
+          tg.pinchTriggered = true;
+          if (ratio < 0.78) {
+            // Pinch in → pause
+            gestureRuntimeRef.current.handleControl?.('pause');
+            showGestureNotice('Pinch → pause');
+            gestureRuntimeRef.current.appendRecentEvent?.('gesture_pinch_pause', 'Pinch in', { tone: 'transport' });
+          } else {
+            // Spread → play
+            gestureRuntimeRef.current.handleControl?.('resume');
+            showGestureNotice('Spread → play');
+            gestureRuntimeRef.current.appendRecentEvent?.('gesture_spread_play', 'Spread out', { tone: 'transport' });
+          }
+        }
+      }
+    };
+
+    const onTouchEnd = (e) => {
+      if (tg.active && Object.keys(tg.touches).length === 2 && !tg.pinchTriggered && !tg.swipeTriggered) {
+        // Check for 2-finger swipe
+        const mid = getTouchMidpoint(tg);
+        const start = tg.twoFingerStart;
+        const now = Date.now();
+        const elapsed = now - (tg.startAt || now);
+        if (mid && start && elapsed < 600 && elapsed > 60) {
+          const dx = mid.x - start.x;
+          const dy = mid.y - start.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist > 55 && now - gestureStateRef.current.lastActionAt > 700) {
+            gestureStateRef.current.lastActionAt = now;
+            tg.swipeTriggered = true;
+            const absX = Math.abs(dx);
+            const absY = Math.abs(dy);
+            if (absX > absY * 1.4) {
+              if (dx < 0) {
+                gestureRuntimeRef.current.handleControl?.('skip');
+                showGestureNotice('✌️ 2-finger → next track');
+                gestureRuntimeRef.current.appendRecentEvent?.('gesture2_next', '2-finger swipe left', { tone: 'transport' });
+              } else {
+                gestureRuntimeRef.current.handleControl?.('previous');
+                showGestureNotice('✌️ 2-finger → previous track');
+                gestureRuntimeRef.current.appendRecentEvent?.('gesture2_prev', '2-finger swipe right', { tone: 'transport' });
+              }
+            } else if (absY > absX * 1.4) {
+              const delta = dy < 0 ? 0.12 : -0.12;
+              nudgeVolume(delta);
+              showGestureNotice(dy < 0 ? '✌️ 2-finger → vol up' : '✌️ 2-finger → vol down');
+              gestureRuntimeRef.current.appendRecentEvent?.('gesture2_vol', dy < 0 ? '2-finger swipe up' : '2-finger swipe down', { tone: 'neutral' });
+            }
+          }
+        }
+      }
+      Array.from(e.changedTouches).forEach((t) => { delete tg.touches[t.identifier]; });
+      if (Object.keys(tg.touches).length < 2) {
+        tg.active = false;
+        tg.pinchStartDist = 0;
+        tg.twoFingerStart = null;
+      }
+    };
+
+    const onDeviceOrientation = (event) => {
+      if (!Number.isFinite(event.gamma) && !Number.isFinite(event.beta)) return;
+      const x = clamp01(((Number(event.gamma) || 0) + 28) / 56) * 2 - 1;
+      const y = clamp01(((Number(event.beta) || 0) + 18) / 36) * 2 - 1;
+      setHeadPosition(x, y);
+    };
+
+    window.addEventListener('pointermove', onPointerMove, { passive: true });
+    window.addEventListener('pointerdown', onPointerDown, { passive: true });
+    window.addEventListener('pointerup', onPointerUp, { passive: true });
+    window.addEventListener('touchstart', onTouchStart, { passive: true });
+    window.addEventListener('touchmove', onTouchMove, { passive: true });
+    window.addEventListener('touchend', onTouchEnd, { passive: true });
+    window.addEventListener('touchcancel', onTouchEnd, { passive: true });
+    window.addEventListener('deviceorientation', onDeviceOrientation, { passive: true });
+    showGestureNotice('Gesture lab enabled');
+    gestureRuntimeRef.current.appendRecentEvent?.('gesture_lab', 'Swipe, pinch & 2-finger controls enabled', { tone: 'neutral' });
+
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('touchstart', onTouchStart);
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onTouchEnd);
+      window.removeEventListener('touchcancel', onTouchEnd);
+      window.removeEventListener('deviceorientation', onDeviceOrientation);
+    };
+  }, [isGestureControlEnabled, showGestureNotice]);
 
   useEffect(() => {
     if (!isMiniPlayer || !currentTrack || queue.length <= 1) {
@@ -6110,6 +7352,10 @@ function App() {
         || isShortcutSettingsOpen
         || isLockModalOpen
         || isSpotifyImportOpen
+        || isFeedbackOpen
+        || isGestureLabOpen
+        || isAuraStageOpen
+        || Boolean(inspectTarget)
         || isLibraryOverlayOpen
         || isPlayerOverlayOpen
         || isViewingFullQueue
@@ -6194,7 +7440,7 @@ function App() {
 
     window.addEventListener('keydown', onShortcut);
     return () => window.removeEventListener('keydown', onShortcut);
-  }, [handleControl, isLibraryOverlayOpen, isLockModalOpen, isMacPlatform, isManualLyricsEditorOpen, isManualLyricsRawEditorOpen, isMixtapeVaultOpen, isPlayerOverlayOpen, isPlaying, isShortcutSettingsOpen, isSharedSceneOpen, isSpotifyImportOpen, isStandalone, isTipsOverlayOpen, isViewingFullDiscovery, isViewingFullPlaylist, isViewingFullQueue, oauthPrompt, shortcuts, toggleDiagnostics, toggleFocusMode, toggleMiniPlayer]);
+  }, [handleControl, inspectTarget, isAuraStageOpen, isFeedbackOpen, isGestureLabOpen, isLibraryOverlayOpen, isLockModalOpen, isMacPlatform, isManualLyricsEditorOpen, isManualLyricsRawEditorOpen, isMixtapeVaultOpen, isPlayerOverlayOpen, isPlaying, isShortcutSettingsOpen, isSharedSceneOpen, isSpotifyImportOpen, isStandalone, isTipsOverlayOpen, isViewingFullDiscovery, isViewingFullPlaylist, isViewingFullQueue, oauthPrompt, shortcuts, toggleDiagnostics, toggleFocusMode, toggleMiniPlayer]);
 
   if (loading) return (
     <div className="h-screen w-full bg-[#0a0a0a] flex flex-col items-center justify-center gap-6 p-6 text-center">
@@ -6250,7 +7496,119 @@ function App() {
               </button>
             )}
           </div>
+
+          <div className="flex justify-end mt-1">
+            <button
+              className="text-xs text-brand-accent hover:underline focus:underline focus:outline-none"
+              type="button"
+              onClick={() => {
+                setIsForgotPasswordOpen(true);
+                setRecoveryError('');
+                setRecoveryPhrase('');
+                setRecoveryToken('');
+                setRecoveryNewPassword('');
+                setRecoveryNewPasswordConfirm('');
+                refreshLockRecoveryStatus();
+              }}
+            >
+              Forgot password?
+            </button>
+          </div>
         </div>
+
+        {/* Forgot Password Modal */}
+        {isForgotPasswordOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+            <div className="w-full max-w-sm rounded-2xl bg-[#181818] border border-white/10 p-6 relative">
+              <button
+                className="absolute top-3 right-3 text-white/40 hover:text-brand-accent"
+                onClick={() => setIsForgotPasswordOpen(false)}
+                aria-label="Close recovery dialog"
+              >
+                <X size={18} />
+              </button>
+              <div className="text-lg font-bold text-brand-accent mb-2">Recover Access</div>
+              <div className="text-xs text-white/60 mb-4">Verify your backup phrase, then set a new password.</div>
+
+              <div className="space-y-4">
+                {/* Backup Phrase Recovery — primary */}
+                <div className="border border-brand-accent/25 rounded-xl p-3 bg-brand-accent/[0.04]">
+                  <div className="font-semibold text-white/90 mb-1 flex items-center gap-1.5">
+                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-brand-accent" />
+                    Backup Recovery Phrase
+                    <span className="ml-1 text-[9px] font-black uppercase tracking-[0.16em] text-brand-accent/70">Primary</span>
+                  </div>
+                  {lockRecoveryStatus?.phrase?.enabled ? (
+                    <>
+                      <input
+                        type="text"
+                        value={recoveryPhrase}
+                        onChange={e => setRecoveryPhrase(e.target.value)}
+                        placeholder="Enter backup phrase"
+                        className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1 text-sm text-white outline-none focus:border-brand-accent/50"
+                      />
+                      <button
+                        className="mt-2 w-full rounded-lg bg-brand-accent text-black font-bold px-3 py-1 text-xs disabled:opacity-50"
+                        disabled={!recoveryPhrase || recoveryBusy}
+                        onClick={handleVerifyRecoveryPhrase}
+                      >
+                        {recoveryBusy ? 'Verifying…' : 'Verify Phrase'}
+                      </button>
+                    </>
+                  ) : (
+                    <div className="text-xs text-white/45">
+                      No backup phrase is set. Generate one in App Lock settings while unlocked.
+                    </div>
+                  )}
+                </div>
+
+                {/* Reset Password */}
+                <div className="border border-white/10 rounded-xl p-3 bg-white/[0.02]">
+                  <div className="font-semibold text-white/80 mb-1">Set New Password</div>
+                  <div className="text-xs text-white/45 mb-2">
+                    {recoveryToken ? 'Recovery verified. Choose a new password.' : 'Verify backup phrase or email code first.'}
+                  </div>
+                  <div className="space-y-2">
+                    <input
+                      type="password"
+                      value={recoveryNewPassword}
+                      onChange={(e) => setRecoveryNewPassword(e.target.value)}
+                      placeholder="New password"
+                      className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1 text-sm text-white outline-none focus:border-brand-accent/50"
+                      disabled={!recoveryToken || recoveryResetBusy}
+                    />
+                    <input
+                      type="password"
+                      value={recoveryNewPasswordConfirm}
+                      onChange={(e) => setRecoveryNewPasswordConfirm(e.target.value)}
+                      placeholder="Confirm new password"
+                      className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1 text-sm text-white outline-none focus:border-brand-accent/50"
+                      disabled={!recoveryToken || recoveryResetBusy}
+                    />
+                    <button
+                      className="w-full rounded-lg bg-brand-accent text-black font-bold px-3 py-1.5 text-xs disabled:opacity-50"
+                      disabled={!recoveryToken || recoveryResetBusy || !recoveryNewPassword || !recoveryNewPasswordConfirm}
+                      onClick={handleResetPasswordFromRecovery}
+                    >
+                      {recoveryResetBusy ? 'Resetting…' : 'Reset Password'}
+                    </button>
+                  </div>
+                </div>
+
+                {(lockRecoveryStatusError || recoveryError) && (
+                  <div className="text-xs text-red-400 text-center space-y-2">
+                    <div>{recoveryError || lockRecoveryStatusError}</div>
+                  </div>
+                )}
+
+                {/* Fallback/help */}
+                <div className="text-xs text-white/40 text-center mt-2">
+                  If you can't access your backup phrase, please contact support or check your device backups.
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -6380,6 +7738,8 @@ function App() {
                               <div className="overlay-marquee-track text-[15px] font-black uppercase tracking-tight text-white leading-tight">
                                 <span>{miniTitle}</span>
                                 <span aria-hidden="true">{miniTitle}</span>
+                                <span aria-hidden="true">{miniTitle}</span>
+                                <span aria-hidden="true">{miniTitle}</span>
                               </div>
                             </div>
                           ) : (
@@ -6485,7 +7845,7 @@ function App() {
      );
   }
 
-  const isAuraMode = visualizerMode === 'pulse';
+
   const headerZClass = videoMode === 'cinema' ? 'z-[120]' : 'z-[220]';
   const headerInsetClass = isMacPlatform ? 'pl-20' : 'pl-4';
   const topHeaderClass = isAuraMode
@@ -6502,24 +7862,8 @@ function App() {
   const panelInteractiveClass = isAuraMode
     ? 'hover:border-brand-accent/35 hover:shadow-[0_18px_60px_rgba(0,255,191,0.08)] hover:-translate-y-[1px]'
     : 'hover:border-brand-accent/20';
-  const immersiveBeatIntensity = isAuraMode
-    ? clamp01((vaultPulse.energy * 0.9) + (vaultPulse.bass * 0.45) + (vaultPulse.highs * 0.12))
-    : 0;
-  const auraCardShadow = isAuraMode
-    ? `0 24px 60px rgba(0,0,0,0.30), inset 0 0 ${10 + immersiveBeatIntensity * 30}px rgba(0,255,191,${0.06 + immersiveBeatIntensity * 0.24})`
-    : undefined;
-  const auraPanelShadow = isAuraMode
-    ? `0 12px 30px rgba(0,0,0,0.24), inset 0 0 ${6 + immersiveBeatIntensity * 18}px rgba(0,255,191,${0.05 + immersiveBeatIntensity * 0.18})`
-    : undefined;
-  const auraCardBorder = isAuraMode ? `rgba(130, 255, 221, ${0.16 + immersiveBeatIntensity * 0.20})` : undefined;
-  const auraPanelBorder = isAuraMode ? `rgba(130, 255, 221, ${0.11 + immersiveBeatIntensity * 0.16})` : undefined;
-  const auraPresetConfig = AURA_PRESETS.find((preset) => preset.id === auraPreset) || AURA_PRESETS[1];
-  const doodlePresetConfig = DOODLE_PRESETS.find((preset) => preset.id === doodleIntensity) || DOODLE_PRESETS[1];
-  const auraFieldStyle = isAuraMode ? {
-    '--aura-field-boost': String(clamp01((0.22 + immersiveBeatIntensity * 0.78) * auraPresetConfig.fieldBoost)),
-    '--aura-field-flare': String(clamp01((0.18 + immersiveBeatIntensity * 0.46) * auraPresetConfig.fieldFlare)),
-    '--aura-field-drift': `${(8 + immersiveBeatIntensity * 18).toFixed(2)}px`,
-  } : undefined;
+
+   const doodlePresetConfig = DOODLE_PRESETS.find((preset) => preset.id === doodleIntensity) || DOODLE_PRESETS[1];
   const trackProgressAccent = trackPalette.progressAccent || themeColor;
   const trackProgressGlow = trackPalette.progressGlow || 'rgba(0, 255, 191, 0.42)';
   const trackControlAccent = trackPalette.controlAccent || themeColor;
@@ -6527,71 +7871,7 @@ function App() {
   const trimmedSearchQuery = searchQuery.trim();
   const isSearchActive = trimmedSearchQuery.length > 0;
   const hasActiveSearchState = Boolean(trimmedSearchQuery || searchResults.length > 0 || hasCompletedSearch);
-  const soundLedgerView = (() => {
-    const data = normalizePlaybackLedgerData(soundCapsuleData);
-    const totalTracksPlayed = data.totalPlays || Object.values(data.tracks || {}).reduce((total, entry) => total + Math.max(0, Math.floor(Number(entry?.count) || 0)), 0);
-    const totalMs = Math.max(0, Math.floor(Number(data.totalMs) || (Number(data.totalMinutes) || 0) * 60000));
-    const recentWeek = Array.from({ length: 7 }, (_, index) => {
-      const date = new Date();
-      date.setDate(date.getDate() - (6 - index));
-      const key = getLocalDateKey(date);
-      return {
-        key,
-        label: date.toLocaleDateString(undefined, { weekday: 'short' }).slice(0, 3).toUpperCase(),
-        minutesMs: Math.max(0, Math.floor(Number(data.dailyMinutes?.[key]) || 0)),
-        plays: Math.max(0, Math.floor(Number(data.dailyPlays?.[key]) || 0)),
-      };
-    });
-    const peakHours = Array.from({ length: 24 }, (_, hour) => ({
-      hour,
-      label: hour === 0 ? '12A' : hour === 12 ? '12P' : hour > 12 ? `${hour - 12}P` : `${hour}A`,
-      count: Math.max(0, Math.floor(Number(data.hourlyTrends?.[hour]) || 0)),
-    }));
-    const topArtists = Object.entries(data.artists || {})
-      .sort((left, right) => {
-        const countDiff = Math.max(0, Math.floor(Number(right[1]?.count) || 0)) - Math.max(0, Math.floor(Number(left[1]?.count) || 0));
-        if (countDiff !== 0) return countDiff;
-        return Math.max(0, Math.floor(Number(right[1]?.totalMs) || 0)) - Math.max(0, Math.floor(Number(left[1]?.totalMs) || 0));
-      })
-      .slice(0, 6);
-    const topTracks = Object.entries(data.tracks || {})
-      .sort((left, right) => {
-        const countDiff = Math.max(0, Math.floor(Number(right[1]?.count) || 0)) - Math.max(0, Math.floor(Number(left[1]?.count) || 0));
-        if (countDiff !== 0) return countDiff;
-        return Math.max(0, Math.floor(Number(right[1]?.totalMs) || 0)) - Math.max(0, Math.floor(Number(left[1]?.totalMs) || 0));
-      })
-      .slice(0, 8);
-    const genreMix = Object.entries(data.genres || {})
-      .sort((left, right) => Math.max(0, Math.floor(Number(right[1]) || 0)) - Math.max(0, Math.floor(Number(left[1]) || 0)))
-      .slice(0, 6);
-    const recentSessions = Array.isArray(data.recentSessions) ? data.recentSessions.slice(0, 6) : [];
-    const weekMaxMs = Math.max(1, ...recentWeek.map((entry) => entry.minutesMs));
-    const peakHourMax = Math.max(1, ...peakHours.map((entry) => entry.count));
-    const topWindow = [...Array.from({ length: 24 }, (_, hour) => ({
-      hour,
-      label: hour === 0 ? '12A' : hour === 12 ? '12P' : hour > 12 ? `${hour - 12}P` : `${hour}A`,
-      count: Math.max(0, Math.floor(Number(data.hourlyTrends?.[hour]) || 0)),
-    }))]
-      .sort((left, right) => right.count - left.count)
-      .filter((entry) => entry.count > 0)
-      .slice(0, 3);
 
-    return {
-      totalTracksPlayed,
-      totalMs,
-      totalSessions: Math.max(0, Math.floor(Number(data.totalSessions) || totalTracksPlayed)),
-      activeDays: recentWeek.filter((entry) => entry.minutesMs > 0 || entry.plays > 0).length,
-      recentWeek,
-      weekMaxMs,
-      peakHours,
-      peakHourMax,
-      topArtists,
-      topTracks,
-      genreMix,
-      recentSessions,
-      topWindow,
-    };
-  })();
   const diagnosticsApiBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
   const queuePollDisplay = isStandalone ? 'local' : `${diagnostics.lastQueueFetchMs ?? '—'}ms`;
   const queuePollTime = isStandalone ? 'direct engine' : formatDiagTime(diagnostics.lastQueueFetchAt);
@@ -6658,7 +7938,6 @@ function App() {
     : engineStatus.ffmpegReady
       ? 'Remux and extraction pipeline is ready.'
       : 'FFmpeg is not resolved yet.';
-  const showVisualStage = Boolean(isStandalone && currentTrack && videoMode);
   const showImmersiveLyricsOverlay = Boolean(isLyricsExpanded && !showVisualStage);
   const showWindowsTitleStrip = Boolean(isStandalone && isWindowsPlatform && !isMaximized && !showImmersiveLyricsOverlay);
   const showWindowsHeaderWindowControls = Boolean(isStandalone && isWindowsPlatform && isMaximized && !showImmersiveLyricsOverlay);
@@ -6679,11 +7958,6 @@ function App() {
   const diagnosticsTopOffset = isWindowsPlatform ? (showWindowsTitleStrip ? 120 : 88) : isMacPlatform ? 102 : 92;
   const visualStageLyric = compactLyric || activeLyric || null;
   const visualStageNextLyric = nextLyric && nextLyric !== visualStageLyric ? nextLyric : null;
-  const isDualVisualMode = showVisualStage && videoMode === 'dual';
-  const isDualWorkspaceMode = isDualVisualMode && !isVerticalStack;
-  const isDualLayoutLocked = videoMode === 'dual';
-  const isImmersiveLyricsLocked = Boolean(showVisualStage);
-  const showSecondaryColumn = !isFocusedMode && !isDualVisualMode;
   const visualStageHeaderVisible = videoMode !== 'cinema' || cinemaControlsVisible || visualControlsPinned;
   const visualStageFooterVisible = videoMode !== 'cinema' || cinemaControlsVisible || visualControlsPinned;
   const dualVisualStageWidth = 'clamp(320px, 34vw, 560px)';
@@ -6714,12 +7988,68 @@ function App() {
     : 'flex flex-col gap-6 py-4 text-center';
   const lyricsHeaderEyebrow = isDualWorkspaceMode ? 'Split Immersive' : 'Subtitles';
   const sharedModalCloseButtonClass = 'w-10 h-10 rounded-xl border border-white/15 bg-white/[0.03] text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center';
+  const inspectPlaylistName = isPlaylistInspect ? String(inspectTarget?.playlistName || 'Playlist') : '';
+   const inspectPlaylistSourceText = inspectPlaylistSourceUrls.join('\n');
+   const inspectQueueIndex = inspectTrack ? queue.findIndex((track) => normalizeTrackIdentity(track) === normalizeTrackIdentity(inspectTrack)) : -1;
+   const inspectDurationMs = inspectTrack?.totalDurationMs || inspectTrack?.duration || 0;
+  const playInspectPlaylist = (shuffle = false) => {
+    const normalized = inspectPlaylistTracks.map(normalizeQueueTrack).filter(Boolean);
+    if (normalized.length === 0) {
+      setLastAdded(`No playable tracks in ${inspectPlaylistName}`);
+      setTimeout(() => setLastAdded(null), 2600);
+      return;
+    }
+    const nextQueue = shuffle ? [...normalized].sort(() => Math.random() - 0.5) : normalized;
+    setQueue(nextQueue);
+    seekActivePlaybackTo(0);
+    setIsPlaying(true);
+    setIsManualStop(false);
+    setInspectTarget(null);
+    setLastAdded(`${shuffle ? 'Shuffling' : 'Playing'} ${inspectPlaylistName} (${nextQueue.length})`);
+    setTimeout(() => setLastAdded(null), 2600);
+  };
+  const queueInspectPlaylist = () => {
+    const normalized = inspectPlaylistTracks.map(normalizeQueueTrack).filter(Boolean);
+    if (normalized.length === 0) {
+      setLastAdded(`No playable tracks in ${inspectPlaylistName}`);
+      setTimeout(() => setLastAdded(null), 2600);
+      return;
+    }
+    const shouldStart = queue.length === 0;
+    setQueue((prev) => [...(Array.isArray(prev) ? prev : []), ...normalized]);
+    if (shouldStart) {
+      setIsPlaying(true);
+      setIsManualStop(false);
+    }
+    setLastAdded(`Queued ${inspectPlaylistName} (${normalized.length})`);
+    setTimeout(() => setLastAdded(null), 2600);
+  };
+  const auraStageDurationMs = currentTrack?.totalDurationMs || currentTrack?.duration || 0;
+  const auraStageProgress = auraStageDurationMs > 0 ? clamp01(currentTime / auraStageDurationMs) * 100 : 0;
+  const auraStagePulseScale = 1 + immersiveBeatIntensity * 0.12;
+  const rootModeClass = [
+    isVerticalStack ? 'vertical-stack-mode' : '',
+    isDoodleMode ? `doodle-mode-active doodle-preset-${doodleIntensity}` : '',
+    isAuraMode ? `aura-mode-active aura-preset-${auraPreset}` : '',
+    isDepthMotionEnabled ? 'aether-depth-mode' : '',
+    (isGestureControlEnabled || isFaceControlEnabled) ? 'gesture-lab-active' : '',
+  ].filter(Boolean).join(' ');
 
   return (
-    <div className={`fixed inset-0 bg-transparent selection:bg-brand-accent selection:text-brand-dark flex flex-col h-screen overflow-hidden relative isolate ${desktopTopInsetClass} ${isVerticalStack ? 'vertical-stack-mode' : ''} ${isDoodleMode ? `doodle-mode-active doodle-preset-${doodleIntensity}` : ''} ${isAuraMode ? `aura-mode-active aura-preset-${auraPreset}` : ''}`} style={auraFieldStyle}>
+    <div className={`fixed inset-0 bg-transparent selection:bg-brand-accent selection:text-brand-dark flex flex-col h-screen overflow-hidden relative isolate ${desktopTopInsetClass} ${rootModeClass}`} style={auraFieldStyle}>
       <div className="fixed inset-0 bg-[#050505] z-[-2]" />
       {/* Background Mesh (Absolute to avoid flex interference) */}
       <div className="absolute inset-0 bg-mesh pointer-events-none z-[-1]" />
+
+      {isFaceControlEnabled && (
+        <video
+          ref={faceVideoRef}
+          autoPlay
+          muted
+          playsInline
+          className={`fixed bottom-4 left-4 z-[360] h-24 w-32 rounded-2xl border border-brand-accent/25 bg-black/70 object-cover shadow-[0_18px_50px_rgba(0,0,0,0.45)] transition-opacity ${isGestureLabOpen ? 'opacity-80' : 'pointer-events-none opacity-0'}`}
+        />
+      )}
 
       {/* ── WEB AUDIO UNLOCK OVERLAY ─────────────────────────────────────────
           Browsers block audio.play() without a prior user gesture in the tab.
@@ -6990,18 +8320,25 @@ function App() {
             <Activity size={16} className="group-hover:animate-pulse" />
           </button>
           <button
+            onClick={() => setIsGestureLabOpen(true)}
+            className={`${headerIconButtonClass} ${isGestureControlEnabled ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`}
+            title="Gesture Lab"
+          >
+            <Hand size={15} />
+          </button>
+          <button
+            onClick={openFeedbackPanel}
+            className={headerIconButtonClass}
+            title="Send Feedback"
+          >
+            <MessageSquare size={15} />
+          </button>
+          <button
             onClick={openShortcutSettings}
             className={headerIconButtonClass}
             title="Shortcut Settings"
           >
             <Keyboard size={16} />
-          </button>
-          <button
-            onClick={toggleDiagnostics}
-            className={`${headerIconButtonClass} ${isDiagnosticsOpen ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : ''}`}
-            title={isDiagnosticsOpen ? 'Hide Diagnostics' : 'Show Diagnostics'}
-          >
-            <Monitor size={16} />
           </button>
 
           <div className="relative" ref={looksPanelRef} data-no-maximize="true">
@@ -7048,6 +8385,28 @@ function App() {
                   ))}
                 </div>
 
+                <div className="grid grid-cols-2 gap-1.5 mb-3">
+                  <button
+                    onClick={() => {
+                      setIsDepthMotionEnabled((prev) => !prev);
+                      setLastAdded(isDepthMotionEnabled ? 'Depth motion disabled' : 'Depth motion enabled');
+                      setTimeout(() => setLastAdded(null), 1500);
+                    }}
+                    className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${isDepthMotionEnabled ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                  >
+                    Depth
+                  </button>
+                  <button
+                    onClick={() => {
+                      setIsGestureLabOpen(true);
+                      setIsLooksPanelOpen(false);
+                    }}
+                    className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${isGestureControlEnabled ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                  >
+                    Gesture
+                  </button>
+                </div>
+
                 <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Doodle Preset</div>
                 <div className="grid grid-cols-3 gap-1.5 mb-3">
                   {DOODLE_PRESETS.map((preset) => (
@@ -7072,10 +8431,34 @@ function App() {
                     setLastAdded(next ? 'Doodle mode enabled' : 'Doodle mode disabled');
                     setTimeout(() => setLastAdded(null), 1600);
                   }}
-                  className={`w-full px-3 py-2 rounded-xl border text-[10px] font-black uppercase tracking-[0.14em] transition-colors ${isDoodleMode ? 'bg-brand-accent/15 border-brand-accent/40 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                  className={`w-full px-3 py-2 rounded-xl border text-[10px] font-black uppercase tracking-[0.14em] transition-colors ${isDoodleMode ? 'bg-brand-accent/15 border-brand-accent/40 text-brand-accent mb-3' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35 mb-3'}`}
                 >
                   {isDoodleMode ? `Doodle ON • ${doodleIntensityBadge}` : 'Enable Doodle'}
                 </button>
+
+                <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2 mt-1 border-t border-white/10 pt-3">System & Tools</div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    onClick={() => {
+                      setIsAuraStageOpen(true);
+                      setIsLooksPanelOpen(false);
+                    }}
+                    className="flex flex-col items-center justify-center gap-1.5 px-2 py-2 rounded-xl border border-white/10 bg-white/[0.03] text-white/65 transition-colors hover:text-brand-accent hover:border-brand-accent/35"
+                  >
+                    <Layers size={14} />
+                    <span className="text-[8px] font-black uppercase tracking-[0.12em]">Aura Stage</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      toggleDiagnostics();
+                      setIsLooksPanelOpen(false);
+                    }}
+                    className={`flex flex-col items-center justify-center gap-1.5 px-2 py-2 rounded-xl border transition-colors ${isDiagnosticsOpen ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'border-white/10 bg-white/[0.03] text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                  >
+                    <Monitor size={14} />
+                    <span className="text-[8px] font-black uppercase tracking-[0.12em]">Diagnostics</span>
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -7087,7 +8470,7 @@ function App() {
             <input
               type="text"
               placeholder="Search tracks, artists, or paste a YouTube link"
-              className={`w-full rounded-full pl-12 pr-36 h-11 text-sm md:text-[14px] outline-none transition-all ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/[0.04] border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'} disabled:opacity-30 disabled:cursor-not-allowed`}
+              className={`w-full rounded-full pl-12 pr-28 h-11 text-sm md:text-[14px] outline-none transition-all text-ellipsis overflow-hidden whitespace-nowrap ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/[0.04] border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'} disabled:opacity-30 disabled:cursor-not-allowed`}
               value={searchQuery}
               disabled={videoMode === 'dual'}
               onChange={(e) => {
@@ -7138,31 +8521,161 @@ function App() {
         <div className="flex items-center justify-end gap-2 min-w-fit order-3 no-drag" data-no-maximize="true">
           <div className="relative" ref={sleepTimerMenuRef} data-no-maximize="true">
             <button
-              onClick={toggleSleepTimerMenu}
-              className={`${headerIconButtonClass} ${sleepTimerValue > 0 ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`}
-              title={sleepTimerValue > 0 ? `Sleep timer active • ${sleepRemainingStr || `${sleepTimerValue}m`}` : 'Sleep timer'}
+              onClick={() => setIsSleepTimerOverlayOpen((p) => !p)}
+              className={`${(sleepTimerValue > 0 || stopAfterTrack) ? 'no-drag flex h-10 items-center gap-1.5 rounded-2xl border border-brand-accent/35 bg-brand-accent/12 px-3 text-brand-accent shadow-[0_0_14px_rgba(0,255,191,0.12)] transition-all hover:border-brand-accent/55 hover:bg-brand-accent/18' : headerIconButtonClass}`}
+              title={(sleepTimerValue > 0 || stopAfterTrack) ? `Sleep active • ${stopAfterTrack ? 'End of track' : (sleepRemainingStr || `${sleepTimerValue}m`)}` : 'Sleep Timer'}
             >
-              <Clock size={14} />
+              <div className="relative flex items-center justify-center">
+                <Clock size={14} className={(sleepTimerValue > 0 || stopAfterTrack) ? 'animate-pulse' : ''} />
+                {(sleepTimerValue > 0) && (
+                  <svg className="absolute -inset-1 -rotate-90" viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="2" strokeOpacity="0.1" />
+                    <circle 
+                      cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                      strokeDasharray="62.8"
+                      strokeDashoffset={62.8 * (1 - Math.max(0, (sleepDeadline - Date.now()) / (sleepTimerValue * 60000)))}
+                    />
+                  </svg>
+                )}
+              </div>
+              {(sleepTimerValue > 0 || stopAfterTrack) && (
+                <span className="ml-1 text-[11px] font-black tracking-[0.12em] tabular-nums">
+                  {stopAfterTrack ? 'END' : (sleepRemainingStr || `${sleepTimerValue}m`)}
+                </span>
+              )}
             </button>
 
-            {isSleepTimerMenuOpen && (
-              <div className="absolute right-0 mt-2 z-[340] w-44 rounded-2xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-2 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
-                {[15, 30, 60, 120].map((minutes) => (
+            {isSleepTimerOverlayOpen && (
+              <div className="absolute right-0 mt-2 z-[340] w-72 rounded-2xl border border-white/12 bg-[#080c10]/96 backdrop-blur-2xl p-4 shadow-[0_18px_60px_rgba(0,0,0,0.55)]">
+                {/* Header */}
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <Clock size={13} className="text-brand-accent" />
+                    <span className="text-[10px] font-black uppercase tracking-[0.26em] text-white/60">Sleep Timer</span>
+                  </div>
+                  {sleepTimerValue > 0 && (
+                    <div className="flex items-center gap-1.5 rounded-full border border-brand-accent/30 bg-brand-accent/10 px-2.5 py-1">
+                      <span className="text-[11px] font-black tabular-nums text-brand-accent">{sleepRemainingStr || `${sleepTimerValue}m`}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Countdown ring if active */}
+                {sleepTimerValue > 0 && sleepDeadline && (
+                  <div className="mb-4 flex flex-col items-center gap-2">
+                    <div className="relative flex h-20 w-20 items-center justify-center">
+                      <svg className="absolute inset-0 -rotate-90" viewBox="0 0 80 80">
+                        <circle cx="40" cy="40" r="34" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="5" />
+                        <circle
+                          cx="40" cy="40" r="34" fill="none"
+                          stroke="rgba(0,255,191,0.7)" strokeWidth="5"
+                          strokeLinecap="round"
+                          strokeDasharray={`${2 * Math.PI * 34}`}
+                          strokeDashoffset={`${2 * Math.PI * 34 * (1 - Math.max(0, (sleepDeadline - Date.now()) / (sleepTimerValue * 60000)))}`}
+                          style={{ transition: 'stroke-dashoffset 1s linear' }}
+                        />
+                      </svg>
+                      <span className="text-[13px] font-black tabular-nums text-white">{sleepRemainingStr}</span>
+                    </div>
+                    <p className="text-[9px] uppercase tracking-[0.22em] text-white/35">Pausing when timer ends</p>
+                  </div>
+                )}
+
+                {/* Preset buttons */}
+                <div className="mb-3">
+                  <div className="text-[8px] uppercase tracking-[0.22em] text-white/30 mb-2">Presets</div>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {[15, 30, 60, 120].map((m) => (
+                      <button
+                        key={`sleep-${m}`}
+                        onClick={() => handleSetSleepTimer(m)}
+                        className={`rounded-xl py-2 text-[10px] font-black transition-all ${sleepTimerValue === m ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.3)]' : 'border border-white/10 bg-white/[0.04] text-white/60 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                      >
+                        {m < 60 ? `${m}m` : `${m / 60}h`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Custom minutes input */}
+                <div className="mb-3">
+                  <div className="text-[8px] uppercase tracking-[0.22em] text-white/30 mb-2">Custom</div>
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      min="1" max="480"
+                      value={sleepCustomMinutes}
+                      onChange={(e) => setSleepCustomMinutes(e.target.value)}
+                      placeholder="Minutes…"
+                      className="no-drag flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[12px] font-black text-white outline-none placeholder:text-white/25 focus:border-brand-accent/50 focus:bg-brand-accent/[0.04] transition-all"
+                      style={{ WebkitUserSelect: 'text', userSelect: 'text' }}
+                    />
+                    <button
+                      onClick={() => {
+                        const val = parseInt(sleepCustomMinutes, 10);
+                        if (val > 0 && val <= 480) { handleSetSleepTimer(val); setSleepCustomMinutes(''); }
+                      }}
+                      disabled={!sleepCustomMinutes || parseInt(sleepCustomMinutes, 10) <= 0}
+                      className="rounded-xl border border-brand-accent/25 bg-brand-accent/10 px-3 py-2 text-[10px] font-black text-brand-accent transition-all hover:bg-brand-accent hover:text-black disabled:opacity-30"
+                    >
+                      Set
+                    </button>
+                  </div>
+                </div>
+
+                {/* Pausing after current track toggle */}
+                <div className="mb-3 flex items-center justify-between rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2.5 transition-all hover:border-white/15">
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-accent/10 text-brand-accent">
+                      <Music size={14} />
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-black text-white/85">Stop after track</div>
+                      <div className="text-[8px] text-white/35 mt-0.5">Pause when current song ends</div>
+                    </div>
+                  </div>
                   <button
-                    key={`sleep-${minutes}`}
-                    onClick={() => handleSetSleepTimer(minutes)}
-                    className={`w-full text-left px-3 py-2 rounded-xl text-sm transition-colors ${sleepTimerValue === minutes ? 'text-brand-accent bg-brand-accent/10' : 'text-white/75 hover:text-brand-accent hover:bg-white/5'}`}
+                    onClick={() => {
+                        setStopAfterTrack(!stopAfterTrack);
+                        if (!stopAfterTrack) {
+                            setSleepTimerValue(0);
+                            setSleepDeadline(null);
+                        }
+                    }}
+                    className={`h-5 w-9 rounded-full p-1 transition-all ${stopAfterTrack ? 'bg-brand-accent' : 'bg-white/10'}`}
                   >
-                    Sleep in {minutes} min
+                    <div className={`h-3 w-3 rounded-full bg-white shadow-sm transition-all ${stopAfterTrack ? 'translate-x-4' : 'translate-x-0'}`} />
                   </button>
-                ))}
-                <div className="my-1 border-t border-white/10" />
-                <button
-                  onClick={() => handleSetSleepTimer(0)}
-                  className="w-full text-left px-3 py-2 rounded-xl text-sm text-red-300 hover:bg-red-500/10 transition-colors"
-                >
-                  Turn off
-                </button>
+                </div>
+
+                {/* Fade-out toggle */}
+                <div className="mb-4 flex items-center justify-between rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2.5 transition-all hover:border-white/15">
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/5 text-white/50">
+                      <Zap size={14} />
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-black text-white/85">Fade out audio</div>
+                      <div className="text-[8px] text-white/35 mt-0.5">Smooth volume ramp-down</div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setSleepFadeEnabled((p) => !p)}
+                    className={`relative h-5 w-9 rounded-full transition-colors ${sleepFadeEnabled ? 'bg-brand-accent' : 'bg-white/15'}`}
+                  >
+                    <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${sleepFadeEnabled ? 'left-[calc(100%-18px)]' : 'left-0.5'}`} />
+                  </button>
+                </div>
+
+                {/* Cancel */}
+                {sleepTimerValue > 0 && (
+                  <button
+                    onClick={() => handleSetSleepTimer(0)}
+                    className="w-full rounded-xl border border-red-500/20 bg-red-500/8 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-red-400 transition-all hover:bg-red-500/18"
+                  >
+                    Cancel Timer
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -7984,7 +9497,7 @@ function App() {
 
 
       <motion.main 
-        className={`flex-1 relative z-10 w-full mb-0 min-h-0 px-4 md:px-6 py-4 ${isVerticalStack ? '!flex !flex-col !gap-8 overflow-y-auto scroll-smooth pb-20 custom-scrollbar' : 'flex flex-row gap-4 overflow-hidden'}`}
+        className={`aether-depth-stage flex-1 relative z-10 w-full mb-0 min-h-0 px-4 md:px-6 py-4 ${isVerticalStack ? '!flex !flex-col !gap-8 overflow-y-auto scroll-smooth pb-20 custom-scrollbar' : 'flex flex-row gap-4 overflow-hidden'}`}
         style={{
           scale: 1,
           paddingRight: isDualVisualMode && !isVerticalStack ? `calc(${dualVisualStageWidth} + 1.25rem)` : undefined,
@@ -8131,9 +9644,6 @@ function App() {
                  {/* LEFT: THUMBNAIL + VOLUME */}
                  <div
                     className="flex flex-col gap-6 items-center flex-none transition-all duration-500"
-                    style={videoMode === null && dualFocusMode === 'lyrics' ? { filter: 'blur(4px)', opacity: 0.5, transform: 'scale(0.96)' } : {}}
-                    onMouseEnter={() => setDualFocusMode('video')}
-                    onMouseLeave={() => setDualFocusMode(null)}
                  >
                     <div className="w-48 h-48 md:w-56 md:h-56 lg:w-60 lg:h-60 relative group flex-none rounded-[2.5rem] overflow-hidden drop-shadow-2xl">
                         <img src={getProxyUrl(currentTrack.thumbnail)} className="absolute inset-0 w-full h-full object-cover shadow-2xl border border-white/10 group-hover:scale-105 transition-transform duration-700" alt="" />
@@ -8174,6 +9684,7 @@ function App() {
                              }} disabled={!canOpenCurrentSource} className="p-2 text-white/20 hover:text-brand-accent transition-colors disabled:opacity-25 disabled:cursor-not-allowed" title="Open Source"><ExternalLink size={14} /></button>
                              <button onClick={handleDownloadCurrentTrack} disabled={!canDownloadCurrentTrack || isDownloadingTrack} className="p-2 text-white/20 hover:text-brand-accent transition-colors disabled:opacity-25 disabled:cursor-not-allowed" title={isDownloadingTrack ? 'Exporting…' : 'Export Audio to File'}><Download size={14} className={isDownloadingTrack ? 'animate-pulse' : ''} /></button>
                              <button onClick={() => { setLibraryActionTarget({ type: 'track', items: [currentTrack] }); setIsLibraryOverlayOpen(true); }} className="p-2 text-white/20 hover:text-brand-accent transition-colors" title="Save to Library Overlay"><Plus size={14} /></button>
+                             <button onClick={() => openTrackInspect(currentTrack, 'now-playing')} className="p-2 text-white/20 hover:text-brand-accent transition-colors" title="Inspect Track"><Eye size={14} /></button>
                              <div className="w-px h-3 bg-white/10 mx-1" />
                                <button onClick={() => setIsPlayerOverlayOpen(true)} className="p-2 text-white/40 hover:text-brand-accent transition-colors" title="Open Player Overlay"><ListMusic size={16} /></button>
                              <button onClick={() => setIsFocusedMode(!isFocusedMode)} className={`p-2 transition-colors ${isFocusedMode ? 'text-brand-accent' : 'text-white/40 hover:text-brand-accent'}`} title="Toggle Focus Mode"><Target size={16} /></button>
@@ -8271,10 +9782,7 @@ function App() {
             className={`glass-card overflow-hidden flex flex-col transition-all duration-300 min-h-0 ${panelGlassClass} ${panelInteractiveClass} ${lyricsPanelHeightClass}`}
             style={{
               ...(isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : {}),
-              ...(dualFocusMode === 'video' ? { filter: 'blur(4px)', opacity: 0.5, transform: 'scale(0.96)' } : {})
             }}
-            onMouseEnter={() => setDualFocusMode('lyrics')}
-            onMouseLeave={() => setDualFocusMode(null)}
           >
             <div className={`border-b border-white/5 ${panelHeaderClass} ${isVerticalStack ? 'px-3 py-2' : 'px-5 py-4'}`}>
               <div className="flex items-start justify-between gap-3 min-w-0">
@@ -8360,6 +9868,7 @@ function App() {
                     height: 'min(72vw, 760px)',
                     background: `radial-gradient(circle, ${themeColor}${alphaHex(0.18)} 0%, ${themeColor}${alphaHex(0.07)} 36%, transparent 72%)`,
                     filter: `blur(${30 + immersiveBeatIntensity * 22}px)`,
+                    willChange: 'transform, opacity, filter'
                   }}
                 />
               )}
@@ -8375,33 +9884,7 @@ function App() {
                 <div className="h-full flex items-center justify-center"><Loader2 className="animate-spin text-brand-accent" size={48} /></div>
               ) : lyrics.length > 0 ? (
                 <div className={lyricsListClass}>
-                  {lyrics.map((line, idx) => {
-                    const isActive = idx === activeLyricIndex;
-                    const distance = Math.abs(idx - activeLyricIndex);
-                    const lyricLineClass = isDualWorkspaceMode
-                      ? `max-w-[min(92%,760px)] px-3 md:px-5 text-2xl sm:text-3xl lg:text-5xl font-black leading-tight w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] transition-[transform,opacity,filter,color,text-shadow] duration-450 ease-[cubic-bezier(0.22,1,0.36,1)] transform-gpu origin-center will-change-[transform,opacity,filter] ${isActive ? 'text-brand-accent scale-[1.06] opacity-100 drop-shadow-[0_0_24px_rgba(0,255,191,0.34)]' : distance === 1 ? 'text-white/52 opacity-68 scale-[1.02]' : distance === 2 ? 'text-white/30 opacity-34 scale-100 blur-[0.45px]' : 'text-white/18 opacity-18 scale-[0.985] blur-[0.85px]'}`
-                      : `text-base sm:text-lg lg:text-xl font-bold transition-[transform,opacity,filter,color,text-shadow] duration-380 ease-[cubic-bezier(0.22,1,0.36,1)] transform-gpu leading-snug py-1.5 relative will-change-[transform,opacity,filter] ${isActive ? 'text-brand-accent scale-[1.035] opacity-100 drop-shadow-[0_0_12px_rgba(0,255,191,0.34)]' : distance === 1 ? 'text-white/78 opacity-92' : distance === 2 ? 'text-white/48 opacity-68 blur-[0.25px]' : 'text-white/30 opacity-48 blur-[0.7px]'} cursor-default`;
-                    return (
-                      <div 
-                        key={idx} 
-                        ref={isActive ? activeLyricRef : null} 
-                        className={lyricLineClass}
-                        style={isDualWorkspaceMode ? { textWrap: 'balance', transitionDelay: `${Math.min(distance, 3) * 18}ms` } : { transitionDelay: `${Math.min(distance, 3) * 14}ms` }}
-                      >
-                        {line.text}
-                        {/* AURA MODE: Lyric pulse underline - live shimmering sync to bass */}
-                        {isActive && isAuraMode && !isDualWorkspaceMode && (
-                          <div 
-                            className="absolute bottom-0 left-0 right-0 h-1 rounded-full bg-gradient-to-r from-transparent via-brand-accent to-transparent lyric-pulse-line"
-                            style={{
-                              animation: `lyric-shimmer ${0.4 + (parseFloat(String(vaultPulse.bass)) || 0) * 0.2}s ease-in-out infinite`,
-                              transition: 'opacity 60ms ease-out'
-                            }}
-                          />
-                        )}
-                      </div>
-                    );
-                  })}
+                  {memoizedLyricsContent}
                 </div>
               ) : (
                 <div className="h-full flex flex-col items-center justify-center text-center p-12">
@@ -8529,6 +10012,9 @@ function App() {
                      {isDownloaded && (
                         <span className="text-[9px] font-black uppercase tracking-widest text-red-500 border border-red-500/70 px-2 py-1 rounded-full">READY</span>
                      )}
+                     <button onClick={() => openTrackInspect(track, 'queue')} className="lg:opacity-0 group-hover:opacity-100 hover:text-brand-accent p-2" title="Inspect Track">
+                       <Eye size={15} />
+                     </button>
                      <button onClick={() => handleRemove(idx + 1)} className="lg:opacity-0 group-hover:opacity-100 hover:text-white p-2">
                        <Trash2 size={16} className="text-red-500/50 hover:text-red-500" />
                       </button>
@@ -8575,6 +10061,9 @@ function App() {
                        <div className="text-[10px] text-brand-text-dim truncate font-bold opacity-50 mt-1 uppercase leading-none">{t.author}</div>
                      </div>
                      <div className="flex items-center gap-2 z-10">
+                        <button onClick={() => openTrackInspect(t, searchQuery ? 'discovery' : 'recommendation')} className="w-10 h-10 rounded-xl bg-white/5 text-white/30 flex items-center justify-center hover:bg-brand-accent/20 hover:text-brand-accent transition-all border border-white/10" title="Inspect Track">
+                          <Eye size={18} />
+                        </button>
                         <button onClick={() => handleAdd(t)} className="w-10 h-10 rounded-xl bg-brand-accent/10 text-brand-accent flex items-center justify-center hover:bg-brand-accent hover:text-brand-dark transition-all border border-brand-accent/20">
                           <Plus size={22} />
                         </button>
@@ -8644,45 +10133,62 @@ function App() {
             {/* SAFE SCROLL WRAPPER */}
             <div className={`flex-1 min-h-0 relative ${isVerticalStack ? 'h-[500px]' : ''}`}>
                <div className="absolute inset-0 overflow-y-auto p-4 flex flex-col gap-6 pb-12 studio-vault-container custom-scrollbar">
-                  <div className="flex flex-col gap-8">
-                        {orderedPlaylistNames.map(name => (
-                          <div key={name} className="flex flex-col gap-3">
-                             <div className="flex items-center justify-between px-2 group/pheader">
+                  <div className="vault-project-grid">
+                        {orderedPlaylistNames.map(name => {
+                          const vaultTracks = playlists[name] || [];
+                          const previewTracks = vaultTracks.slice(0, 4);
+                          const featuredTrack = previewTracks[0];
+                          return (
+                          <div key={name} className="vault-project-card group/vault">
+                             <div className="vault-project-art" onClick={() => setViewingPlaylist(name)}>
+                                {previewTracks.length > 0 ? previewTracks.map((track, tidx) => (
+                                  <img
+                                    key={`${name}-cover-${tidx}`}
+                                    src={getProxyUrl(track.thumbnail)}
+                                    className="vault-project-cover"
+                                    alt=""
+                                    style={{ '--cover-index': tidx }}
+                                  />
+                                )) : (
+                                  <div className="vault-project-empty"><HardDrive size={20} /></div>
+                                )}
+                                <div className="vault-project-sheen" />
+                                <div className="vault-project-count">{vaultTracks.length}</div>
+                             </div>
+                             <div className="min-w-0">
                                 {isRenamingPlaylist === name ? (
-                                   <input autoFocus className="bg-white/5 border border-brand-accent/30 rounded-md px-2 py-0.5 text-[9px] font-black text-brand-accent outline-none w-24" value={renameValue} onChange={(e) => setRenameValue(e.target.value)} onBlur={() => handleRenamePlaylist(name, renameValue)} onKeyDown={(e) => { if (e.key === 'Enter') handleRenamePlaylist(name, renameValue); if (e.key === 'Escape') setIsRenamingPlaylist(null); }} />
-                          ) : ( <div onDoubleClick={() => { setIsRenamingPlaylist(name); setRenameValue(name); }} className="text-[10px] font-black text-brand-accent/50 uppercase tracking-[0.2em] hover:text-brand-accent transition-colors cursor-default">{name}</div> )}
-                                <div className="flex items-center gap-1">
-                                <button onClick={() => movePlaylist(name, -1)} className="text-brand-accent/20 hover:text-brand-accent p-1" title={`Move ${name} up`}><ChevronLeft size={12} /></button>
-                                <button onClick={() => movePlaylist(name, 1)} className="text-brand-accent/20 hover:text-brand-accent p-1" title={`Move ${name} down`}><ChevronRight size={12} /></button>
-                                   <button onClick={() => handlePlaylistAddAll(name)} className="text-brand-accent/30 hover:text-brand-accent p-1" title={`Inject ${name} to Queue`}><Plus size={12} /></button>
-                                   <button onClick={() => {
-                                        const list = [...(playlists[name] || [])];
-                                        const shuffled = list.sort(() => Math.random() - 0.5);
-                                        setQueue(shuffled);
-                                        seekActivePlaybackTo(0);
-                                        setIsPlaying(true);
-                                        closeHeaderSurfaces();
-                                    }} className="text-brand-accent/30 hover:text-brand-accent p-1" title={`Shuffle & Play ${name}`}><Shuffle size={12} /></button>
-                                   <button onClick={() => setIsViewingFullPlaylist(name)} className="text-brand-accent/30 hover:text-brand-accent p-1" title={`View ${name} Fullscreen`}><Maximize2 size={12} /></button>
-                                  <button onClick={() => handleDeletePlaylist(name)} className="text-red-500/20 hover:text-red-500 p-1"><Trash2 size={12} /></button>
+                                  <input autoFocus className="w-full bg-white/5 border border-brand-accent/30 rounded-md px-2 py-1 text-[10px] font-black text-brand-accent outline-none" value={renameValue} onChange={(e) => setRenameValue(e.target.value)} onBlur={() => handleRenamePlaylist(name, renameValue)} onKeyDown={(e) => { if (e.key === 'Enter') handleRenamePlaylist(name, renameValue); if (e.key === 'Escape') setIsRenamingPlaylist(null); }} />
+                                ) : (
+                                  <button onDoubleClick={() => { setIsRenamingPlaylist(name); setRenameValue(name); }} onClick={() => setViewingPlaylist(name)} className="w-full text-left text-[12px] font-black text-white/88 uppercase tracking-tight truncate group-hover/vault:text-brand-accent transition-colors" title={name}>
+                                    {name}
+                                  </button>
+                                )}
+                                <div className="mt-1 text-[8px] font-black uppercase tracking-[0.22em] text-white/30 truncate">
+                                  {featuredTrack?.author || 'Empty vault'} {featuredTrack ? 'signal' : ''}
                                 </div>
                              </div>
-                             <div className="flex flex-col gap-2">
-                                {playlists[name].slice(0, 2).map((track, tidx) => (
-                                   <div key={`${name}-${tidx}`} className="group/track glass-card p-2.5 flex items-center gap-3 hover:border-brand-accent/30 bg-white/[0.01] transition-all cursor-pointer border-white/5 relative">
-                                      <div onClick={() => handleAdd(track)} className="flex-1 flex items-center gap-3 min-w-0">
-                                         <img src={getProxyUrl(track.thumbnail)} className="w-8 h-8 rounded-md object-cover opacity-60 group-hover:opacity-100" alt="" />
-                                         <div className="flex-1 min-w-0"><div className="text-[10px] font-bold truncate uppercase tracking-widest group-hover:text-brand-accent">{track.title}</div></div>
-                                      </div>
-                                      <button onClick={(e) => { e.stopPropagation(); handleRemoveFromPlaylist(name, tidx); }} className="opacity-0 group-hover/track:opacity-100 p-1.5 hover:bg-red-500/10 rounded-lg transition-all" title="Purge Node">
-                                         <Trash2 size={10} className="text-red-500/40 hover:text-red-500" />
-                                      </button>
-                                   </div>
-                                ))}
-                                    {playlists[name].length > 2 && ( <button onClick={() => setIsViewingFullPlaylist(name)} className="text-[8px] font-black text-white/20 uppercase tracking-widest text-center py-1 hover:text-brand-accent transition-colors">+ {playlists[name].length - 2} more tracks</button> )}
+                             <div className="grid grid-cols-6 gap-1.5">
+                                <button onClick={() => movePlaylist(name, -1)} className="vault-project-tool" title={`Move ${name} up`}><ChevronLeft size={11} /></button>
+                                <button onClick={() => movePlaylist(name, 1)} className="vault-project-tool" title={`Move ${name} down`}><ChevronRight size={11} /></button>
+                                <button onClick={() => handlePlaylistAddAll(name)} className="vault-project-tool" title={`Inject ${name} to Queue`}><Plus size={11} /></button>
+                                <button onClick={() => {
+                                  const shuffled = [...vaultTracks].sort(() => Math.random() - 0.5);
+                                  setQueue(shuffled);
+                                  seekActivePlaybackTo(0);
+                                  setIsPlaying(shuffled.length > 0);
+                                  closeHeaderSurfaces();
+                                }} className="vault-project-tool" title={`Shuffle & Play ${name}`}><Shuffle size={11} /></button>
+                                <button onClick={() => setIsViewingFullPlaylist(name)} className="vault-project-tool" title={`View ${name} Fullscreen`}><Maximize2 size={11} /></button>
+                                <button onClick={() => handleDeletePlaylist(name)} className="vault-project-tool danger" title={`Delete ${name}`}><Trash2 size={11} /></button>
                              </div>
+                             {vaultTracks.length > 0 && (
+                              <button onClick={() => openPlaylistInspect(name, vaultTracks, `vault:${name}`)} className="vault-project-inspect">
+                                <Eye size={11} /> Inspect playlist
+                              </button>
+                             )}
                           </div>
-                       ))}
+                          );
+                       })}
                     </div>
                </div>
             </div>
@@ -8978,10 +10484,11 @@ function App() {
             <div className="pointer-events-none absolute inset-x-0 top-4 z-[315] flex justify-center px-5 md:top-6">
               <div className={`w-full max-w-[min(82vw,980px)] rounded-[2rem] border px-5 py-4 md:px-8 md:py-6 ${isAuraMode ? 'border-brand-accent/25 bg-[#06100d]/62 shadow-[0_18px_70px_rgba(0,255,191,0.12)]' : 'border-white/10 bg-black/20 shadow-[0_16px_40px_rgba(0,0,0,0.3)]'} backdrop-blur-2xl`}>
                 <div className="w-full overflow-hidden" style={{ WebkitMaskImage: 'linear-gradient(to right, transparent, black 8%, black 92%, transparent)' }}>
-                  <div className="animate-marquee-loop flex w-max items-center gap-[10vw] text-base font-black uppercase tracking-[0.26em] text-white sm:text-lg md:text-2xl lg:text-3xl">
+                  <div className="overlay-marquee-track flex items-center gap-[10vw] text-base font-black uppercase tracking-[0.26em] text-white sm:text-lg md:text-2xl lg:text-3xl">
                     <span>{currentTrack?.title || 'Immersive Output'}</span>
-                    <span>{currentTrack?.title || 'Immersive Output'}</span>
-                    <span>{currentTrack?.title || 'Immersive Output'}</span>
+                    <span aria-hidden="true">{currentTrack?.title || 'Immersive Output'}</span>
+                    <span aria-hidden="true">{currentTrack?.title || 'Immersive Output'}</span>
+                    <span aria-hidden="true">{currentTrack?.title || 'Immersive Output'}</span>
                   </div>
                 </div>
                 <div className="mt-3 text-center text-[10px] font-black uppercase tracking-[0.42em] text-brand-accent/80 md:text-[11px]">
@@ -9018,24 +10525,45 @@ function App() {
                     }}
                   />
 
-                  <div className="flex flex-col gap-24 lg:gap-32 py-[38vh] items-center justify-center text-center w-full mx-auto cursor-default" style={{ transformStyle: 'preserve-3d', transform: 'rotateX(8deg)' }}>
+                  <div className="flex flex-col gap-16 lg:gap-24 py-[36vh] items-center justify-center text-center w-full max-w-full mx-auto cursor-default px-2 sm:px-4" style={{ transformStyle: 'preserve-3d', transform: 'rotateX(5deg)' }}>
                     {lyrics.map((line, idx) => {
                       const isActive = idx === activeLyricIndex;
                       const distance = Math.abs(idx - activeLyricIndex);
-                      const lyricLineLayoutClass = 'text-3xl sm:text-5xl lg:text-6xl max-w-[min(74vw,920px)]';
+                      const lyricLineLayoutClass = 'max-w-[92vw] xl:max-w-[1180px]';
                       const lyricStateClass = isActive
-                        ? 'scale-[1.16] opacity-100 text-[#00ffbf] drop-shadow-[0_0_48px_rgba(0,255,191,0.78)] karaoke-text-fill'
+                        ? 'scale-[1.045] opacity-100 text-[#00ffbf] drop-shadow-[0_0_34px_rgba(0,255,191,0.64)]'
                         : distance === 1
-                          ? 'scale-[1.04] opacity-60 text-white/58 blur-[0.1px]'
+                          ? 'scale-[1.015] opacity-60 text-white/58 blur-[0.1px]'
                           : distance === 2
                             ? 'scale-[0.995] opacity-30 text-white/28 blur-[0.75px]'
                             : 'scale-[0.97] opacity-12 text-white/12 blur-[1.4px]';
+                      const lyricFontSize = isActive
+                        ? 'clamp(2.25rem, min(5.2vw, 8.4vh), 5.8rem)'
+                        : distance === 1
+                          ? 'clamp(1.8rem, min(4.1vw, 6.2vh), 4.35rem)'
+                          : 'clamp(1.35rem, min(3vw, 4.6vh), 3.2rem)';
+                      const nextLine = lyrics[idx + 1];
+                      const durationMs = nextLine ? (nextLine.time - line.time) : 4000;
+                      const safeDurationMs = Math.max(durationMs, 100);
+                      
+                      const karaokeStyle = isActive ? {
+                        WebkitBackgroundClip: 'text',
+                        WebkitTextFillColor: 'transparent',
+                        backgroundClip: 'text',
+                        color: 'transparent'
+                      } : {};
+
                       return (
                         <div
                           key={idx} 
                           ref={isActive ? expandedActiveRef : null} 
-                          className={`${lyricLineLayoutClass} px-4 md:px-6 font-black transition-[transform,opacity,filter,color,text-shadow] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] transform-gpu origin-center leading-tight w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] z-20 will-change-[transform,opacity,filter] ${lyricStateClass}`}
-                          style={{ textWrap: 'balance', transitionDelay: `${Math.min(distance, 3) * 18}ms` }}
+                          onClick={() => handleSeek(line.time + (currentTrack?.introOffsetMs || 0) + (lyricOffsetMs || 0))}
+                          className={`${lyricLineLayoutClass} px-3 md:px-5 font-black cursor-pointer transition-[transform,opacity,filter,text-shadow] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] transform-gpu origin-center leading-[1.04] w-full min-w-0 break-words whitespace-pre-wrap [overflow-wrap:anywhere] z-20 will-change-[transform,opacity,filter] ${lyricStateClass} hover:scale-[1.055]`}
+                          style={{
+                            fontSize: lyricFontSize,
+                            transitionDelay: `${Math.min(distance, 3) * 18}ms`,
+                            ...karaokeStyle
+                          }}
                         >
                           {line.text}
                         </div>
@@ -9186,6 +10714,72 @@ function App() {
                   >
                     Lock Now
                   </button>
+                )}
+
+                {isStandalone && lockStatus.enabled && window.aether?.getLockRecoveryStatus && (
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">Recovery</div>
+                        <div className="mt-1 text-[11px] text-white/55">Set up recovery now so you can reset your lock later.</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={refreshLockRecoveryStatus}
+                        className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/60 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
+                        title="Refresh recovery status"
+                      >
+                        Refresh
+                      </button>
+                    </div>
+
+                    {lockRecoveryStatusError && (
+                      <div className="mt-2 text-[11px] text-red-400">{lockRecoveryStatusError}</div>
+                    )}
+
+                    <div className="mt-3 space-y-3">
+                      <div className="rounded-2xl border border-white/10 bg-black/25 px-3 py-3">
+                        <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Backup Phrase</div>
+                        <div className="text-[11px] text-white/55">
+                          Status:{' '}
+                          {lockRecoveryStatus?.phrase?.enabled ? <span className="text-white/70">Enabled</span> : <span className="text-white/45">Not set</span>}
+                        </div>
+
+                        {phraseGenerated && (
+                          <div className="mt-3 rounded-2xl border border-brand-accent/20 bg-brand-accent/10 px-3 py-2">
+                            <div className="flex items-start justify-between gap-4">
+                              <div className="flex-1">
+                                <div className="text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent/80">Save this phrase now</div>
+                                <div className="mt-2 text-[12px] font-mono text-white/85 break-words select-all cursor-pointer" onClick={handleCopyPhrase} title="Click to copy">{phraseGenerated}</div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={handleCopyPhrase}
+                                className={`mt-1 p-2 rounded-xl border transition-all ${phraseCopied ? 'border-brand-accent/40 bg-brand-accent/10 text-brand-accent' : 'border-white/10 bg-white/5 text-white/50 hover:text-brand-accent hover:border-brand-accent/40'}`}
+                                title="Copy phrase to clipboard"
+                              >
+                                {phraseCopied ? <Check size={14} /> : <Copy size={14} />}
+                              </button>
+                            </div>
+                            <div className="mt-2 text-[10px] text-white/45 border-t border-white/5 pt-2">It will not be shown again after closing this dialog.</div>
+                          </div>
+                        )}
+
+                        <div className="mt-3 flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={handleGenerateRecoveryPhrase}
+                            disabled={phraseBusy}
+                            className="rounded-xl bg-brand-accent text-black px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] disabled:opacity-50"
+                            title={lockRecoveryStatus?.phrase?.enabled ? 'Generate a new phrase (replaces the old one)' : 'Generate backup phrase'}
+                          >
+                            {phraseBusy ? 'Generating…' : (lockRecoveryStatus?.phrase?.enabled ? 'Regenerate' : 'Generate')}
+                          </button>
+                          <div className="text-[10px] text-white/35">Use this if you forget your lock password.</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 )}
 
                 {lockError && <div className="text-[11px] text-red-400">{lockError}</div>}
@@ -9463,6 +11057,540 @@ function App() {
         )}
       </AnimatePresence>
       <AnimatePresence>
+        {isAuraStageOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[330] overflow-hidden bg-[#020405]/96 backdrop-blur-2xl"
+          >
+            <div className="absolute inset-0" onClick={() => setIsAuraStageOpen(false)} />
+            {currentTrack?.thumbnail && (
+              <>
+                <img src={getProxyUrl(currentTrack.thumbnail)} alt="" className="absolute inset-0 h-full w-full object-cover opacity-[0.18] blur-[54px] scale-110" />
+                <img src={getProxyUrl(currentTrack.thumbnail)} alt="" className="aura-stage-parallax absolute left-1/2 top-1/2 h-[min(72vw,72vh)] w-[min(72vw,72vh)] -translate-x-1/2 -translate-y-1/2 rounded-[3rem] object-cover opacity-20 shadow-[0_40px_120px_rgba(0,0,0,0.55)]" />
+              </>
+            )}
+            <div className="aura-stage-rings pointer-events-none absolute inset-0" />
+            <div className="aura-stage-grid pointer-events-none absolute inset-0" />
+
+            <motion.div
+              initial={{ scale: 0.96, y: 16 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, y: 16 }}
+              className="relative z-10 flex h-full flex-col p-4 md:p-8"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-brand-accent/30 bg-brand-accent/12 text-brand-accent shadow-[0_0_28px_rgba(0,255,191,0.14)]">
+                    <Layers size={18} />
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.28em] text-brand-accent">Aura Stage 2.0</div>
+                    <div className="mt-1 text-[11px] uppercase tracking-[0.18em] text-white/35">Depth lyric stage // beat field</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setIsGestureLabOpen(true)}
+                    className={`flex h-10 w-10 items-center justify-center rounded-2xl border transition-all ${isGestureControlEnabled ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                    title="Gesture Lab"
+                  >
+                    <Hand size={15} />
+                  </button>
+                  <button
+                    onClick={() => openFeedbackPanel()}
+                    className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/55 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
+                    title="Send Feedback"
+                  >
+                    <MessageSquare size={15} />
+                  </button>
+                  <button onClick={() => setIsAuraStageOpen(false)} className={sharedModalCloseButtonClass} title="Close">
+                    <X size={16} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="relative flex flex-1 items-center justify-center py-6">
+                <div className="aura-stage-depth-stack w-full max-w-6xl">
+                  <div className="grid min-h-[60vh] grid-cols-1 items-center gap-8 lg:grid-cols-[0.9fr_1.1fr]">
+                    <div className="flex items-center justify-center">
+                      <motion.div
+                        animate={{ scale: auraStagePulseScale, rotate: immersiveBeatIntensity * 1.8 }}
+                        transition={{ duration: 0.16, ease: 'easeOut' }}
+                        className="aura-stage-art relative aspect-square w-[min(72vw,420px)] overflow-hidden rounded-[2.6rem] border border-white/12 bg-white/[0.03] shadow-[0_36px_110px_rgba(0,0,0,0.48)]"
+                      >
+                        {currentTrack?.thumbnail ? (
+                          <img src={getProxyUrl(currentTrack.thumbnail)} alt="" className="h-full w-full object-cover" />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center text-brand-accent/45"><Music size={72} strokeWidth={1.2} /></div>
+                        )}
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-white/8" />
+                        <div className="absolute bottom-4 left-4 right-4">
+                          <div className="text-[9px] font-black uppercase tracking-[0.28em] text-brand-accent/85">Now Playing</div>
+                          <div className="mt-1 truncate text-lg font-black uppercase tracking-tight text-white">{currentTrack?.title || 'No track selected'}</div>
+                          <div className="mt-1 truncate text-[10px] font-black uppercase tracking-[0.24em] text-white/48">{currentTrack?.author || 'Search and queue a track'}</div>
+                        </div>
+                      </motion.div>
+                    </div>
+
+                    <div className="min-w-0 text-center lg:text-left">
+                      <div className="mb-5 flex flex-wrap items-center justify-center gap-2 lg:justify-start">
+                        <span className="rounded-full border border-brand-accent/25 bg-brand-accent/10 px-3 py-1 text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent">Pulse {Math.round(immersiveBeatIntensity * 100)}%</span>
+                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[9px] font-black uppercase tracking-[0.22em] text-white/45">{auraPreset}</span>
+                        {isGestureControlEnabled && <span className="rounded-full border border-brand-accent/20 bg-brand-accent/8 px-3 py-1 text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent/75">Gesture on</span>}
+                        {isFaceControlEnabled && <span className="rounded-full border border-brand-accent/20 bg-brand-accent/8 px-3 py-1 text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent/75">Face on</span>}
+                      </div>
+                      <AnimatePresence mode="wait">
+                        <motion.div
+                          key={`aura-stage-lyric-${activeLyricIndex}-${compactLyric || 'idle'}`}
+                          initial={{ opacity: 0, y: 22, filter: 'blur(10px)' }}
+                          animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+                          exit={{ opacity: 0, y: -14, filter: 'blur(8px)' }}
+                          transition={{ duration: 0.32, ease: 'easeOut' }}
+                          className="aura-stage-lyric text-4xl font-black leading-[0.98] tracking-normal text-white sm:text-6xl lg:text-7xl"
+                        >
+                          {compactLyric || currentTrack?.title || 'Aether is standing by'}
+                        </motion.div>
+                      </AnimatePresence>
+                      {nextLyric && (
+                        <div className="mt-5 text-base font-semibold leading-snug text-white/44 sm:text-xl">
+                          {nextLyric}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mx-auto w-full max-w-5xl rounded-[1.6rem] border border-white/10 bg-black/36 px-4 py-4 backdrop-blur-2xl">
+                <div className="mb-3 h-1.5 w-full overflow-hidden rounded-full bg-white/12">
+                  <div className="h-full rounded-full transition-all" style={{ width: `${auraStageProgress}%`, background: trackProgressAccent, boxShadow: `0 0 18px ${trackProgressGlow}` }} />
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span className="w-16 text-left text-[10px] font-mono text-white/42">{formatTime(currentTime)}</span>
+                  <div className="flex items-center gap-5">
+                    <button onClick={() => handleControl('previous')} className="text-white/55 transition-colors hover:text-brand-accent active:scale-90" title="Previous">
+                      <Rewind size={22} fill="currentColor" />
+                    </button>
+                    <button
+                      onClick={() => handleControl(isPlaying ? 'pause' : 'resume')}
+                      className="flex h-14 w-14 items-center justify-center rounded-2xl text-black transition-all hover:scale-[1.03] active:scale-95"
+                      style={{ background: trackControlAccent, boxShadow: `0 0 28px ${trackControlGlow}` }}
+                      title={isPlaying ? 'Pause' : 'Play'}
+                    >
+                      {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" className="ml-1" />}
+                    </button>
+                    <button onClick={() => handleControl('skip')} className="text-white/55 transition-colors hover:text-brand-accent active:scale-90" title="Next">
+                      <FastForward size={22} fill="currentColor" />
+                    </button>
+                  </div>
+                  <span className="w-16 text-right text-[10px] font-mono text-white/42">{formatTime(auraStageDurationMs)}</span>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {(inspectTrack || isPlaylistInspect) && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[340] flex items-center justify-center bg-black/82 p-4 backdrop-blur-xl"
+          >
+            <div className="absolute inset-0" onClick={() => setInspectTarget(null)} />
+            <motion.div
+              initial={{ scale: 0.96, y: 18 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, y: 18 }}
+              className="relative z-10 flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-[2rem] border border-brand-accent/20 bg-[#080c10]/96 shadow-[0_28px_100px_rgba(0,0,0,0.55)]"
+            >
+              <div className="flex items-start justify-between gap-4 border-b border-white/10 bg-black/22 p-5">
+                <div className="flex min-w-0 items-center gap-4">
+                  {isPlaylistInspect ? (
+                    <div className="relative h-16 w-16 flex-none overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04]">
+                      {inspectPlaylistTracks.length > 1 ? (
+                        <div className="grid h-full w-full grid-cols-2">
+                          {inspectPlaylistTracks.slice(0, 4).map((track, index) => (
+                            track.thumbnail ? (
+                              <img key={`${inspectPlaylistName}-inspect-cover-${index}`} src={getProxyUrl(track.thumbnail)} alt="" className="h-full w-full object-cover" />
+                            ) : (
+                              <div key={`${inspectPlaylistName}-inspect-cover-${index}`} className="flex h-full w-full items-center justify-center bg-brand-accent/10 text-brand-accent"><Music size={12} /></div>
+                            )
+                          ))}
+                        </div>
+                      ) : inspectPrimaryTrack?.thumbnail ? (
+                        <img src={getProxyUrl(inspectPrimaryTrack.thumbnail)} alt="" className="h-full w-full object-cover" />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center text-brand-accent"><ListMusic size={18} /></div>
+                      )}
+                      <div className="absolute bottom-1 right-1 rounded-full border border-brand-accent/25 bg-black/76 px-1.5 py-0.5 text-[8px] font-black text-brand-accent">{inspectPlaylistTracks.length}</div>
+                    </div>
+                  ) : (
+                    <img src={getProxyUrl(inspectTrack.thumbnail)} alt="" className="h-16 w-16 rounded-2xl border border-white/10 object-cover" />
+                  )}
+                  <div className="min-w-0">
+                    <div className="text-[9px] font-black uppercase tracking-[0.3em] text-brand-accent">{isPlaylistInspect ? 'Inspect Playlist' : 'Inspect Track'}</div>
+                    <div className="mt-1 truncate text-xl font-black uppercase tracking-tight text-white">{isPlaylistInspect ? inspectPlaylistName : (inspectTrack.title || 'Unknown Track')}</div>
+                    <div className="mt-1 truncate text-[11px] font-black uppercase tracking-[0.22em] text-white/42">
+                      {isPlaylistInspect ? `${inspectPlaylistTracks.length} tracks // ${inspectPlaylistArtistCount} artists` : (inspectTrack.author || 'Unknown Artist')}
+                    </div>
+                  </div>
+                </div>
+                <button onClick={() => setInspectTarget(null)} className={sharedModalCloseButtonClass} title="Close">
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-5 md:flex-row">
+                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1 custom-scrollbar-heavy">
+                  <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                    <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Context</div>
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-center">
+                      {isPlaylistInspect ? (
+                        <>
+                          <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectPlaylistTracks.length}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Tracks</div></div>
+                          <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectPlaylistQueuedCount}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Queued</div></div>
+                          <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{formatTime(inspectPlaylistDurationMs)}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Length</div></div>
+                          <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectPlaylistArtistCount}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Artists</div></div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectQueueIndex >= 0 ? inspectQueueIndex + 1 : '-'}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Queue</div></div>
+                          <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{formatTime(inspectDurationMs)}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Length</div></div>
+                          <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectVaultNames.length}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Vaults</div></div>
+                          <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{lyrics.length}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Lyrics</div></div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                    {isPlaylistInspect ? (
+                      <>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Playlist Tracks</div>
+                          <button
+                            disabled={!inspectPlaylistTracklistText}
+                            onClick={() => handleCopyDiagnosticsValue(inspectPlaylistTracklistText, 'Tracklist copied')}
+                            className="rounded-xl border border-brand-accent/20 bg-brand-accent/8 px-3 py-2 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent/80 transition-all hover:bg-brand-accent hover:text-black disabled:opacity-35 disabled:hover:bg-brand-accent/8 disabled:hover:text-brand-accent/80"
+                          >
+                            Copy List
+                          </button>
+                        </div>
+                        <div className="mt-3 max-h-[38vh] space-y-2 overflow-y-auto pr-1 custom-scrollbar">
+                          {inspectPlaylistTracks.map((track, index) => {
+                            const rowSourceUrl = getInspectSourceUrl(track);
+                            return (
+                              <div key={`${normalizeTrackIdentity(track)}-${index}`} className="flex items-center gap-3 rounded-xl border border-white/8 bg-black/24 p-2">
+                                <div className="w-6 text-center text-[10px] font-black text-brand-accent/75">{index + 1}</div>
+                                {track.thumbnail ? (
+                                  <img src={getProxyUrl(track.thumbnail)} alt="" className="h-10 w-10 flex-none rounded-lg border border-white/10 object-cover" />
+                                ) : (
+                                  <div className="flex h-10 w-10 flex-none items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-brand-accent"><Music size={13} /></div>
+                                )}
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate text-[11px] font-black uppercase tracking-tight text-white/82">{track.title || 'Unknown Track'}</div>
+                                  <div className="mt-0.5 truncate text-[9px] font-black uppercase tracking-[0.18em] text-white/32">{track.author || 'Unknown Artist'}</div>
+                                </div>
+                                <div className="flex flex-none items-center gap-1">
+                                  <button onClick={() => handleAdd(track)} className="rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1.5 text-[8px] font-black uppercase tracking-[0.14em] text-white/50 transition-all hover:border-brand-accent/35 hover:text-brand-accent" title="Queue Track">Queue</button>
+                                  <button onClick={() => openTrackInspect(track, `playlist:${inspectPlaylistName}`)} className="rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1.5 text-[8px] font-black uppercase tracking-[0.14em] text-white/50 transition-all hover:border-brand-accent/35 hover:text-brand-accent" title="Inspect Track">Inspect</button>
+                                  <button disabled={!rowSourceUrl} onClick={() => handleCopyDiagnosticsValue(rowSourceUrl, 'Source copied')} className="rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1.5 text-[8px] font-black uppercase tracking-[0.14em] text-white/50 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35" title="Copy Source URL">Copy</button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Source</div>
+                          <button
+                            disabled={!inspectSourceUrl}
+                            onClick={() => handleCopyDiagnosticsValue(inspectSourceUrl, 'Source copied')}
+                            className="rounded-xl border border-brand-accent/20 bg-brand-accent/8 px-3 py-2 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent/80 transition-all hover:bg-brand-accent hover:text-black disabled:opacity-35 disabled:hover:bg-brand-accent/8 disabled:hover:text-brand-accent/80"
+                          >
+                            Copy URL
+                          </button>
+                        </div>
+                        <div className="no-drag mt-3 select-text break-all rounded-xl border border-white/8 bg-black/28 p-3 text-[11px] font-mono leading-5 text-white/62" style={{ WebkitUserSelect: 'text', userSelect: 'text' }}>
+                          {inspectSourceUrl || 'No source URL captured'}
+                        </div>
+                        {inspectVaultNames.length > 0 && (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {inspectVaultNames.map((name) => (
+                              <span key={`inspect-vault-${name}`} className="rounded-full border border-brand-accent/20 bg-brand-accent/8 px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent/75">{name}</span>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex w-full flex-shrink-0 flex-col gap-3 overflow-y-auto custom-scrollbar-heavy md:w-[320px]">
+                  <div className="rounded-2xl border border-white/8 bg-gradient-to-b from-brand-accent/8 to-white/[0.02] p-4">
+                    <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Actions</div>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      {isPlaylistInspect ? (
+                        <>
+                          <button onClick={() => playInspectPlaylist(false)} className="rounded-xl border border-brand-accent/25 bg-brand-accent/12 px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black">Play Playlist</button>
+                          <button onClick={queueInspectPlaylist} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Queue All</button>
+                          <button onClick={() => playInspectPlaylist(true)} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Shuffle Play</button>
+                          <button onClick={() => { setLibraryActionTarget({ type: 'queue', items: inspectPlaylistTracks }); setIsLibraryOverlayOpen(true); }} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Vault Copy</button>
+                          <button disabled={!inspectPlaylistSourceText} onClick={() => handleCopyDiagnosticsValue(inspectPlaylistSourceText, 'Playlist URLs copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Copy URLs</button>
+                          <button disabled={!inspectPlaylistTracklistText} onClick={() => handleCopyDiagnosticsValue(inspectPlaylistTracklistText, 'Tracklist copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Copy List</button>
+                        </>
+                      ) : (
+                        <>
+                          <button onClick={() => { setQueue((prev) => [normalizeQueueTrack(inspectTrack) || inspectTrack, ...(Array.isArray(prev) ? prev.filter((track) => normalizeTrackIdentity(track) !== normalizeTrackIdentity(inspectTrack)) : [])]); setIsManualStop(false); setIsPlaying(true); setInspectTarget(null); }} className="rounded-xl border border-brand-accent/25 bg-brand-accent/12 px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black">Play Now</button>
+                          <button onClick={() => handleAdd(inspectTrack)} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Queue</button>
+                          <button onClick={() => { setLibraryActionTarget({ type: 'track', items: [inspectTrack] }); setIsLibraryOverlayOpen(true); }} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Vault</button>
+                          <button disabled={!inspectSourceUrl} onClick={() => { if (inspectSourceUrl) { if (isStandalone && window.aether?.openExternal) window.aether.openExternal(inspectSourceUrl); else window.open(inspectSourceUrl, '_blank', 'noopener,noreferrer'); } }} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Source</button>
+                          <button disabled={!inspectSourceUrl} onClick={() => handleCopyDiagnosticsValue(inspectSourceUrl, 'Source copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Copy URL</button>
+                          <button onClick={() => handleCopyDiagnosticsValue(`${inspectTrack.title || 'Unknown Track'}\n${inspectTrack.author || 'Unknown Artist'}${inspectSourceUrl ? `\n${inspectSourceUrl}` : ''}`, 'Track info copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Copy Info</button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex-1 rounded-2xl border border-white/8 bg-black/24 p-4">
+                    {isPlaylistInspect ? (
+                      <>
+                        <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Playlist Signal</div>
+                        <div className="mt-4 text-2xl font-black leading-tight text-white/90">
+                          {inspectPlaylistTracks.length} tracks in {inspectPlaylistName}
+                        </div>
+                        <div className="mt-4 grid gap-2">
+                          {inspectPlaylistTracks.slice(0, 4).map((track, index) => (
+                            <div key={`${inspectPlaylistName}-signal-${normalizeTrackIdentity(track)}-${index}`} className="truncate rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-white/48">
+                              {index + 1}. {track.title || 'Unknown Track'}
+                            </div>
+                          ))}
+                        </div>
+                        <div className="mt-4 text-[10px] uppercase tracking-[0.2em] text-white/32">
+                          Opened from {inspectTarget?.source || 'playlist'} // {new Date(inspectTarget?.openedAt || Date.now()).toLocaleTimeString()}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Live Lyric</div>
+                        <div className="mt-4 text-2xl font-black leading-tight text-white/90">
+                          {compactLyric || 'No synced lyric locked right now.'}
+                        </div>
+                        <div className="mt-4 text-[10px] uppercase tracking-[0.2em] text-white/32">
+                          Opened from {inspectTarget?.source || 'track'} // {new Date(inspectTarget?.openedAt || Date.now()).toLocaleTimeString()}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isGestureLabOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[345] flex items-center justify-center bg-black/82 p-4 backdrop-blur-xl"
+          >
+            <div className="absolute inset-0" onClick={() => setIsGestureLabOpen(false)} />
+            <motion.div
+              initial={{ scale: 0.96, y: 18 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, y: 18 }}
+              className="relative z-10 flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-[2rem] border border-brand-accent/20 bg-[#080c10]/96 shadow-[0_28px_100px_rgba(0,0,0,0.55)]"
+            >
+              <div className="flex items-start justify-between gap-4 border-b border-white/10 bg-black/22 p-5">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/10 text-brand-accent">
+                    <Hand size={18} />
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.3em] text-brand-accent">Gesture + Face Lab</div>
+                    <div className="mt-1 text-[11px] uppercase tracking-[0.18em] text-white/40">Pointer, swipe, and camera face/hand controls</div>
+                  </div>
+                </div>
+                <button onClick={() => setIsGestureLabOpen(false)} className={sharedModalCloseButtonClass} title="Close">
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="overflow-y-auto p-5 custom-scrollbar">
+                <button
+                  onClick={() => {
+                    setIsGestureControlEnabled((prev) => {
+                      const next = !prev;
+                      if (!next) setIsFaceControlEnabled(false);
+                      return next;
+                    });
+                  }}
+                  className={`mb-4 flex w-full items-center justify-between rounded-2xl border px-4 py-4 text-left transition-all ${isGestureControlEnabled ? 'border-brand-accent/35 bg-brand-accent/12 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/70 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                >
+                  <span>
+                    <span className="block text-[11px] font-black uppercase tracking-[0.22em]">Gesture controls</span>
+                    <span className="mt-1 block text-[11px] font-semibold text-white/42">Pointer motion drives stage depth. Fast swipes control playback.</span>
+                  </span>
+                  <span className="rounded-full border border-current px-3 py-1 text-[9px] font-black uppercase tracking-[0.2em]">{isGestureControlEnabled ? 'On' : 'Off'}</span>
+                </button>
+                <button
+                  onClick={() => {
+                    const next = !isFaceControlEnabled;
+                    if (next) setIsGestureControlEnabled(true);
+                    setIsFaceControlEnabled(next);
+                  }}
+                  className={`mb-4 flex w-full items-center justify-between rounded-2xl border px-4 py-4 text-left transition-all ${isFaceControlEnabled ? 'border-brand-accent/35 bg-brand-accent/12 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/70 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                >
+                  <span className="flex items-center gap-3">
+                    <Camera size={18} className="shrink-0" />
+                    <span>
+                      <span className="block text-[11px] font-black uppercase tracking-[0.22em]">Camera controls</span>
+                      <span className="mt-1 block text-[11px] font-semibold text-white/42">Camera tracks face position and hand swipes for app control.</span>
+                    </span>
+                  </span>
+                  <span className="rounded-full border border-current px-3 py-1 text-[9px] font-black uppercase tracking-[0.2em]">{isFaceControlEnabled ? 'On' : 'Off'}</span>
+                </button>
+                <div className="mb-4 rounded-2xl border border-white/8 bg-black/24 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-[9px] font-black uppercase tracking-[0.24em] text-white/30">Camera Status</div>
+                      <div className="mt-1 text-[11px] font-bold text-white/55">{faceControlStatus}</div>
+                    </div>
+                    <div className="text-right text-[10px] font-mono text-brand-accent/75">
+                      FACE {faceControlSignal.x.toFixed(2)}, {faceControlSignal.y.toFixed(2)}<br />
+                      HAND {cameraHandSignal.x.toFixed(2)}, {cameraHandSignal.y.toFixed(2)}
+                    </div>
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                      <div className="h-full rounded-full bg-brand-accent transition-all" style={{ width: `${Math.round(clamp01(faceControlSignal.confidence) * 100)}%` }} />
+                    </div>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                      <div className="h-full rounded-full bg-brand-accent/65 transition-all" style={{ width: `${Math.round(clamp01(cameraHandSignal.motion) * 100)}%` }} />
+                    </div>
+                    <div className="text-[9px] font-black uppercase tracking-[0.18em] text-white/28">Hand {cameraHandSignal.last}</div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {[
+                    [MousePointer2, 'Pointer depth', 'Move pointer/finger to tilt the Aura Stage layers.'],
+                    [ChevronLeft, 'Swipe left', 'Skip to the next track.'],
+                    [ChevronRight, 'Swipe right', 'Restart or go to the previous track.'],
+                    [Hand, '2-finger swipe L/R', 'Two fingers slide left or right to change tracks.'],
+                    [Volume2, '2-finger swipe U/D', 'Two fingers slide up or down to adjust volume.'],
+                    [Fingerprint, 'Pinch in', 'Two-finger pinch to pause playback.'],
+                    [Fingerprint, 'Spread out', 'Two-finger spread to resume playback.'],
+                    [MousePointer2, 'Double-tap', 'Quickly tap twice on empty space to toggle play/pause.'],
+                    [Hand, 'Camera wave L/R', 'Wave your hand left or right for track controls.'],
+                    [Volume2, 'Camera wave U/D', 'Wave your hand up or down for volume control.'],
+                    [Camera, 'Look left/right', 'Turn your head left/right to change tracks (hold to confirm).'],
+                    [Eye, 'Look up/down', 'Tilt your head up/down to adjust volume.'],
+                  ].map(([Icon, title, detail]) => (
+                    <div key={title} className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                      <Icon size={18} className="text-brand-accent" />
+                      <div className="mt-3 text-[11px] font-black uppercase tracking-[0.2em] text-white/80">{title}</div>
+                      <div className="mt-1 text-[11px] leading-5 text-white/42">{detail}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isFeedbackOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[350] flex items-center justify-center bg-black/82 p-4 backdrop-blur-xl"
+          >
+            <div className="absolute inset-0" onClick={() => !isFeedbackSending && setIsFeedbackOpen(false)} />
+            <motion.div
+              initial={{ scale: 0.96, y: 18 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, y: 18 }}
+              className="relative z-10 w-full max-w-2xl overflow-hidden rounded-[2rem] border border-brand-accent/20 bg-[#080c10]/96 shadow-[0_28px_100px_rgba(0,0,0,0.55)]"
+            >
+              <div className="flex items-start justify-between gap-4 border-b border-white/10 bg-black/22 p-5">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/10 text-brand-accent">
+                    <MessageSquare size={18} />
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.3em] text-brand-accent">Send Feedback</div>
+                    <div className="mt-1 text-[11px] uppercase tracking-[0.18em] text-white/40">Issues open on GitHub unless a feedback endpoint is configured.</div>
+                  </div>
+                </div>
+                <button onClick={() => setIsFeedbackOpen(false)} disabled={isFeedbackSending} className={sharedModalCloseButtonClass} title="Close">
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="space-y-4 p-5">
+                <div className="grid grid-cols-3 gap-2">
+                  {['Problem', 'Improvement', 'Idea'].map((type) => (
+                    <button
+                      key={type}
+                      onClick={() => updateFeedbackDraft({ type })}
+                      className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${feedbackDraft.type === type ? 'border-brand-accent/40 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                    >
+                      {type}
+                    </button>
+                  ))}
+                </div>
+                <input
+                  value={feedbackDraft.summary}
+                  onChange={(e) => updateFeedbackDraft({ summary: e.target.value })}
+                  placeholder="Short title"
+                  className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-white outline-none transition-all placeholder:text-white/24 focus:border-brand-accent/45"
+                />
+                <textarea
+                  value={feedbackDraft.details}
+                  onChange={(e) => updateFeedbackDraft({ details: e.target.value })}
+                  placeholder="What happened, or what should be better?"
+                  className="min-h-[150px] w-full resize-none rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm leading-6 text-white outline-none transition-all placeholder:text-white/24 focus:border-brand-accent/45"
+                />
+                <input
+                  value={feedbackDraft.contact}
+                  onChange={(e) => updateFeedbackDraft({ contact: e.target.value })}
+                  placeholder="Contact handle/email optional"
+                  className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white outline-none transition-all placeholder:text-white/24 focus:border-brand-accent/45"
+                />
+                {feedbackStatus && (
+                  <div className="rounded-2xl border border-white/8 bg-black/24 px-4 py-3 text-[11px] font-semibold leading-5 text-white/58">
+                    {feedbackStatus}
+                  </div>
+                )}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-white/30">
+                    Build {BUILD_VERSION} // {platform || 'web'}
+                  </div>
+                  <button
+                    onClick={submitFeedback}
+                    disabled={isFeedbackSending || !feedbackDraft.summary.trim() || !feedbackDraft.details.trim()}
+                    className="flex items-center gap-2 rounded-2xl bg-brand-accent px-5 py-3 text-[11px] font-black uppercase tracking-[0.2em] text-black transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-45 disabled:hover:scale-100"
+                  >
+                    {isFeedbackSending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+                    Send
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
           {isLibraryOverlayOpen && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[300] flex items-center justify-center p-4 md:p-6">
               <div className="absolute inset-0 bg-black/85 backdrop-blur-2xl" onClick={() => { setIsLibraryOverlayOpen(false); setLibraryActionTarget(null); }} />
@@ -9672,7 +11800,22 @@ function App() {
       </AnimatePresence>
 
       
-      {/* VOLUME HUD - NOVA */}
+      {/* GESTURE NOTICE TOAST */}
+      <AnimatePresence>
+        {gestureNotice && (
+          <motion.div
+            key={gestureNotice}
+            initial={{ opacity: 0, y: 30, scale: 0.92 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 16, scale: 0.95 }}
+            transition={{ type: 'spring', stiffness: 420, damping: 30 }}
+            className="fixed bottom-24 left-1/2 z-[360] flex -translate-x-1/2 items-center gap-2.5 rounded-2xl border border-brand-accent/30 bg-[#06100d]/94 px-4 py-2.5 text-[10px] font-black uppercase tracking-[0.2em] text-brand-accent shadow-[0_0_28px_rgba(0,255,191,0.18),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl"
+          >
+            <span>{gestureNotice}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <AnimatePresence>
         {volumeToast && (
           <motion.div 
@@ -9712,7 +11855,9 @@ function App() {
                     <div className="overlay-marquee mt-1 text-xl md:text-2xl font-black uppercase tracking-tight text-brand-accent">
                       <div className="overlay-marquee-track">
                         <span>{currentTrack?.title || 'Nothing Playing'}</span>
-                        <span>{currentTrack?.title || 'Nothing Playing'}</span>
+                        <span aria-hidden="true">{currentTrack?.title || 'Nothing Playing'}</span>
+                        <span aria-hidden="true">{currentTrack?.title || 'Nothing Playing'}</span>
+                        <span aria-hidden="true">{currentTrack?.title || 'Nothing Playing'}</span>
                       </div>
                     </div>
                   ) : (
@@ -9738,7 +11883,9 @@ function App() {
                       <div className="overlay-marquee mt-1 text-lg font-black tracking-tight text-white/95">
                         <div className="overlay-marquee-track">
                           <span>{compactLyric || 'Lyric sync loading…'}</span>
-                          <span>{compactLyric || 'Lyric sync loading…'}</span>
+                          <span aria-hidden="true">{compactLyric || 'Lyric sync loading…'}</span>
+                          <span aria-hidden="true">{compactLyric || 'Lyric sync loading…'}</span>
+                          <span aria-hidden="true">{compactLyric || 'Lyric sync loading…'}</span>
                         </div>
                       </div>
                     ) : (
@@ -10193,33 +12340,42 @@ function App() {
                     className="absolute left-0 right-0 top-0 z-20 p-4 md:p-5"
                     style={{ pointerEvents: visualStageHeaderVisible ? 'auto' : 'none' }}
                   >
-                    <div className="mx-auto flex w-full items-start justify-between gap-4 rounded-[1.4rem] border border-white/10 bg-black/38 px-4 py-3 backdrop-blur-2xl shadow-[0_18px_60px_rgba(0,0,0,0.25)]">
-                      <div className="flex min-w-0 items-start gap-3">
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/12 text-brand-accent shadow-[0_0_20px_rgba(0,255,191,0.15)]">
-                          {videoMode === 'cinema' ? <Clapperboard size={15} /> : <Columns2 size={15} />}
-                        </div>
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.24em]">
-                            <span className="text-brand-accent/85">{videoMode === 'cinema' ? 'Cinema Mode' : 'Dual Visual'}</span>
-                            {/* <span className="text-white/28 font-mono tracking-[0.18em]">shared stream</span> */}
+                    <div className="mx-auto flex w-full flex-col gap-3 rounded-[1.4rem] border border-white/10 bg-black/38 px-4 py-3 backdrop-blur-2xl shadow-[0_18px_60px_rgba(0,0,0,0.25)]">
+                      <div className="flex w-full items-start justify-between gap-4">
+                        <div className="flex min-w-0 items-start gap-3">
+                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/12 text-brand-accent shadow-[0_0_20px_rgba(0,255,191,0.15)]">
+                            {videoMode === 'cinema' ? <Clapperboard size={15} /> : <Columns2 size={15} />}
                           </div>
-                          {visualStageTitleMarquee ? (
-                            <div className={`overlay-marquee mt-1 font-black uppercase tracking-tight text-white/95 ${videoMode === 'cinema' ? 'text-sm md:text-lg max-w-[min(60vw,720px)]' : 'text-sm md:text-base max-w-[280px]'}`}>
-                              <div className="overlay-marquee-track">
-                                <span>{visualStageTitle}</span>
-                                <span aria-hidden="true">{visualStageTitle}</span>
+                          
+                          {videoMode === 'cinema' ? (
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.24em]">
+                                <span className="text-brand-accent/85">Cinema Mode</span>
+                              </div>
+                              {visualStageTitleMarquee ? (
+                                <div className="overlay-marquee mt-1 font-black uppercase tracking-tight text-white/95 text-sm md:text-lg max-w-[min(60vw,720px)]">
+                                  <div className="overlay-marquee-track">
+                                    <span>{visualStageTitle}</span>
+                                    <span aria-hidden="true">{visualStageTitle}</span>
+                                    <span aria-hidden="true">{visualStageTitle}</span>
+                                    <span aria-hidden="true">{visualStageTitle}</span>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="mt-1 font-black uppercase tracking-tight text-white/95 line-clamp-2 text-sm md:text-lg max-w-[min(60vw,720px)]">
+                                  {visualStageTitle}
+                                </div>
+                              )}
+                              <div className="mt-1 text-[10px] font-black uppercase tracking-[0.26em] text-brand-accent/72 truncate">
+                                {currentTrack.author}
                               </div>
                             </div>
                           ) : (
-                            <div className={`mt-1 font-black uppercase tracking-tight text-white/95 line-clamp-2 ${videoMode === 'cinema' ? 'text-sm md:text-lg max-w-[min(60vw,720px)]' : 'text-sm md:text-base max-w-[280px]'}`}>
-                              {visualStageTitle}
+                            <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.24em] h-9">
+                              <span className="text-brand-accent/85">Dual Visual</span>
                             </div>
                           )}
-                          <div className="mt-1 text-[10px] font-black uppercase tracking-[0.26em] text-brand-accent/72 truncate">
-                            {currentTrack.author}
-                          </div>
                         </div>
-                      </div>
 
                       <div className="flex items-center gap-1.5">
                         <button
@@ -10236,6 +12392,33 @@ function App() {
                         >
                           <Monitor size={15} />
                         </button>
+                        <div className="relative" ref={qualityDropdownRef}>
+                          <button
+                            onClick={() => setIsQualityDropdownOpen((p) => !p)}
+                            className={`flex h-10 w-10 items-center justify-center rounded-2xl border transition-all ${isQualityDropdownOpen ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent shadow-[0_0_12px_rgba(0,255,191,0.1)]' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                            title="Video Quality"
+                          >
+                            <span className="text-[9px] font-black uppercase tracking-tighter">{videoQuality}p</span>
+                          </button>
+
+                          {isQualityDropdownOpen && (
+                            <div className="absolute right-0 top-full mt-2 w-28 rounded-2xl border border-white/12 bg-[#080c10]/95 backdrop-blur-2xl p-1.5 shadow-[0_12px_40px_rgba(0,0,0,0.45)]">
+                              {['480', '720', '1080'].map((q) => (
+                                <button
+                                  key={`quality-${q}`}
+                                  onClick={() => {
+                                    setVideoQuality(q);
+                                    setIsQualityDropdownOpen(false);
+                                  }}
+                                  className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left transition-all ${videoQuality === q ? 'bg-brand-accent/12 text-brand-accent' : 'text-white/60 hover:bg-white/5 hover:text-white'}`}
+                                >
+                                  <span className="text-[10px] font-black uppercase tracking-[0.1em]">{q}p</span>
+                                  {videoQuality === q && <div className="h-1.5 w-1.5 rounded-full bg-brand-accent shadow-[0_0_8px_rgba(0,255,191,0.5)]" />}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                         {videoMode === 'cinema' && (
                           <button
                             onClick={() => setVisualControlsPinned((prev) => !prev)}
@@ -10261,9 +12444,31 @@ function App() {
                         </button>
                       </div>
                     </div>
+                    {videoMode === 'dual' && (
+                      <div className="min-w-0 w-full pl-1">
+                        {visualStageTitleMarquee ? (
+                          <div className="overlay-marquee font-black uppercase tracking-tight text-white/95 text-sm md:text-base">
+                            <div className="overlay-marquee-track">
+                              <span>{visualStageTitle}</span>
+                              <span aria-hidden="true">{visualStageTitle}</span>
+                              <span aria-hidden="true">{visualStageTitle}</span>
+                              <span aria-hidden="true">{visualStageTitle}</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="font-black uppercase tracking-tight text-white/95 line-clamp-2 text-sm md:text-base">
+                            {visualStageTitle}
+                          </div>
+                        )}
+                        <div className="mt-1 text-[10px] font-black uppercase tracking-[0.26em] text-brand-accent/72 truncate">
+                          {currentTrack.author}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                   </motion.div>
 
-                  <AnimatePresence mode="wait">
+                  <AnimatePresence>
                     {showVisualLyricOverlay && (
                       <motion.div
                         key={`visual-lyric-${activeLyricIndex}-${visualStageLyric}`}

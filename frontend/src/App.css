@@ -5,6 +5,8 @@
   --aura-contrast-rgb: 92, 202, 255;
   --aura-kick-shift: 0deg;
   --aura-kick-glow: 0;
+  --aether-head-x: 0;
+  --aether-head-y: 0;
   --track-control-accent: #18e5c4;
   --track-progress-accent: #36d9ff;
   --track-progress-glow: rgba(24, 229, 196, 0.42);
@@ -309,7 +311,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 @keyframes overlay-marquee-scroll {
   0% { transform: translateX(0); }
-  100% { transform: translateX(calc(-100% - 2.5rem)); }
+  100% { transform: translateX(-25%); }
 }
 
 .overlay-marquee {
@@ -321,12 +323,12 @@ input[type="range"]::-webkit-slider-thumb {
 .overlay-marquee-track {
   display: inline-flex;
   width: max-content;
-  animation: overlay-marquee-scroll 14s linear infinite;
+  animation: overlay-marquee-scroll 38s linear infinite;
 }
 
 .overlay-marquee-track > span {
   display: inline-block;
-  padding-right: 2.5rem;
+  padding-right: 4rem;
 }
 
 .mini-volume-slider {
@@ -527,4 +529,194 @@ input[type="range"]::-webkit-slider-thumb {
     opacity: 0.12 !important;
     transform: scale(0.8);
   }
+}
+
+/* Vertex-inspired depth language: subtle, opt-in, and tied to pointer/tilt variables. */
+.aether-depth-mode .aether-depth-stage {
+  perspective: 1500px;
+  perspective-origin: calc(50% + (var(--aether-head-x) * 8%)) calc(50% + (var(--aether-head-y) * 6%));
+}
+
+.aether-depth-mode .glass-card {
+  transform-style: preserve-3d;
+}
+
+.aether-depth-mode .glass-card:hover {
+  transform: translate3d(calc(var(--aether-head-x) * -2px), calc(var(--aether-head-y) * -2px - 1px), 18px)
+    rotateX(calc(var(--aether-head-y) * -1.1deg))
+    rotateY(calc(var(--aether-head-x) * 1.4deg));
+}
+
+.gesture-lab-active .aura-field,
+.gesture-lab-active .aura-stage-depth-stack {
+  transform: translate3d(calc(var(--aether-head-x) * 10px), calc(var(--aether-head-y) * 8px), 0);
+}
+
+.aura-stage-rings {
+  background:
+    radial-gradient(circle at calc(50% + var(--aether-head-x) * 8%) calc(50% + var(--aether-head-y) * 8%), rgba(var(--aura-accent-rgb), 0.24), transparent 18%),
+    radial-gradient(circle at 50% 50%, transparent 24%, rgba(var(--aura-accent-rgb), 0.13) 25%, transparent 26%, transparent 42%, rgba(var(--aura-contrast-rgb), 0.11) 43%, transparent 44%);
+  filter: blur(0.2px) saturate(1.1);
+  opacity: calc(0.42 + var(--aura-kick-glow) * 0.28);
+}
+
+.aura-stage-grid {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(circle at center, black 0%, transparent 72%);
+  transform: translate3d(calc(var(--aether-head-x) * -14px), calc(var(--aether-head-y) * -10px), 0) scale(1.05);
+  opacity: 0.28;
+}
+
+.aura-stage-parallax {
+  transform: translate(calc(-50% + (var(--aether-head-x) * -22px)), calc(-50% + (var(--aether-head-y) * -18px))) scale(calc(1.01 + var(--aura-kick-glow) * 0.04));
+  transition: transform 90ms linear;
+}
+
+.aura-stage-depth-stack {
+  transform: rotateX(calc(var(--aether-head-y) * -4deg)) rotateY(calc(var(--aether-head-x) * 5deg));
+  transform-style: preserve-3d;
+  transition: transform 90ms linear;
+}
+
+.aura-stage-art {
+  transform: translateZ(54px);
+}
+
+.aura-stage-lyric {
+  text-shadow:
+    0 0 22px rgba(var(--aura-accent-rgb), calc(0.16 + var(--aura-kick-glow) * 0.2)),
+    0 16px 46px rgba(0, 0, 0, 0.65);
+}
+
+.vault-project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+  gap: 14px;
+}
+
+.vault-project-card {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018));
+  padding: 10px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03), 0 18px 42px rgba(0, 0, 0, 0.22);
+  transition: border-color 180ms ease, transform 180ms ease, background 180ms ease;
+}
+
+.vault-project-card:hover {
+  border-color: rgba(var(--aura-accent-rgb), 0.34);
+  background: linear-gradient(180deg, rgba(var(--aura-accent-rgb), 0.08), rgba(255, 255, 255, 0.022));
+}
+
+.vault-project-art {
+  position: relative;
+  aspect-ratio: 1.35;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.22);
+  cursor: pointer;
+}
+
+.vault-project-cover {
+  position: absolute;
+  inset: 0;
+  width: 74%;
+  height: 84%;
+  object-fit: cover;
+  border-radius: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.34);
+  transform: translate3d(calc(var(--cover-index) * 13%), calc(var(--cover-index) * 5%), 0) rotate(calc((var(--cover-index) - 1.5) * 4deg));
+  opacity: calc(0.96 - var(--cover-index) * 0.12);
+}
+
+.vault-project-sheen {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, transparent 0%, rgba(255, 255, 255, 0.10) 46%, transparent 62%);
+  transform: translateX(-120%);
+  transition: transform 480ms ease;
+}
+
+.vault-project-card:hover .vault-project-sheen {
+  transform: translateX(120%);
+}
+
+.vault-project-count {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  min-width: 28px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--aura-accent-rgb), 0.25);
+  background: rgba(0, 0, 0, 0.48);
+  color: rgb(var(--aura-accent-rgb));
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 900;
+  text-align: center;
+}
+
+.vault-project-empty {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  color: rgba(var(--aura-accent-rgb), 0.45);
+}
+
+.vault-project-tool {
+  display: flex;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.045);
+  color: rgba(255, 255, 255, 0.42);
+  transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.vault-project-tool:hover {
+  border-color: rgba(var(--aura-accent-rgb), 0.32);
+  background: rgba(var(--aura-accent-rgb), 0.10);
+  color: rgb(var(--aura-accent-rgb));
+}
+
+.vault-project-tool.danger:hover {
+  border-color: rgba(248, 113, 113, 0.32);
+  background: rgba(248, 113, 113, 0.10);
+  color: rgb(248, 113, 113);
+}
+
+.vault-project-inspect {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 12px;
+  border: 1px solid rgba(var(--aura-accent-rgb), 0.20);
+  background: rgba(var(--aura-accent-rgb), 0.07);
+  color: rgba(var(--aura-accent-rgb), 0.78);
+  padding: 7px 8px;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.vault-project-inspect:hover {
+  background: rgba(var(--aura-accent-rgb), 0.16);
+  color: rgb(var(--aura-accent-rgb));
 }

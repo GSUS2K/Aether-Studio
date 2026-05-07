@@ -31,6 +31,12 @@ contextBridge.exposeInMainWorld('aether', {
   disableAppLock: (password) => ipcRenderer.invoke('aether:lock-disable', { password }),
   verifyAppLockBiometric: () => ipcRenderer.invoke('aether:lock-verify-biometric'),
   setAppLockTouchId: (enabled) => ipcRenderer.invoke('aether:lock-set-touchid', { enabled }),
+
+  // App lock recovery
+  getLockRecoveryStatus: () => ipcRenderer.invoke('aether:lock-recovery-status'),
+  generateRecoveryPhrase: () => ipcRenderer.invoke('aether:lock-recovery-phrase-generate'),
+  verifyRecoveryPhrase: (phrase) => ipcRenderer.invoke('aether:lock-recovery-phrase-verify', { phrase }),
+  resetAppLockPasswordWithRecovery: ({ token, newPassword, useTouchId }) => ipcRenderer.invoke('aether:lock-recovery-reset-password', { token, newPassword, useTouchId }),
   store: {
     get: (key) => ipcRenderer.invoke('aether:store-get', key),
     set: (key, val) => ipcRenderer.invoke('aether:store-set', key, val)

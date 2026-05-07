@@ -1,6 +1,29 @@
 const axios = require('axios');
 const youtubedl = require('youtube-dl-exec');
 const fs = require('fs');
+const path = require('path');
+
+let electronNet;
+let userDataPath;
+try {
+    const electron = require('electron');
+    electronNet = electron.net;
+    userDataPath = electron.app ? electron.app.getPath('userData') : '';
+} catch (e) {
+    // not in electron
+}
+
+// Smart fetch wrapper that uses Chromium's network stack to bypass Cloudflare/bot protections
+async function smartFetchJson(url) {
+    const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+    if (electronNet && electronNet.fetch) {
+        const res = await electronNet.fetch(url, { headers: { 'User-Agent': userAgent } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return await res.json();
+    }
+    const res = await axios.get(url, { timeout: 15000, headers: { 'User-Agent': userAgent } });
+    return res.data;
+}
 
 /**
  * Robust lyrics fetcher ported from Signal Discord Bot V5.3.13
@@ -12,7 +35,47 @@ async function fetchSyncedLyrics(trackName, artistName, durationSec, originalQue
     console.log(`[Lyrics Fetcher] V6.5.4 Search: "${trackName}" by "${artistName}" (${hasDuration ? durationSec + 's' : 'DURATION_UNKNOWN'})`);
     
     try {
-        // 1. Clean Metadata
+        let trackId = null;
+        if (videoUrl) {
+            const ytMatch = String(videoUrl).match(/[?&](v|id)=([A-Za-z0-9_-]{11})/i) || 
+                            String(videoUrl).match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([A-Za-z0-9_-]{11})/i);
+            if (ytMatch) {
+                trackId = ytMatch[2] || ytMatch[1];
+            }
+        }
+        
+        // Fallback: Deterministic filename hash of title and artist
+        if (!trackId) {
+            const cleanArtist = String(artistName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+            const cleanTrack = String(trackName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+            if (cleanArtist || cleanTrack) {
+                trackId = `hash_${cleanArtist}_${cleanTrack}`;
+            }
+        }
+        
+        let lyricsCachePath = null;
+        if (trackId && userDataPath) {
+            const lyricsDir = path.join(userDataPath, 'lyrics');
+            if (!fs.existsSync(lyricsDir)) fs.mkdirSync(lyricsDir, { recursive: true });
+            lyricsCachePath = path.join(lyricsDir, `${trackId}.json`);
+            
+            if (fs.existsSync(lyricsCachePath)) {
+                try {
+                    const cached = JSON.parse(fs.readFileSync(lyricsCachePath));
+                    if (Array.isArray(cached) && cached.length > 0) {
+                        console.log(`[Lyrics Fetcher] SUCCESS: Loaded from local cache (${trackId})`);
+                        return { lyrics: cached, source: 'local-cache' };
+                    }
+                } catch(e) {}
+            }
+        }
+
+        const saveAndReturn = (result) => {
+            if (result && result.lyrics && result.lyrics.length > 0 && lyricsCachePath) {
+                try { fs.writeFileSync(lyricsCachePath, JSON.stringify(result.lyrics)); } catch(e) {}
+            }
+            return result;
+        };
         let artist = (artistName || "").replace(/ - Topic|Official|VEVO|Music|Video|Channel/gi, '').trim();
         let track = (trackName || "").replace(/\(Official Video\)|\(Lyrics\)|\(OFFICIAL\)|\(Music Video\)|\(Video\)|\(Explicit\)|\[Official\]|\[Lyric Video\]|\[HQ\]|\|.*/gi, '').replace(/\(.*\)|\[.*\]/g, '').trim();
 
@@ -22,57 +85,70 @@ async function fetchSyncedLyrics(trackName, artistName, durationSec, originalQue
             track = parts[1].replace(/\(Official Video\)|\(Lyrics\)|\(OFFICIAL\)|\(Music Video\)|\(Video\)|\(Explicit\)|\[Official\]|\[Lyric Video\]|\[HQ\]|\|.*/gi, '').replace(/\(.*\)|\[.*\]/g, '').trim();
         }
 
-        // 2. Try Precise Match (LRCLIB /api/get)
+        // Start YouTube fetch concurrently if videoUrl is provided
+        let ytPromise = null;
+        if (videoUrl && (videoUrl.includes('youtube.com') || videoUrl.includes('youtu.be'))) {
+            ytPromise = fetchYouTubeSubtitles(videoUrl).catch(() => null);
+        }
+
+        // 1. Try Precise Match (LRCLIB /api/get)
         if (hasDuration) {
             const queryUrl = `https://lrclib.net/api/get?track_name=${encodeURIComponent(track)}&artist_name=${encodeURIComponent(artist)}&duration=${Math.floor(durationSec)}`;
             console.log(`[Lyrics Fetcher] Stage 1 (Direct): Attempting exact match...`);
             try {
-                const resp = await axios.get(queryUrl, { timeout: 10000 });
-                if (resp.status === 200 && resp.data.syncedLyrics) {
+                const data = await Promise.race([
+                    smartFetchJson(queryUrl),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 15000))
+                ]);
+                if (data && data.syncedLyrics) {
                     console.log(`[Lyrics Fetcher] SUCCESS: Precise match found on LRCLIB`);
-                    return { lyrics: parseLRC(resp.data.syncedLyrics), source: 'lrclib-direct' };
+                    return saveAndReturn({ lyrics: parseLRC(data.syncedLyrics), source: 'lrclib-direct' });
                 }
             } catch (e) {
-                console.log(`[Lyrics Fetcher] Stage 1: No direct match (${e.response?.status || e.message})`);
+                console.log(`[Lyrics Fetcher] Stage 1: No direct match (${e.message})`);
             }
         }
 
-        // 3. Try Search Fallback (LRCLIB /api/search)
+        // 2. Try Search Fallback (LRCLIB /api/search)
         const searchUrl = `https://lrclib.net/api/search?q=${encodeURIComponent(`${artist} ${track}`)}`;
         console.log(`[Lyrics Fetcher] Stage 2 (Search): Querying "${artist} ${track}"...`);
         try {
-            const searchResp = await axios.get(searchUrl, { timeout: 10000 });
-            if (searchResp.status === 200 && Array.isArray(searchResp.data)) {
-                const results = searchResp.data;
-                const best = results
+            const data = await Promise.race([
+                smartFetchJson(searchUrl),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 15000))
+            ]);
+            if (Array.isArray(data)) {
+                const best = data
                     .filter(r => r.syncedLyrics && (!hasDuration || Math.abs(r.duration - durationSec) < 60))
                     .sort((a, b) => hasDuration ? Math.abs(a.duration - durationSec) - Math.abs(b.duration - durationSec) : 0)[0];
 
                 if (best) {
                     console.log(`[Lyrics Fetcher] SUCCESS: Search fallback found: "${best.trackName}"`);
-                    return { lyrics: parseLRC(best.syncedLyrics), source: 'lrclib-search' };
+                    return saveAndReturn({ lyrics: parseLRC(best.syncedLyrics), source: 'lrclib-search' });
                 }
-                console.log(`[Lyrics Fetcher] Stage 2: No suitable synced lyrics in ${results.length} results`);
+                console.log(`[Lyrics Fetcher] Stage 2: No suitable synced lyrics found.`);
             }
         } catch (e) {
-            console.error('[Lyrics Fetcher] Stage 2 Error:', e.message);
+            console.log(`[Lyrics Fetcher] Stage 2 Error: ${e.message}`);
         }
 
-        // 4. Try Query Fallback (using original query if available)
+        // 3. Try Query Fallback
         if (originalQuery && !originalQuery.startsWith('http')) {
             const qSearchUrl = `https://lrclib.net/api/search?q=${encodeURIComponent(originalQuery)}`;
             console.log(`[Lyrics Fetcher] Stage 3 (Query): Querying "${originalQuery}"...`);
             try {
-                const qResp = await axios.get(qSearchUrl, { timeout: 10000 });
-                if (qResp.status === 200 && Array.isArray(qResp.data)) {
-                    const results = qResp.data;
-                    const best = results
+                const data = await Promise.race([
+                    smartFetchJson(qSearchUrl),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 15000))
+                ]);
+                if (Array.isArray(data)) {
+                    const best = data
                         .filter(r => r.syncedLyrics && (!hasDuration || Math.abs(r.duration - durationSec) < 60))
                         .sort((a, b) => hasDuration ? Math.abs(a.duration - durationSec) - Math.abs(b.duration - durationSec) : 0)[0];
 
                     if (best) {
                         console.log(`[Lyrics Fetcher] SUCCESS: Query fallback found: "${best.trackName}"`);
-                        return { lyrics: parseLRC(best.syncedLyrics), source: 'lrclib-query' };
+                        return saveAndReturn({ lyrics: parseLRC(best.syncedLyrics), source: 'lrclib-query' });
                     }
                     console.log(`[Lyrics Fetcher] Stage 3: No results for query.`);
                 }
@@ -81,13 +157,13 @@ async function fetchSyncedLyrics(trackName, artistName, durationSec, originalQue
             }
         }
 
-        // 5. Try YouTube Subtitles (Final Fallback)
-        if (videoUrl && (videoUrl.includes('youtube.com') || videoUrl.includes('youtu.be'))) {
-            console.log(`[Lyrics Fetcher] Stage 4 (YouTube): Extracting subtitles from ${videoUrl}...`);
-            const ytSubs = await fetchYouTubeSubtitles(videoUrl);
+        // 4. Try YouTube Subtitles (Final Fallback)
+        if (ytPromise) {
+            console.log(`[Lyrics Fetcher] Stage 4 (YouTube): Awaiting concurrent YouTube subtitle extraction...`);
+            const ytSubs = await ytPromise;
             if (ytSubs) {
                 console.log(`[Lyrics Fetcher] SUCCESS: YouTube captions extracted`);
-                return { lyrics: ytSubs, source: 'youtube-captions' };
+                return saveAndReturn({ lyrics: ytSubs, source: 'youtube-captions' });
             }
             console.log(`[Lyrics Fetcher] Stage 4: No subtitles found on YouTube`);
         }
