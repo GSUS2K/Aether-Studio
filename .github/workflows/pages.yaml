@@ -41,6 +41,11 @@ jobs:
     - name: Install frontend dependencies
       run: npm ci --prefix frontend
 
+    - name: Download Windows installer from latest Release
+      run: |
+        mkdir -p frontend/public
+        curl -L -o frontend/public/Aether-Setup-x64.exe https://github.com/GSUS2K/Aether-Studio/releases/latest/download/Aether-Setup-x64.exe
+
     - name: Build frontend
       run: npm run build --prefix frontend
 
