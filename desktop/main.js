@@ -524,6 +524,133 @@ const fetchSpotifyHtml = async (url) => {
     }
 };
 
+const fetchMusicPageHtml = async (url) => {
+    const headers = {
+        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'accept-language': 'en-US,en;q=0.9',
+    };
+    const response = await fetch(url, { headers });
+    const text = await response.text();
+    return { ok: response.ok, status: response.status, text };
+};
+
+const extractAppleMusicPlaylist = (html) => {
+    const playlistName = decodeHtmlEntities(
+        html.match(/<meta property="og:title" content="([^"]+)"/i)?.[1]
+        || html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]
+        || 'Apple Music Playlist'
+    ).replace(/\s+-\s+Playlist\s+-\s+Apple Music.*$/i, '').trim();
+    const tracks = [];
+    const seen = new Set();
+    const pushTrack = (title, artist) => {
+        const cleanTitle = decodeHtmlEntities(title || '').replace(/\s+/g, ' ').trim();
+        const cleanArtist = decodeHtmlEntities(artist || '').replace(/\s+/g, ' ').trim();
+        if (!cleanTitle) return;
+        const key = `${cleanTitle.toLowerCase()}|${cleanArtist.toLowerCase()}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        tracks.push({ appleId: key, title: cleanTitle, artist: cleanArtist });
+    };
+
+    for (const match of html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+        try {
+            const parsed = JSON.parse(decodeHtmlEntities(match[1]).trim());
+            const candidates = Array.isArray(parsed) ? parsed : [parsed];
+            for (const candidate of candidates) {
+                const list = candidate?.track?.itemListElement || candidate?.tracks?.itemListElement || candidate?.itemListElement || [];
+                if (!Array.isArray(list)) continue;
+                for (const row of list) {
+                    const item = row?.item || row;
+                    const artist = Array.isArray(item?.byArtist)
+                        ? item.byArtist.map((entry) => entry?.name).filter(Boolean).join(', ')
+                        : item?.byArtist?.name || item?.artist?.name || item?.artistName || '';
+                    pushTrack(item?.name || item?.title, artist);
+                }
+            }
+        } catch (e) {}
+    }
+
+    for (const match of html.matchAll(/"attributes"\s*:\s*\{([\s\S]*?)\}\s*(?:,\s*"relationships"|,\s*"href"|,\s*"id")/g)) {
+        const block = match[1];
+        const title = block.match(/"name"\s*:\s*"((?:\\.|[^"\\])+)"/)?.[1];
+        const artist = block.match(/"artistName"\s*:\s*"((?:\\.|[^"\\])+)"/)?.[1];
+        if (title) {
+            pushTrack(title.replace(/\\"/g, '"'), String(artist || '').replace(/\\"/g, '"'));
+        }
+    }
+
+    return { playlistName, tracks: tracks.slice(0, 200) };
+};
+
+const resolveImportedTracks = async ({ provider, playlistId, playlistName, sourceTracks, sendProgress }) => {
+    const resolvedTracks = [];
+    const searchLimit = Math.min(sourceTracks.length, 80);
+    const missedSamples = [];
+    const seenResolvedKeys = new Set();
+
+    for (let index = 0; index < searchLimit; index += 1) {
+        const item = sourceTracks[index];
+        const trackTitle = item?.title;
+        const trackArtist = item?.artist || '';
+        if (!trackTitle) continue;
+
+        sendProgress({
+            stage: 'matching',
+            progress: 30 + Math.round(((index + 1) / Math.max(searchLimit, 1)) * 62),
+            message: `Matching ${index + 1}/${searchLimit}...`,
+        });
+
+        try {
+            const queries = buildSpotifyQueries(trackTitle, trackArtist);
+            let best = null;
+            let bestScore = -1;
+            for (const query of queries) {
+                const results = await search(query, ytdlpPath);
+                if (!Array.isArray(results) || results.length === 0) continue;
+                const candidates = results.slice(0, 6);
+                for (const candidate of candidates) {
+                    const key = candidate?.youtubeId || candidate?.id || `${candidate?.title || ''}|${candidate?.author || ''}`;
+                    if (!key || seenResolvedKeys.has(key)) continue;
+                    const score = scoreSearchCandidate(candidate, trackTitle, trackArtist);
+                    if (score > bestScore) {
+                        bestScore = score;
+                        best = candidate;
+                    }
+                }
+            }
+            if (best && bestScore >= 3) {
+                const resolvedKey = best?.youtubeId || best?.id || `${best?.title || ''}|${best?.author || ''}`;
+                if (resolvedKey) seenResolvedKeys.add(resolvedKey);
+                resolvedTracks.push({
+                    ...best,
+                    id: best.id || item.spotifyId || item.appleId || resolvedKey,
+                    [`${provider}Title`]: trackTitle,
+                    [`${provider}Artist`]: trackArtist,
+                    [`${provider}PlaylistId`]: playlistId,
+                });
+            } else if (missedSamples.length < 6) {
+                missedSamples.push(`${trackTitle}${trackArtist ? ` - ${trackArtist}` : ''}`);
+            }
+        } catch (e) {}
+    }
+
+    sendProgress({ stage: 'finalizing', progress: 95, message: 'Saving imported playlist...' });
+    return {
+        success: true,
+        playlistName,
+        totalTracks: sourceTracks.length,
+        matchedTracks: resolvedTracks.length,
+        tracks: resolvedTracks,
+        debug: {
+            playlistId,
+            searchedTracks: searchLimit,
+            matchedTracks: resolvedTracks.length,
+            missedTracks: Math.max(0, searchLimit - resolvedTracks.length),
+            missedSamples,
+        },
+    };
+};
+
 const normalizeMatchText = (value) => String(value || '')
     .toLowerCase()
     .replace(/\(feat\.?[^)]*\)/gi, ' ')
@@ -3117,6 +3244,44 @@ app.whenReady().then(async () => {
                     missedSamples,
                 },
             };
+        } catch (e) {
+            try { event.sender.send('aether:spotify-import-progress', { stage: 'error', progress: 0, message: e.message }); } catch (error) {}
+            return { success: false, error: e.message };
+        }
+    });
+
+    ipcMain.handle('aether:import-apple-music-playlist', async (event, { url }) => {
+        try {
+            const playlistUrl = String(url || '').trim();
+            if (!/^https?:\/\/music\.apple\.com\//i.test(playlistUrl) || !/\/playlist\//i.test(playlistUrl)) {
+                return { success: false, error: 'Invalid Apple Music playlist URL' };
+            }
+
+            const sendProgress = (payload) => {
+                console.log('[Aether/AppleMusicImport]', payload);
+                try { event.sender.send('aether:spotify-import-progress', payload); } catch (error) {}
+            };
+
+            sendProgress({ stage: 'fetching', progress: 5, message: 'Loading Apple Music playlist...' });
+            const response = await fetchMusicPageHtml(playlistUrl);
+            const html = response?.text || '';
+            if (!response?.ok || !html) {
+                return { success: false, error: `Apple Music page fetch failed (${response?.status || 0})`, debug: { htmlStatus: response?.status || 0 } };
+            }
+
+            sendProgress({ stage: 'parsing', progress: 18, message: 'Reading playlist tracks...' });
+            const parsed = extractAppleMusicPlaylist(html);
+            if (!Array.isArray(parsed.tracks) || parsed.tracks.length === 0) {
+                return { success: false, error: 'No tracks found in Apple Music playlist.', debug: { htmlStatus: response.status, htmlLength: html.length } };
+            }
+
+            return await resolveImportedTracks({
+                provider: 'apple',
+                playlistId: playlistUrl.match(/\/playlist\/[^/]+\/([^/?#]+)/i)?.[1] || playlistUrl,
+                playlistName: parsed.playlistName || 'Apple Music Playlist',
+                sourceTracks: parsed.tracks,
+                sendProgress,
+            });
         } catch (e) {
             try { event.sender.send('aether:spotify-import-progress', { stage: 'error', progress: 0, message: e.message }); } catch (error) {}
             return { success: false, error: e.message };

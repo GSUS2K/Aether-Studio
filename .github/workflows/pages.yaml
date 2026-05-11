@@ -47,7 +47,9 @@ jobs:
         curl -L -o frontend/public/Aether-Setup-x64.exe https://github.com/GSUS2K/Aether-Studio/releases/latest/download/Aether-Setup-x64.exe
 
     - name: Build frontend
-      run: npm run build --prefix frontend
+      run: |
+        echo "VITE_APP_VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+        npm run build --prefix frontend
 
     - name: Setup Pages
       uses: actions/configure-pages@v5

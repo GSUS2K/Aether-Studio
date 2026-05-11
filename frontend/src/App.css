@@ -223,12 +223,71 @@
   animation: lyric-shimmer 0.5s ease-in-out;
 }
 
+.immersive-lyric-line {
+  background: transparent !important;
+  -webkit-text-fill-color: currentColor !important;
+  -webkit-background-clip: initial !important;
+  background-clip: initial !important;
+}
+
+.immersive-karaoke-text {
+  display: inline;
+  background: transparent;
+  color: currentColor;
+}
+
+.immersive-karaoke-text-active {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-brand-accent) 0%,
+    var(--color-brand-accent) var(--karaoke-fill, 0%),
+    rgba(255, 255, 255, 0.42) var(--karaoke-fill, 0%),
+    rgba(255, 255, 255, 0.42) 100%
+  ) !important;
+  background-clip: text !important;
+  -webkit-background-clip: text !important;
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+}
+
+.performance-island {
+  contain: layout paint style;
+}
+
+.scroll-performance-island {
+  content-visibility: auto;
+  contain: layout paint style;
+  contain-intrinsic-size: 480px;
+}
+
+.performance-list-item,
+.vault-project-card {
+  content-visibility: auto;
+  contain: layout paint style;
+  contain-intrinsic-size: 84px;
+}
+
+.vault-project-card {
+  contain-intrinsic-size: 230px;
+}
+
 .draggable {
   -webkit-app-region: drag;
 }
 
 .no-drag {
   -webkit-app-region: no-drag;
+}
+
+button,
+input,
+textarea,
+select,
+a,
+[role="button"],
+.no-drag {
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
 }
 
 /* Custom visualizer bars */
@@ -719,4 +778,71 @@ input[type="range"]::-webkit-slider-thumb {
 .vault-project-inspect:hover {
   background: rgba(var(--aura-accent-rgb), 0.16);
   color: rgb(var(--aura-accent-rgb));
+}
+
+/* Performance modes (wired from App.jsx body class) */
+body.perf-medium .animate-pulse-glow,
+body.perf-low .animate-pulse-glow {
+  animation: none !important;
+}
+
+body.perf-medium .doodle-bg-layer,
+body.perf-low .doodle-bg-layer {
+  display: none !important;
+}
+
+body.perf-medium .aura-mode-active header {
+  backdrop-filter: blur(20px) saturate(1.08);
+}
+
+body.perf-medium .aura-field-core,
+body.perf-medium .aura-field-ribbon,
+body.perf-medium .aura-field-orbit,
+body.perf-medium .aura-field-particle,
+body.perf-low .aura-field-core,
+body.perf-low .aura-field-ribbon,
+body.perf-low .aura-field-orbit,
+body.perf-low .aura-field-particle {
+  animation: none !important;
+}
+
+body.perf-medium .aura-field,
+body.perf-low .aura-field {
+  filter: none !important;
+  mix-blend-mode: normal !important;
+}
+
+body.perf-medium .aura-stage-rings {
+  filter: none;
+  opacity: calc(0.3 + var(--aura-kick-glow) * 0.2);
+}
+
+body.perf-low .aura-mode-active header {
+  backdrop-filter: none !important;
+}
+
+body.perf-low .aura-stage-rings,
+body.perf-low .aura-stage-grid,
+body.perf-low .aura-stage-parallax {
+  display: none !important;
+}
+
+body.perf-low .lyric-pulse-line {
+  animation: none !important;
+  opacity: 0 !important;
+}
+
+body.perf-low [data-immersive-overlay='true'] {
+  backdrop-filter: none !important;
+}
+
+body.perf-low .immersive-lyric-line {
+  transition-duration: 180ms !important;
+}
+
+body.perf-low .glass-card,
+body.perf-low .rounded-3xl,
+body.perf-low .rounded-2xl,
+body.perf-low .rounded-xl {
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28) !important;
 }

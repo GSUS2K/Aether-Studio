@@ -93,7 +93,9 @@ jobs:
       run: npm run prepare-binaries
 
     - name: Build frontend
-      run: npm run build --prefix frontend
+      run: |
+        echo "VITE_APP_VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+        npm run build --prefix frontend
 
     - name: Ensure app-builder executable permission (Linux)
       if: matrix.os == 'ubuntu-latest'

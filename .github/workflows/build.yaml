@@ -81,7 +81,9 @@ jobs:
 
     # Build React frontend
     - name: Build frontend
-      run: cd frontend && npm run build
+      run: |
+        echo "VITE_APP_VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+        cd frontend && npm run build
 
     - name: Ensure app-builder executable permission (Linux)
       if: matrix.os == 'ubuntu-latest'

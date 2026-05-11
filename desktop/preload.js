@@ -65,6 +65,7 @@ contextBridge.exposeInMainWorld('aether', {
   importVault: () => ipcRenderer.invoke('aether:import-vault'),
   importCookies: () => ipcRenderer.invoke('aether:import-cookies'),
   importSpotifyPlaylist: (url) => ipcRenderer.invoke('aether:import-spotify-playlist', { url }),
+  importAppleMusicPlaylist: (url) => ipcRenderer.invoke('aether:import-apple-music-playlist', { url }),
   onSpotifyImportProgress: (callback) => {
     const handler = (event, payload) => callback(payload);
     ipcRenderer.on('aether:spotify-import-progress', handler);

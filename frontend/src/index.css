@@ -75,6 +75,39 @@
   }
 }
 
+/* Performance Modes */
+body.perf-low [class*="backdrop-blur"] {
+  backdrop-filter: none !important;
+  background-color: rgba(8, 12, 16, 0.96) !important;
+}
+body.perf-low [class*="shadow-"] {
+  box-shadow: none !important;
+}
+body.perf-low .aura-field-particle {
+  display: none !important;
+}
+
+body.perf-medium [class*="backdrop-blur-3xl"],
+body.perf-medium [class*="backdrop-blur-2xl"],
+body.perf-medium [class*="backdrop-blur-[48px]"],
+body.perf-medium [class*="backdrop-blur-[32px]"] {
+  backdrop-filter: blur(12px) !important;
+}
+body.perf-medium [class*="shadow-[0_0"],
+body.perf-medium [class*="shadow-neon"] {
+  box-shadow: none !important;
+}
+body.perf-medium .aura-field-particle {
+  opacity: 0.5 !important;
+}
+
+body.perf-low *,
+body.perf-medium .doodle-bg-layer *,
+body.perf-low .doodle-bg-layer * {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+}
+
 /* Custom Scrollbar for a premium look */
 ::-webkit-scrollbar {
   width: 8px;
@@ -189,5 +222,4 @@
   50% { transform: rotate(180deg) scale(1.25); }
   100% { transform: rotate(360deg) scale(1.1); }
 }
-
 

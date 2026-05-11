@@ -1,4 +1,5 @@
-import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, Component } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, Component, startTransition, memo, forwardRef, useImperativeHandle } from 'react';
+import { createPortal } from 'react-dom';
 // NOTE: Many async operations and state changes below may be subject to race conditions if triggered rapidly.
 // Consider debouncing or locking for critical flows (e.g., downloads, updates, queue changes).
 import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, VolumeX, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles, Clapperboard, Columns2, Repeat, MessageSquare, Send, Layers, Eye, Hand, MousePointer2, Camera, Copy, Check } from 'lucide-react';
@@ -6,7 +7,7 @@ import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Glob
 import { motion, AnimatePresence } from 'framer-motion';
 import { setupDiscordSdk } from './discord';
 import axios from 'axios';
-import { BUILD_VERSION, UX_VERSION } from './buildVersion';
+import { APP_VERSION, BUILD_VERSION, UX_VERSION } from './buildVersion';
 import catDoodlePeek from './assets/cat-doodle-peek.svg';
 import './App.css';
 
@@ -561,6 +562,11 @@ const getEventKeyToken = (e) => {
 const isShortcutEventMatch = (e, combo, isMacPlatform) => {
   const parsed = parseShortcutCombo(combo, isMacPlatform);
   if (!parsed) return false;
+  return isParsedShortcutEventMatch(e, parsed);
+};
+
+const isParsedShortcutEventMatch = (e, parsed) => {
+  if (!parsed?.key) return false;
   const key = getEventKeyToken(e);
   if (!key || key !== parsed.key) return false;
   if (e.ctrlKey !== parsed.ctrl) return false;
@@ -568,6 +574,18 @@ const isShortcutEventMatch = (e, combo, isMacPlatform) => {
   if (e.altKey !== parsed.alt) return false;
   if (e.shiftKey !== parsed.shift) return false;
   return true;
+};
+
+const getKeyboardEventElement = (event) => {
+  const target = event?.target || (typeof document !== 'undefined' ? document.activeElement : null);
+  if (typeof Element !== 'undefined' && target instanceof Element) return target;
+  return null;
+};
+
+const isNativeKeyboardTarget = (event) => {
+  const target = getKeyboardEventElement(event);
+  if (!target) return false;
+  return Boolean(target.closest('input, textarea, select, button, a[href], [role="button"], [contenteditable="true"], [data-aether-native-keys="true"]'));
 };
 
 const toReadableShortcut = (combo, isMacPlatform) => {
@@ -627,6 +645,1611 @@ class ErrorBoundary extends Component {
     return this.props.children;
   }
 }
+
+const HeaderVisualControls = memo(forwardRef(function HeaderVisualControls({
+  headerIconButtonClass,
+  headerAccentButtonClass,
+  isGestureControlEnabled,
+  openFeedbackPanel,
+  openGestureLab,
+  openSignalLedger,
+  setVisualizerMode,
+  visualizerMode,
+  auraPreset,
+  setAuraPreset,
+  isDepthMotionEnabled,
+  setIsDepthMotionEnabled,
+  isDoodleMode,
+  setIsDoodleMode,
+  doodleIntensity,
+  setDoodleIntensity,
+  doodleIntensityBadge,
+  setIsAuraStageOpen,
+  toggleDiagnostics,
+  isDiagnosticsOpen,
+  setLastAdded,
+  shortcuts,
+  setShortcuts,
+  isMacPlatform,
+  isStandalone,
+  globalMediaShortcutsEnabled,
+  setGlobalMediaShortcutsEnabled,
+  onSurfaceOpen,
+}, ref) {
+  const [isLooksPanelOpen, setIsLooksPanelOpen] = useState(false);
+  const [isShortcutSettingsOpen, setIsShortcutSettingsOpen] = useState(false);
+  const [shortcutDraft, setShortcutDraft] = useState(shortcuts);
+  const [shortcutSettingsError, setShortcutSettingsError] = useState('');
+  const looksPanelRef = useRef(null);
+
+  const flashLastAdded = useCallback((message, delay = 1500) => {
+    setLastAdded(message);
+    window.setTimeout(() => setLastAdded(null), delay);
+  }, [setLastAdded]);
+
+  const openShortcutSettingsLocal = useCallback(() => {
+    onSurfaceOpen?.('shortcuts');
+    setShortcutSettingsError('');
+    setShortcutDraft(shortcuts);
+    setIsShortcutSettingsOpen(true);
+  }, [onSurfaceOpen, shortcuts]);
+
+  const closeShortcutSettingsLocal = useCallback(() => {
+    setIsShortcutSettingsOpen(false);
+    setShortcutSettingsError('');
+  }, []);
+
+  const closeLocalSurfaces = useCallback(() => {
+    setIsLooksPanelOpen(false);
+    closeShortcutSettingsLocal();
+  }, [closeShortcutSettingsLocal]);
+
+  useImperativeHandle(ref, () => ({
+    openShortcutSettings: openShortcutSettingsLocal,
+    close: closeLocalSurfaces,
+    isOpen: () => isLooksPanelOpen || isShortcutSettingsOpen,
+  }), [closeLocalSurfaces, isLooksPanelOpen, isShortcutSettingsOpen, openShortcutSettingsLocal]);
+
+  useEffect(() => {
+    if (!isLooksPanelOpen) return;
+    const onPointerDown = (event) => {
+      if (looksPanelRef.current && !looksPanelRef.current.contains(event.target)) {
+        setIsLooksPanelOpen(false);
+      }
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    return () => window.removeEventListener('pointerdown', onPointerDown);
+  }, [isLooksPanelOpen]);
+
+  useEffect(() => {
+    if (!isShortcutSettingsOpen) return;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') closeShortcutSettingsLocal();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [closeShortcutSettingsLocal, isShortcutSettingsOpen]);
+
+  const saveShortcutSettingsLocal = useCallback(async () => {
+    const normalized = sanitizeShortcutMap(shortcutDraft, isMacPlatform);
+    const seen = new Map();
+
+    for (const { id, label } of SHORTCUT_FIELDS) {
+      const parsed = parseShortcutCombo(normalized[id], isMacPlatform);
+      if (!parsed) {
+        setShortcutSettingsError(`Invalid shortcut for ${label}.`);
+        return;
+      }
+      const key = buildCanonicalShortcutCombo(parsed, isMacPlatform);
+      if (seen.has(key)) {
+        setShortcutSettingsError(`Shortcut conflict: ${label} and ${seen.get(key)} both use ${toReadableShortcut(key, isMacPlatform)}.`);
+        return;
+      }
+      seen.set(key, label);
+    }
+
+    setShortcuts(normalized);
+    closeShortcutSettingsLocal();
+    flashLastAdded('Shortcuts updated', 1600);
+
+    try {
+      if (isStandalone && window.aether?.store?.set) {
+        await window.aether.store.set(GLOBAL_SHORTCUTS_ENABLED_STORAGE_KEY, !!globalMediaShortcutsEnabled);
+      } else {
+        localStorage.setItem(GLOBAL_SHORTCUTS_ENABLED_STORAGE_KEY, JSON.stringify(!!globalMediaShortcutsEnabled));
+      }
+    } catch (e) {
+      console.warn('[Aether/Shortcuts] Failed to persist global media shortcut toggle', e);
+    }
+  }, [closeShortcutSettingsLocal, flashLastAdded, globalMediaShortcutsEnabled, isMacPlatform, isStandalone, setShortcuts, shortcutDraft]);
+
+  return (
+    <>
+      <div className="hidden md:flex items-center gap-2 no-drag" data-no-maximize="true">
+        <button onClick={openSignalLedger} className={`${headerAccentButtonClass} group`} title="Open Signal Ledger">
+          <Activity size={16} className="group-hover:animate-pulse" />
+        </button>
+        <button onClick={openGestureLab} className={`${headerIconButtonClass} ${isGestureControlEnabled ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`} title="Gesture Lab">
+          <Hand size={15} />
+        </button>
+        <button onClick={openFeedbackPanel} className={headerIconButtonClass} title="Send Feedback">
+          <MessageSquare size={15} />
+        </button>
+        <button onClick={openShortcutSettingsLocal} className={headerIconButtonClass} title="Shortcut Settings">
+          <Keyboard size={16} />
+        </button>
+
+        <div className="relative" ref={looksPanelRef} data-no-maximize="true">
+          <button
+            onClick={() => {
+              const next = !isLooksPanelOpen;
+              if (next) onSurfaceOpen?.('looks');
+              setIsLooksPanelOpen(next);
+            }}
+            className={`${headerIconButtonClass} ${isLooksPanelOpen ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`}
+            title="Visual presets"
+          >
+            <Sparkles size={14} />
+          </button>
+
+          {isLooksPanelOpen && (
+            <div className="absolute left-0 mt-2 z-[340] w-64 rounded-2xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-3 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
+              <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Visualizer</div>
+              <div className="grid grid-cols-2 gap-1.5 mb-3">
+                {['bars', 'pulse'].map((mode) => (
+                  <button key={mode} onClick={() => setVisualizerMode(mode)} className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${visualizerMode === mode ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}>
+                    {mode === 'pulse' ? 'Aura' : 'Bars'}
+                  </button>
+                ))}
+              </div>
+
+              <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Aura Preset</div>
+              <div className="grid grid-cols-3 gap-1.5 mb-3">
+                {AURA_PRESETS.map((preset) => (
+                  <button key={preset.id} onClick={() => { setAuraPreset(preset.id); flashLastAdded(`Aura preset - ${preset.label}`); }} className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${auraPreset === preset.id ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}>
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-2 gap-1.5 mb-3">
+                <button onClick={() => { setIsDepthMotionEnabled((prev) => !prev); flashLastAdded(isDepthMotionEnabled ? 'Depth motion disabled' : 'Depth motion enabled'); }} className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${isDepthMotionEnabled ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}>
+                  Depth
+                </button>
+                <button onClick={() => { openGestureLab(); setIsLooksPanelOpen(false); }} className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${isGestureControlEnabled ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}>
+                  Gesture
+                </button>
+              </div>
+
+              <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Doodle Preset</div>
+              <div className="grid grid-cols-3 gap-1.5 mb-3">
+                {DOODLE_PRESETS.map((preset) => (
+                  <button key={preset.id} onClick={() => { setDoodleIntensity(preset.id); flashLastAdded(`Doodle preset - ${preset.label}`); }} className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${doodleIntensity === preset.id ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}>
+                    {preset.badge}
+                  </button>
+                ))}
+              </div>
+
+              <button onClick={() => { setIsDoodleMode((prev) => !prev); flashLastAdded(isDoodleMode ? 'Doodle mode disabled' : 'Doodle mode enabled', 1600); }} className={`w-full px-3 py-2 rounded-xl border text-[10px] font-black uppercase tracking-[0.14em] transition-colors ${isDoodleMode ? 'bg-brand-accent/15 border-brand-accent/40 text-brand-accent mb-3' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35 mb-3'}`}>
+                {isDoodleMode ? `Doodle ON - ${doodleIntensityBadge}` : 'Enable Doodle'}
+              </button>
+
+              <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2 mt-1 border-t border-white/10 pt-3">System & Tools</div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button onClick={() => { setIsAuraStageOpen(true); setIsLooksPanelOpen(false); }} className="flex flex-col items-center justify-center gap-1.5 px-2 py-2 rounded-xl border border-white/10 bg-white/[0.03] text-white/65 transition-colors hover:text-brand-accent hover:border-brand-accent/35">
+                  <Layers size={14} />
+                  <span className="text-[8px] font-black uppercase tracking-[0.12em]">Aura Stage</span>
+                </button>
+                <button onClick={() => { toggleDiagnostics(); setIsLooksPanelOpen(false); }} className={`flex flex-col items-center justify-center gap-1.5 px-2 py-2 rounded-xl border transition-colors ${isDiagnosticsOpen ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'border-white/10 bg-white/[0.03] text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}>
+                  <Monitor size={14} />
+                  <span className="text-[8px] font-black uppercase tracking-[0.12em]">Diagnostics</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {typeof document !== 'undefined' ? createPortal(
+        <AnimatePresence>
+          {isShortcutSettingsOpen && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[340] flex items-start justify-center p-4 pt-6 md:items-center md:pt-4" onClick={closeShortcutSettingsLocal}>
+              <div className="absolute inset-0 bg-black/85 backdrop-blur-md" />
+              <motion.div initial={{ scale: 0.96, y: 14 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.96, y: 10 }} className="relative z-10 flex w-[min(96vw,920px)] max-h-[min(92vh,calc(100vh-2rem))] flex-col overflow-hidden rounded-[2rem] border border-brand-accent/25 bg-[#090b0f]/95 shadow-[0_0_90px_rgba(0,255,191,0.15)]" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-start justify-between gap-4 border-b border-white/10 bg-black/20 px-5 py-5 md:px-6 md:py-6">
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/35">Settings</div>
+                    <div className="text-2xl md:text-3xl font-black text-brand-accent uppercase tracking-tight">Shortcut Settings</div>
+                    <div className="text-white/55 mt-2 text-sm">Use formats like <span className="text-brand-accent">Mod+Alt+Space</span>, <span className="text-brand-accent">Shift+M</span>, <span className="text-brand-accent">D</span>.</div>
+                  </div>
+                  <button onClick={closeShortcutSettingsLocal} className="w-10 h-10 rounded-xl border border-white/15 bg-white/[0.03] text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close shortcut settings">
+                    <X size={16} />
+                  </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto px-5 py-4 md:px-6 md:py-5 custom-scrollbar-heavy">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {SHORTCUT_FIELDS.map((field) => (
+                      <label key={field.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-white/75 text-sm">
+                        <div className="text-[11px] uppercase tracking-[0.2em] text-white/50 mb-2">{field.label}</div>
+                        <input value={shortcutDraft[field.id] || ''} onChange={(e) => { setShortcutSettingsError(''); setShortcutDraft((prev) => ({ ...prev, [field.id]: e.target.value })); }} className="w-full rounded-xl border border-white/15 bg-black/30 px-3 py-2 text-white outline-none focus:border-brand-accent/50" placeholder="Mod+Alt+Space" />
+                        <div className="mt-1 text-[11px] text-white/40">Current: {toReadableShortcut(shortcuts[field.id], isMacPlatform)}</div>
+                      </label>
+                    ))}
+                  </div>
+
+                  <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                    <label className="flex items-start gap-3 text-sm text-white/75">
+                      <input type="checkbox" checked={globalMediaShortcutsEnabled} onChange={(e) => setGlobalMediaShortcutsEnabled(e.target.checked)} className="mt-0.5 w-4 h-4 accent-brand-accent" />
+                      <span>
+                        Enable global media shortcuts (play/pause, next, previous)
+                        <span className="block text-[11px] text-white/45 mt-1">This affects system-wide key capture and may conflict with OS/app controls. Restart app after change.</span>
+                      </span>
+                    </label>
+                  </div>
+
+                  {shortcutSettingsError && <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">{shortcutSettingsError}</div>}
+                </div>
+
+                <div className="flex items-center justify-between gap-3 flex-wrap border-t border-white/10 bg-black/20 px-5 py-4 md:px-6 md:py-5">
+                  <button onClick={() => { setShortcutSettingsError(''); setShortcutDraft(sanitizeShortcutMap(DEFAULT_SHORTCUTS, isMacPlatform)); }} className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all">
+                    Reset to Defaults
+                  </button>
+                  <div className="flex items-center gap-2">
+                    <button onClick={closeShortcutSettingsLocal} className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all">Cancel</button>
+                    <button onClick={saveShortcutSettingsLocal} className="px-4 py-2 rounded-xl border border-brand-accent/35 bg-brand-accent/10 text-brand-accent hover:bg-brand-accent/20 transition-all">Save</button>
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body
+      ) : null}
+    </>
+  );
+}));
+
+const HeaderSleepTimerControls = memo(forwardRef(function HeaderSleepTimerControls({
+  headerIconButtonClass,
+  sleepTimerValue,
+  stopAfterTrack,
+  sleepRemainingStr,
+  sleepDeadline,
+  handleSetSleepTimer,
+  sleepCustomMinutes,
+  setSleepCustomMinutes,
+  setStopAfterTrack,
+  sleepFadeEnabled,
+  setSleepFadeEnabled,
+  onSurfaceOpen,
+}, ref) {
+  const [isOpen, setIsOpen] = useState(false);
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onPointerDown = (event) => {
+      if (menuRef.current && !menuRef.current.contains(event.target)) setIsOpen(false);
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    return () => window.removeEventListener('pointerdown', onPointerDown);
+  }, [isOpen]);
+
+  useImperativeHandle(ref, () => ({
+    close: () => setIsOpen(false),
+    isOpen: () => isOpen,
+  }), [isOpen]);
+
+  const progress = sleepTimerValue > 0 && sleepDeadline ? 1 : 0;
+
+  return (
+    <div className="relative" ref={menuRef} data-no-maximize="true">
+      <button
+        onClick={() => {
+          const next = !isOpen;
+          if (next) onSurfaceOpen?.('sleep');
+          setIsOpen(next);
+        }}
+        className={`${(sleepTimerValue > 0 || stopAfterTrack) ? 'no-drag flex h-10 items-center gap-1.5 rounded-2xl border border-brand-accent/35 bg-brand-accent/12 px-3 text-brand-accent shadow-[0_0_14px_rgba(0,255,191,0.12)] transition-all hover:border-brand-accent/55 hover:bg-brand-accent/18' : headerIconButtonClass}`}
+        title={(sleepTimerValue > 0 || stopAfterTrack) ? `Sleep active • ${stopAfterTrack ? 'End of track' : (sleepRemainingStr || `${sleepTimerValue}m`)}` : 'Sleep Timer'}
+      >
+        <div className="relative flex items-center justify-center">
+          <Clock size={14} className={(sleepTimerValue > 0 || stopAfterTrack) ? 'animate-pulse' : ''} />
+          {(sleepTimerValue > 0) && (
+            <svg className="absolute -inset-1 -rotate-90" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="2" strokeOpacity="0.1" />
+              <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeDasharray="62.8" strokeDashoffset={62.8 * (1 - progress)} />
+            </svg>
+          )}
+        </div>
+        {(sleepTimerValue > 0 || stopAfterTrack) && <span className="ml-1 text-[11px] font-black tracking-[0.12em] tabular-nums">{stopAfterTrack ? 'END' : (sleepRemainingStr || `${sleepTimerValue}m`)}</span>}
+      </button>
+
+      {isOpen && (
+        <div className="absolute right-0 mt-2 z-[340] w-72 rounded-2xl border border-white/12 bg-[#080c10]/96 backdrop-blur-2xl p-4 shadow-[0_18px_60px_rgba(0,0,0,0.55)]">
+          <div className="mb-4 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Clock size={13} className="text-brand-accent" />
+              <span className="text-[10px] font-black uppercase tracking-[0.26em] text-white/60">Sleep Timer</span>
+            </div>
+            {sleepTimerValue > 0 && <div className="rounded-full border border-brand-accent/30 bg-brand-accent/10 px-2.5 py-1 text-[11px] font-black tabular-nums text-brand-accent">{sleepRemainingStr || `${sleepTimerValue}m`}</div>}
+          </div>
+
+          <div className="mb-3">
+            <div className="text-[8px] uppercase tracking-[0.22em] text-white/30 mb-2">Presets</div>
+            <div className="grid grid-cols-4 gap-1.5">
+              {[15, 30, 60, 120].map((m) => (
+                <button key={`sleep-${m}`} onClick={() => handleSetSleepTimer(m)} className={`rounded-xl py-2 text-[10px] font-black transition-all ${sleepTimerValue === m ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.3)]' : 'border border-white/10 bg-white/[0.04] text-white/60 hover:border-brand-accent/35 hover:text-brand-accent'}`}>
+                  {m < 60 ? `${m}m` : `${m / 60}h`}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="mb-3">
+            <div className="text-[8px] uppercase tracking-[0.22em] text-white/30 mb-2">Custom</div>
+            <div className="flex gap-2">
+              <input type="number" min="1" max="480" value={sleepCustomMinutes} onChange={(e) => setSleepCustomMinutes(e.target.value)} placeholder="Minutes..." className="no-drag flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[12px] font-black text-white outline-none placeholder:text-white/25 focus:border-brand-accent/50 focus:bg-brand-accent/[0.04] transition-all" style={{ WebkitUserSelect: 'text', userSelect: 'text' }} />
+              <button onClick={() => { const val = parseInt(sleepCustomMinutes, 10); if (val > 0 && val <= 480) { handleSetSleepTimer(val); setSleepCustomMinutes(''); } }} disabled={!sleepCustomMinutes || parseInt(sleepCustomMinutes, 10) <= 0} className="rounded-xl border border-brand-accent/25 bg-brand-accent/10 px-3 py-2 text-[10px] font-black text-brand-accent transition-all hover:bg-brand-accent hover:text-black disabled:opacity-30">
+                Set
+              </button>
+            </div>
+          </div>
+
+          <div className="mb-3 flex items-center justify-between rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2.5 transition-all hover:border-white/15">
+            <div className="flex items-center gap-2.5">
+              <Music size={14} className="text-brand-accent" />
+              <div>
+                <div className="text-[10px] font-black text-white/85">Stop after track</div>
+                <div className="text-[8px] text-white/35 mt-0.5">Pause when current song ends</div>
+              </div>
+            </div>
+            <button onClick={() => { const next = !stopAfterTrack; setStopAfterTrack(next); if (next) handleSetSleepTimer(0); }} className={`h-5 w-9 rounded-full p-1 transition-all ${stopAfterTrack ? 'bg-brand-accent' : 'bg-white/10'}`}>
+              <div className={`h-3 w-3 rounded-full bg-white shadow-sm transition-all ${stopAfterTrack ? 'translate-x-4' : 'translate-x-0'}`} />
+            </button>
+          </div>
+
+          <div className="mb-4 flex items-center justify-between rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2.5 transition-all hover:border-white/15">
+            <div className="flex items-center gap-2.5">
+              <Zap size={14} className="text-white/50" />
+              <div>
+                <div className="text-[10px] font-black text-white/85">Fade out audio</div>
+                <div className="text-[8px] text-white/35 mt-0.5">Smooth volume ramp-down</div>
+              </div>
+            </div>
+            <button onClick={() => setSleepFadeEnabled((p) => !p)} className={`relative h-5 w-9 rounded-full transition-colors ${sleepFadeEnabled ? 'bg-brand-accent' : 'bg-white/15'}`}>
+              <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${sleepFadeEnabled ? 'left-[calc(100%-18px)]' : 'left-0.5'}`} />
+            </button>
+          </div>
+
+          {sleepTimerValue > 0 && <button onClick={() => handleSetSleepTimer(0)} className="w-full rounded-xl border border-red-500/20 bg-red-500/8 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-red-400 transition-all hover:bg-red-500/18">Cancel Timer</button>}
+        </div>
+      )}
+    </div>
+  );
+}));
+
+const HeaderSearchBox = memo(function HeaderSearchBox({
+  searchQuery,
+  isSearching,
+  hasActiveSearchState,
+  isAuraMode,
+  disabled,
+  onSearch,
+  onClear,
+}) {
+  const [draft, setDraft] = useState(searchQuery || '');
+
+  const trimmedDraft = draft.trim();
+  const hasLocalSearchState = Boolean(trimmedDraft || hasActiveSearchState);
+  const isYouTubeLink = /(youtube\.com|youtu\.be)/i.test(trimmedDraft);
+
+  const submitSearch = useCallback((event) => {
+    event.preventDefault();
+    if (!trimmedDraft) return;
+    onSearch(trimmedDraft);
+  }, [onSearch, trimmedDraft]);
+
+  const clearSearch = useCallback(() => {
+    setDraft('');
+    onClear();
+  }, [onClear]);
+
+  return (
+    <form onSubmit={submitSearch} className="relative w-full group no-drag" data-no-maximize="true">
+      <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-brand-text-dim group-focus-within:text-brand-accent z-10 transition-colors" size={18} />
+      <input
+        type="text"
+        placeholder="Search tracks, artists, or paste a YouTube link"
+        className={`w-full rounded-full pl-12 pr-28 h-11 text-sm md:text-[14px] outline-none transition-all text-ellipsis overflow-hidden whitespace-nowrap ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/[0.04] border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'} disabled:opacity-30 disabled:cursor-not-allowed`}
+        value={draft}
+        disabled={disabled}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && hasLocalSearchState) {
+            event.preventDefault();
+            clearSearch();
+          }
+        }}
+      />
+      <div className="absolute right-3 top-1/2 z-10 flex -translate-y-1/2 items-center gap-2">
+        {isYouTubeLink && (
+          <span className="rounded-full border border-brand-accent/22 bg-brand-accent/10 px-2 py-1 text-[8px] font-black uppercase tracking-[0.18em] text-brand-accent/78">
+            Link
+          </span>
+        )}
+        {isSearching ? (
+          <Loader2 className="animate-spin text-brand-accent" size={16} />
+        ) : (
+          <button
+            type="submit"
+            className="flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-white/42 transition-all hover:border-brand-accent/35 hover:bg-brand-accent/[0.08] hover:text-brand-accent"
+            title="Run search"
+          >
+            <Search size={12} />
+          </button>
+        )}
+        {hasLocalSearchState && (
+          <button
+            type="button"
+            onClick={clearSearch}
+            className="flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-white/38 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
+            title="Clear search"
+          >
+            <X size={12} />
+          </button>
+        )}
+      </div>
+    </form>
+  );
+});
+
+const PlaybackProgressIsland = memo(function PlaybackProgressIsland({
+  durationMs,
+  getPositionMs,
+  onSeek,
+  accent,
+  glow,
+  barClassName = 'h-1.5 w-full cursor-pointer overflow-hidden rounded-full bg-white/10',
+  fillClassName = 'h-full rounded-full',
+  timeRowClassName = 'flex items-center justify-between gap-3 text-[10px] font-mono text-white/42',
+  durationLabel,
+  middleContent = null,
+}) {
+  const fillRef = useRef(null);
+  const [timeLabel, setTimeLabel] = useState('0:00');
+  const safeDurationMs = Math.max(0, Number(durationMs) || 0);
+
+  useEffect(() => {
+    let raf = 0;
+    let lastLabelAt = 0;
+    let lastLabel = '';
+
+    const update = (now) => {
+      const liveMs = Math.max(0, Math.floor(Number(getPositionMs?.() || 0)));
+      const pct = safeDurationMs > 0 ? clamp01(liveMs / safeDurationMs) : 0;
+      if (fillRef.current) {
+        fillRef.current.style.transform = `scaleX(${pct})`;
+      }
+
+      if (now - lastLabelAt > 250) {
+        const nextLabel = formatTime(liveMs);
+        if (nextLabel !== lastLabel) {
+          lastLabel = nextLabel;
+          setTimeLabel(nextLabel);
+        }
+        lastLabelAt = now;
+      }
+
+      raf = requestAnimationFrame(update);
+    };
+
+    raf = requestAnimationFrame(update);
+    return () => cancelAnimationFrame(raf);
+  }, [getPositionMs, safeDurationMs]);
+
+  const seekFromPointer = useCallback((event) => {
+    if (safeDurationMs <= 0) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const pos = clamp01((event.clientX - rect.left) / Math.max(rect.width, 1));
+    onSeek(pos * safeDurationMs);
+  }, [onSeek, safeDurationMs]);
+
+  return (
+    <div className="space-y-2">
+      <div className={barClassName} onClick={seekFromPointer}>
+        <div
+          ref={fillRef}
+          className={fillClassName}
+          style={{
+            background: accent,
+            boxShadow: glow ? `0 0 14px ${glow}` : undefined,
+            transform: 'scaleX(0)',
+            transformOrigin: 'left center',
+            willChange: 'transform',
+          }}
+        />
+      </div>
+      <div className={timeRowClassName}>
+        <span>{timeLabel}</span>
+        {middleContent}
+        <span>{durationLabel || formatTime(safeDurationMs)}</span>
+      </div>
+    </div>
+  );
+});
+
+const PlayerModePill = memo(function PlayerModePill({ videoMode, switchVideoMode, variant = 'main' }) {
+  const isCompact = variant === 'dual';
+  const activeClass = 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.34)]';
+  const inactiveClass = isCompact ? 'text-white/45 hover:text-white' : 'text-white/40 hover:text-white';
+  const buttonClass = isCompact
+    ? 'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] transition-all'
+    : 'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all';
+  const wrapClass = isCompact
+    ? 'flex items-center rounded-full border border-white/10 bg-white/[0.04] p-1'
+    : 'flex items-center bg-white/[0.04] border border-white/10 rounded-2xl p-1 gap-1';
+  const iconSize = isCompact ? 10 : 11;
+
+  return (
+    <div className={wrapClass}>
+      <button onClick={() => switchVideoMode(null)} className={`${buttonClass} ${videoMode === null ? activeClass : inactiveClass}`}>
+        <Music size={iconSize} /> Audio
+      </button>
+      <button onClick={() => switchVideoMode('dual')} className={`${buttonClass} ${videoMode === 'dual' ? activeClass : inactiveClass}`}>
+        <Columns2 size={iconSize} /> Dual
+      </button>
+      <button onClick={() => switchVideoMode('cinema')} className={`${buttonClass} ${videoMode === 'cinema' ? activeClass : inactiveClass}`}>
+        <Clapperboard size={iconSize} /> Cinema
+      </button>
+    </div>
+  );
+});
+
+const PlayerTransportControls = memo(function PlayerTransportControls({
+  handleControl,
+  isPlaying,
+  isAuraMode,
+  playButtonRef,
+  beatRingsRef,
+  trackControlAccent,
+  trackControlGlow,
+}) {
+  return (
+    <div className="flex items-center justify-center w-full mt-2 relative">
+      <div className={`flex items-center backdrop-blur-3xl border p-2 rounded-3xl gap-4 relative z-10 ${isAuraMode ? 'bg-white/[0.04] border-white/[0.16] shadow-[0_12px_40px_rgba(0,0,0,0.22)]' : 'bg-white/5 border-white/5'}`}>
+        <button onClick={() => handleControl('previous')} className="p-3 hover:text-brand-accent transition-colors active:scale-90"><Rewind size={22} fill="currentColor" /></button>
+        <button
+          ref={playButtonRef}
+          onClick={() => handleControl(isPlaying ? 'pause' : 'resume')}
+          className="w-16 h-16 text-black rounded-2xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all relative overflow-hidden"
+          style={{ background: trackControlAccent, boxShadow: `0 0 32px ${trackControlGlow}` }}
+        >
+          {isAuraMode && <div ref={beatRingsRef} className="absolute inset-0" />}
+          {isPlaying ? <Pause size={28} fill="currentColor" /> : <Play size={28} fill="currentColor" className="ml-1" />}
+        </button>
+        <button onClick={() => handleControl('skip')} className="p-3 hover:text-brand-accent transition-colors active:scale-90"><FastForward size={22} fill="currentColor" /></button>
+      </div>
+    </div>
+  );
+});
+
+const PlayerActionButtons = memo(function PlayerActionButtons({
+  canDownloadCurrentTrack,
+  canOpenCurrentSource,
+  currentTrack,
+  currentTrackSourceUrl,
+  cycleRepeatMode,
+  handleControl,
+  handleDownloadCurrentTrack,
+  isDownloadingTrack,
+  isFocusedMode,
+  openLibraryOverlay,
+  openTrackInspect,
+  queueLength,
+  repeatMode,
+  repeatModeBadge,
+  repeatModeLabel,
+  setIsFocusedMode,
+  setIsPlayerOverlayOpen,
+}) {
+  return (
+    <div className="flex items-center gap-1 no-drag ml-auto">
+      <button disabled={queueLength === 0} onClick={() => handleControl('clear')} className="p-2 text-white/20 hover:text-red-500 transition-colors disabled:opacity-25 disabled:cursor-not-allowed" title="Clear Queue"><Trash2 size={14} /></button>
+      <button onClick={cycleRepeatMode} className={`relative p-2 transition-colors ${repeatMode === 'off' ? 'text-white/20 hover:text-brand-accent' : 'text-brand-accent'}`} title={repeatModeLabel}>
+        <Repeat size={14} />
+        {repeatModeBadge && <span className="absolute right-0 top-0 text-[8px] font-black">{repeatModeBadge}</span>}
+      </button>
+      <button onClick={() => {
+        if (!canOpenCurrentSource) return;
+        window.aether?.openExternal(currentTrackSourceUrl);
+      }} disabled={!canOpenCurrentSource} className="p-2 text-white/20 hover:text-brand-accent transition-colors disabled:opacity-25 disabled:cursor-not-allowed" title="Open Source"><ExternalLink size={14} /></button>
+      <button onClick={handleDownloadCurrentTrack} disabled={!canDownloadCurrentTrack || isDownloadingTrack} className="p-2 text-white/20 hover:text-brand-accent transition-colors disabled:opacity-25 disabled:cursor-not-allowed" title={isDownloadingTrack ? 'Exporting...' : 'Export Audio to File'}><Download size={14} className={isDownloadingTrack ? 'animate-pulse' : ''} /></button>
+      <button onClick={() => openLibraryOverlay({ type: 'track', items: [currentTrack] })} className="p-2 text-white/20 hover:text-brand-accent transition-colors" title="Save to Library Overlay"><Plus size={14} /></button>
+      <button onClick={() => openTrackInspect(currentTrack, 'now-playing')} className="p-2 text-white/20 hover:text-brand-accent transition-colors" title="Inspect Track"><Eye size={14} /></button>
+      <div className="w-px h-3 bg-white/10 mx-1" />
+      <button onClick={() => setIsPlayerOverlayOpen(true)} className="p-2 text-white/40 hover:text-brand-accent transition-colors" title="Open Player Overlay"><ListMusic size={16} /></button>
+      <button onClick={() => setIsFocusedMode(!isFocusedMode)} className={`p-2 transition-colors ${isFocusedMode ? 'text-brand-accent' : 'text-white/40 hover:text-brand-accent'}`} title="Toggle Focus Mode"><Target size={16} /></button>
+    </div>
+  );
+});
+
+const LyricLineIsland = memo(function LyricLineIsland({
+  bucket,
+  index,
+  isActive,
+  isDualWorkspaceMode,
+  line,
+  onSeek,
+  setActiveRef,
+}) {
+  let lyricLineClass = '';
+  if (isDualWorkspaceMode) {
+    lyricLineClass = 'max-w-[min(92%,760px)] px-3 md:px-5 text-2xl sm:text-3xl lg:text-5xl font-black leading-tight w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] transition-[transform,opacity,filter,color,text-shadow] duration-450 ease-[cubic-bezier(0.22,1,0.36,1)] transform-gpu origin-center will-change-[transform,opacity,filter]';
+    if (bucket === 'active') lyricLineClass += ' text-brand-accent scale-[1.06] opacity-100 drop-shadow-[0_0_24px_rgba(0,255,191,0.34)]';
+    else if (bucket === 'near') lyricLineClass += ' text-white/52 opacity-68 scale-[1.02]';
+    else if (bucket === 'mid') lyricLineClass += ' text-white/30 opacity-34 scale-100 blur-[0.45px]';
+    else lyricLineClass += ' text-white/18 opacity-18 scale-[0.985] blur-[0.85px]';
+  } else {
+    lyricLineClass = 'text-base sm:text-lg lg:text-xl font-bold transition-[transform,opacity,filter,color,text-shadow] duration-380 ease-[cubic-bezier(0.22,1,0.36,1)] transform-gpu leading-snug py-1.5 relative will-change-[transform,opacity,filter]';
+    if (bucket === 'active') lyricLineClass += ' text-brand-accent scale-[1.035] opacity-100 drop-shadow-[0_0_12px_rgba(0,255,191,0.34)]';
+    else if (bucket === 'near') lyricLineClass += ' text-white/78 opacity-92';
+    else if (bucket === 'mid') lyricLineClass += ' text-white/48 opacity-68 blur-[0.25px]';
+    else lyricLineClass += ' text-white/30 opacity-48 blur-[0.7px]';
+  }
+
+  const delay = bucket === 'active' ? 0 : bucket === 'near' ? 18 : bucket === 'mid' ? 36 : 54;
+  return (
+    <div
+      ref={isActive ? setActiveRef : null}
+      className={`${lyricLineClass} cursor-pointer hover:!opacity-90 hover:!text-white/75 hover:!scale-[1.015] hover:-translate-y-[1px] transition-all`}
+      onClick={() => onSeek(line.time)}
+      style={isDualWorkspaceMode ? { textWrap: 'balance', transitionDelay: `${delay}ms` } : { transitionDelay: `${Math.min(delay, 42)}ms` }}
+    >
+      {line.text}
+    </div>
+  );
+}, (prev, next) => (
+  prev.bucket === next.bucket
+  && prev.index === next.index
+  && prev.isActive === next.isActive
+  && prev.isDualWorkspaceMode === next.isDualWorkspaceMode
+  && prev.line === next.line
+  && prev.onSeek === next.onSeek
+  && prev.setActiveRef === next.setActiveRef
+));
+
+const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
+  getProxyUrl,
+  currentTrack,
+  isPlaying,
+  getActivePlaybackPositionMs,
+}, ref) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [soundCapsuleData, setSoundCapsuleData] = useState(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState(0);
+  const [ledgerError, setLedgerError] = useState('');
+  const [liveTick, setLiveTick] = useState(0);
+  const sectionStyle = { contentVisibility: 'auto', containIntrinsicSize: '220px', contain: 'layout paint' };
+
+  const loadLedger = useCallback(async () => {
+    try {
+      setLedgerError('');
+      let data = null;
+      if (window.aether?.store?.get) {
+        data = await window.aether.store.get(PLAYBACK_LEDGER_STORAGE_KEY);
+      } else if (typeof localStorage !== 'undefined') {
+        const raw = localStorage.getItem(PLAYBACK_LEDGER_STORAGE_KEY);
+        data = raw ? JSON.parse(raw) : null;
+      }
+      setSoundCapsuleData(normalizePlaybackLedgerData(data));
+      setLastUpdatedAt(Date.now());
+    } catch (error) {
+      setLedgerError(error?.message || 'Ledger refresh failed');
+      setSoundCapsuleData(normalizePlaybackLedgerData(null));
+    }
+  }, []);
+
+  const soundLedgerView = useMemo(() => {
+    const data = normalizePlaybackLedgerData(soundCapsuleData);
+    if (!data) return null;
+    const totalTracksPlayed = data.totalPlays || Object.values(data.tracks || {}).reduce((total, entry) => total + Math.max(0, Math.floor(Number(entry?.count) || 0)), 0);
+    const totalMs = Math.max(0, Math.floor(Number(data.totalMs) || (Number(data.totalMinutes) || 0) * 60000));
+    const todayKey = getLocalDateKey(new Date());
+    const recentWeek = Array.from({ length: 7 }, (_, index) => {
+      const date = new Date();
+      date.setDate(date.getDate() - (6 - index));
+      const key = getLocalDateKey(date);
+      return {
+        key,
+        label: date.toLocaleDateString(undefined, { weekday: 'short' }).slice(0, 3).toUpperCase(),
+        minutesMs: Math.max(0, Math.floor(Number(data.dailyMinutes?.[key]) || 0)),
+        plays: Math.max(0, Math.floor(Number(data.dailyPlays?.[key]) || 0)),
+      };
+    });
+    const weekMaxMs = Math.max(1, ...recentWeek.map((entry) => entry.minutesMs));
+    const peakHours = Array.from({ length: 24 }, (_, hour) => ({
+      hour,
+      label: `${String(hour).padStart(2, '0')}:00`,
+      count: Math.max(0, Number(data.hourlyTrends?.[hour] || 0)),
+    }));
+    const peakHourMax = Math.max(1, ...peakHours.map((entry) => entry.count));
+    const topWindow = [...peakHours].sort((a, b) => b.count - a.count).filter((entry) => entry.count > 0).slice(0, 3);
+    const topTracks = Object.entries(data.tracks || {})
+      .sort((a, b) => {
+        const countDiff = (b[1]?.count || 0) - (a[1]?.count || 0);
+        if (countDiff !== 0) return countDiff;
+        return (b[1]?.totalMs || 0) - (a[1]?.totalMs || 0);
+      })
+      .slice(0, 6);
+    const topArtists = Object.entries(data.artists || {})
+      .sort((a, b) => {
+        const countDiff = (b[1]?.count || 0) - (a[1]?.count || 0);
+        if (countDiff !== 0) return countDiff;
+        return (b[1]?.totalMs || 0) - (a[1]?.totalMs || 0);
+      })
+      .slice(0, 6);
+    const genreMix = Object.entries(data.genres || {}).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    const recentSessions = Array.isArray(data.recentSessions) ? data.recentSessions.slice(0, 8) : [];
+    const completedSessions = recentSessions.filter((session) => session.completed).length;
+    const totalSessions = Math.max(0, Math.floor(Number(data.totalSessions) || totalTracksPlayed));
+    const todayMs = Math.max(0, Math.floor(Number(data.dailyMinutes?.[todayKey]) || 0));
+    const todayPlays = Math.max(0, Math.floor(Number(data.dailyPlays?.[todayKey]) || 0));
+    const averageSessionMs = totalSessions > 0 ? Math.floor(totalMs / totalSessions) : 0;
+    const completionRate = recentSessions.length > 0 ? Math.round((completedSessions / recentSessions.length) * 100) : 0;
+    const activeDays = recentWeek.filter((entry) => entry.minutesMs > 0 || entry.plays > 0).length;
+    let streakDays = 0;
+    for (let i = recentWeek.length - 1; i >= 0; i -= 1) {
+      if (recentWeek[i].minutesMs <= 0 && recentWeek[i].plays <= 0) break;
+      streakDays += 1;
+    }
+
+    return {
+      ...data,
+      recentWeek,
+      weekMaxMs,
+      peakHours,
+      peakHourMax,
+      topWindow,
+      topTracks,
+      topArtists,
+      genreMix,
+      recentSessions,
+      totalMs,
+      totalSessions,
+      activeDays,
+      totalTracksPlayed,
+      todayMs,
+      todayPlays,
+      averageSessionMs,
+      completionRate,
+      streakDays,
+    };
+  }, [soundCapsuleData]);
+
+  const open = useCallback(() => {
+    setIsOpen(true);
+    loadLedger();
+  }, [loadLedger]);
+
+  const close = useCallback(() => setIsOpen(false), []);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const refreshInterval = window.setInterval(loadLedger, 5000);
+    const liveInterval = window.setInterval(() => setLiveTick((tick) => tick + 1), 2500);
+    return () => {
+      window.clearInterval(refreshInterval);
+      window.clearInterval(liveInterval);
+    };
+  }, [isOpen, loadLedger]);
+
+  useImperativeHandle(ref, () => ({
+    open,
+    close,
+    isOpen: () => isOpen,
+  }), [close, isOpen, open]);
+
+  if (!isOpen || !soundLedgerView) return null;
+
+  const livePositionMs = currentTrack && isPlaying ? Math.max(0, Math.floor(Number(getActivePlaybackPositionMs?.() || liveTick * 0) || 0)) : 0;
+  const liveDurationMs = Math.max(0, Math.floor(Number(currentTrack?.totalDurationMs || currentTrack?.duration || 0)));
+  const liveProgressPct = liveDurationMs > 0 ? clamp01(livePositionMs / liveDurationMs) * 100 : 0;
+  const updatedLabel = lastUpdatedAt ? new Date(lastUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'fresh';
+  const statCards = [
+    ['Listening', formatPlaybackDuration(soundLedgerView.totalMs), `${soundLedgerView.activeDays} active days`],
+    ['Today', formatPlaybackDuration(soundLedgerView.todayMs), `${soundLedgerView.todayPlays} plays`],
+    ['Plays', String(soundLedgerView.totalTracksPlayed), `${soundLedgerView.totalSessions} sessions`],
+    ['Average', formatPlaybackDuration(soundLedgerView.averageSessionMs), `${soundLedgerView.completionRate}% recent completion`],
+  ];
+
+  return createPortal(
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-[350] flex items-center justify-center bg-black/[0.82] p-3 md:p-5"
+      >
+        <div className="absolute inset-0 bg-black/80" onClick={close} />
+        <motion.div
+          initial={{ y: 18, scale: 0.985, opacity: 0 }}
+          animate={{ y: 0, scale: 1, opacity: 1 }}
+          exit={{ y: 12, scale: 0.985, opacity: 0 }}
+          className="relative z-10 flex h-[min(92vh,940px)] w-full max-w-[1220px] flex-col overflow-hidden rounded-[1.8rem] border border-brand-accent/20 bg-[#07090c] shadow-[0_18px_70px_rgba(0,0,0,0.5)]"
+        >
+          <div className="flex items-center justify-between gap-4 border-b border-white/10 bg-[#090d11] px-5 py-4 md:px-6">
+            <div className="flex min-w-0 items-center gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/10">
+                <Signal size={20} className="text-brand-accent" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-[9px] font-black uppercase tracking-[0.3em] text-white/34">Playback Intelligence</div>
+                <div className="truncate text-2xl font-black uppercase tracking-tight text-brand-accent">Signal Ledger</div>
+                <div className="mt-1 text-[10px] font-black uppercase tracking-[0.18em] text-white/38">
+                  Live refresh - {updatedLabel}{ledgerError ? ` - ${ledgerError}` : ''}
+                </div>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button onClick={loadLedger} className="flex h-10 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/55 transition-colors hover:border-brand-accent/35 hover:text-brand-accent" title="Refresh ledger">
+                <RefreshCw size={13} /> Sync
+              </button>
+              <button onClick={close} className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/12 bg-white/[0.04] text-white/45 transition-colors hover:border-red-500/40 hover:text-red-400" title="Close">
+                <X size={17} />
+              </button>
+            </div>
+          </div>
+
+          <div className="custom-scrollbar-heavy flex-1 overflow-y-auto overscroll-contain px-5 py-5 md:px-6" style={{ scrollBehavior: 'auto' }}>
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+              <section className="rounded-[1.5rem] border border-brand-accent/22 bg-brand-accent/[0.075] p-5 xl:col-span-5" style={sectionStyle}>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Live Now</div>
+                    <div className="mt-2 truncate text-xl font-black text-white">{currentTrack?.title || 'No active track'}</div>
+                    <div className="mt-1 truncate text-[11px] uppercase tracking-[0.18em] text-white/42">{currentTrack?.author || (isPlaying ? 'Resolving signal' : 'Playback paused')}</div>
+                  </div>
+                  {currentTrack?.thumbnail ? (
+                    <img src={getProxyUrl(currentTrack.thumbnail)} loading="lazy" decoding="async" className="h-16 w-16 shrink-0 rounded-2xl border border-white/10 object-cover" alt="" />
+                  ) : (
+                    <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-black/25 text-brand-accent"><Music size={20} /></div>
+                  )}
+                </div>
+                <div className="mt-5 h-2 overflow-hidden rounded-full bg-black/35">
+                  <div className="h-full rounded-full bg-brand-accent" style={{ width: `${liveProgressPct}%` }} />
+                </div>
+                <div className="mt-3 flex items-center justify-between text-[10px] font-mono text-white/40">
+                  <span>{formatTime(livePositionMs)}</span>
+                  <span>{liveDurationMs > 0 ? formatTime(liveDurationMs) : isPlaying ? 'live' : '--:--'}</span>
+                </div>
+              </section>
+
+              <section className="grid grid-cols-2 gap-3 xl:col-span-7 md:grid-cols-4" style={sectionStyle}>
+                {statCards.map(([label, value, detail]) => (
+                  <div key={label} className="rounded-[1.35rem] border border-white/10 bg-white/[0.035] p-4">
+                    <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/34">{label}</div>
+                    <div className="mt-3 text-2xl font-black text-white">{value}</div>
+                    <div className="mt-2 text-[10px] uppercase tracking-[0.16em] text-white/34">{detail}</div>
+                  </div>
+                ))}
+              </section>
+
+              <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.035] p-5 xl:col-span-5" style={sectionStyle}>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Recent Week</div>
+                    <div className="mt-1 text-[11px] uppercase tracking-[0.14em] text-white/34">{soundLedgerView.streakDays} day streak</div>
+                  </div>
+                  <div className="text-[10px] uppercase tracking-[0.16em] text-white/30">{Math.round(soundLedgerView.totalMs / 60000)} min total</div>
+                </div>
+                <div className="mt-5 grid grid-cols-7 gap-2">
+                  {soundLedgerView.recentWeek.map((entry) => (
+                    <div key={entry.key} className="performance-list-item flex flex-col items-center gap-2 rounded-2xl border border-white/8 bg-black/20 px-2 py-3">
+                      <div className="flex h-24 w-full items-end justify-center">
+                        <div className="w-full max-w-[24px] rounded-full bg-gradient-to-t from-brand-accent via-brand-accent/80 to-white" style={{ height: `${entry.minutesMs > 0 ? 16 + ((entry.minutesMs / soundLedgerView.weekMaxMs) * 84) : 10}%` }} />
+                      </div>
+                      <div className="text-[9px] font-black uppercase tracking-[0.16em] text-white/48">{entry.label}</div>
+                      <div className="text-[9px] font-mono text-brand-accent">{Math.round(entry.minutesMs / 60000)}m</div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.035] p-5 xl:col-span-7" style={sectionStyle}>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Hourly Pulse</div>
+                    <div className="mt-1 text-[11px] uppercase tracking-[0.14em] text-white/34">Play starts by hour</div>
+                  </div>
+                  <div className="flex flex-wrap justify-end gap-1.5">
+                    {soundLedgerView.topWindow.length > 0 ? soundLedgerView.topWindow.map((entry) => (
+                      <span key={entry.hour} className="rounded-full border border-brand-accent/18 bg-brand-accent/10 px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.16em] text-brand-accent">{entry.label} - {entry.count}</span>
+                    )) : <span className="text-[10px] uppercase tracking-[0.18em] text-white/28">Collecting signal</span>}
+                  </div>
+                </div>
+                <div className="mt-5 grid grid-cols-12 gap-1.5 md:grid-cols-[repeat(24,minmax(0,1fr))]">
+                  {soundLedgerView.peakHours.map((entry) => (
+                    <div key={entry.hour} className="flex min-w-0 flex-col items-center gap-2">
+                      <div className="flex h-24 w-full items-end justify-center">
+                        <div className={`w-full rounded-full ${entry.count > 0 ? 'bg-brand-accent/85' : 'bg-white/[0.06]'}`} style={{ height: `${entry.count > 0 ? 12 + ((entry.count / soundLedgerView.peakHourMax) * 88) : 10}%` }} />
+                      </div>
+                      <div className="text-[8px] font-mono text-white/26">{entry.hour % 3 === 0 ? String(entry.hour).padStart(2, '0') : ''}</div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.035] p-5 xl:col-span-8" style={sectionStyle}>
+                <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Recent Sessions</div>
+                <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {soundLedgerView.recentSessions.length > 0 ? soundLedgerView.recentSessions.map((session) => (
+                    <div key={session.id} className="performance-list-item flex min-w-0 items-center gap-3 rounded-[1.25rem] border border-white/10 bg-black/20 p-3">
+                      <img src={getProxyUrl(session.thumbnail)} loading="lazy" decoding="async" className="h-14 w-14 rounded-xl bg-white/[0.03] object-cover" alt="" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent">{formatPlaybackDuration(session.playedMs)} - {session.completed ? 'completed' : session.reason}</div>
+                        <div className="mt-1 truncate text-sm font-black uppercase tracking-tight text-white">{session.title}</div>
+                        <div className="mt-1 truncate text-[10px] uppercase tracking-[0.16em] text-white/35">{session.author}</div>
+                      </div>
+                    </div>
+                  )) : <div className="rounded-[1.25rem] border border-dashed border-white/10 bg-black/20 p-5 text-[11px] uppercase tracking-[0.18em] text-white/28 md:col-span-2">Play for at least 15 seconds and the live ledger will start filling in.</div>}
+                </div>
+              </section>
+
+              <section className="flex flex-col gap-4 xl:col-span-4" style={sectionStyle}>
+                {[
+                  ['Top Artists', soundLedgerView.topArtists.map(([name, entry], idx) => ({ key: name, title: name, meta: `#${idx + 1} - ${entry.count} plays`, detail: formatPlaybackDuration(entry.totalMs) }))],
+                  ['Most Replayed', soundLedgerView.topTracks.map(([id, entry], idx) => ({ key: id, title: entry.title, meta: `#${idx + 1} - ${entry.count} plays`, detail: entry.author, thumbnail: entry.thumbnail }))],
+                ].map(([title, items]) => (
+                  <div key={title} className="rounded-[1.5rem] border border-white/10 bg-white/[0.035] p-5">
+                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">{title}</div>
+                    <div className="mt-4 flex flex-col gap-2.5">
+                      {items.length > 0 ? items.map((entry) => (
+                        <div key={entry.key} className="performance-list-item flex items-center gap-3 rounded-[1.15rem] border border-white/10 bg-black/20 p-3">
+                          {entry.thumbnail && <img src={getProxyUrl(entry.thumbnail)} loading="lazy" decoding="async" className="h-11 w-11 rounded-xl bg-white/[0.03] object-cover" alt="" />}
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent">{entry.meta}</div>
+                            <div className="mt-1 truncate text-sm font-black uppercase tracking-tight text-white">{entry.title}</div>
+                            <div className="mt-1 truncate text-[10px] uppercase tracking-[0.16em] text-white/35">{entry.detail}</div>
+                          </div>
+                        </div>
+                      )) : <div className="rounded-[1.15rem] border border-dashed border-white/10 bg-black/20 p-4 text-[10px] uppercase tracking-[0.18em] text-white/28">Signals appear after a few qualified sessions.</div>}
+                    </div>
+                  </div>
+                ))}
+                <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.035] p-5">
+                  <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Genre Pulse</div>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {soundLedgerView.genreMix.length > 0 ? soundLedgerView.genreMix.map(([genre, count]) => (
+                      <span key={genre} className="rounded-full border border-brand-accent/18 bg-brand-accent/10 px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent">{genre} - {count}</span>
+                    )) : <span className="text-[10px] uppercase tracking-[0.18em] text-white/28">No pattern clusters yet</span>}
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>,
+    document.body
+  );
+}));
+
+const FeedbackIsland = memo(forwardRef(function FeedbackIsland({
+  platform,
+  isStandalone,
+  currentTrack,
+  getActivePlaybackPositionMs,
+  videoMode,
+  visualizerMode,
+  auraPreset,
+  queueLength,
+  lyricsCount,
+  appendRecentEvent,
+  sharedModalCloseButtonClass,
+}, ref) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [feedbackDraft, setFeedbackDraft] = useState(DEFAULT_FEEDBACK_DRAFT);
+  const [feedbackStatus, setFeedbackStatus] = useState('');
+  const [isFeedbackSending, setIsFeedbackSending] = useState(false);
+
+  const close = useCallback(() => {
+    if (!isFeedbackSending) setIsOpen(false);
+  }, [isFeedbackSending]);
+
+  useImperativeHandle(ref, () => ({
+    open: () => {
+      setFeedbackStatus('');
+      setIsOpen(true);
+    },
+    close,
+    isOpen: () => isOpen,
+  }), [close, isOpen]);
+
+  const updateFeedbackDraft = useCallback((patch) => {
+    setFeedbackDraft((prev) => ({ ...prev, ...patch }));
+    setFeedbackStatus('');
+  }, []);
+
+  const submitFeedback = useCallback(async () => {
+    const summary = feedbackDraft.summary.trim();
+    const details = feedbackDraft.details.trim();
+    if (!summary || !details) {
+      setFeedbackStatus('Add a short title and a little detail first.');
+      return;
+    }
+
+    const trackSnapshot = currentTrack ? {
+      title: currentTrack.title || '',
+      author: currentTrack.author || '',
+      url: currentTrack.actualUrl || currentTrack.url || '',
+      youtubeId: currentTrack.youtubeId || '',
+      positionMs: getActivePlaybackPositionMs(),
+    } : null;
+
+    const payload = {
+      id: `feedback-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type: feedbackDraft.type,
+      summary,
+      details,
+      contact: feedbackDraft.contact.trim(),
+      buildVersion: BUILD_VERSION,
+      uxVersion: UX_VERSION,
+      platform: platform || 'web',
+      isStandalone,
+      currentTrack: trackSnapshot,
+      diagnostics: { playbackMode: videoMode || 'audio', visualizerMode, auraPreset, queueLength, lyricsCount },
+      createdAt: new Date().toISOString(),
+    };
+
+    setIsFeedbackSending(true);
+    setFeedbackStatus('Preparing feedback...');
+
+    try {
+      let saved = false;
+      if (isStandalone && window.aether?.store?.get && window.aether?.store?.set) {
+        const existing = await window.aether.store.get(FEEDBACK_STORAGE_KEY);
+        const list = Array.isArray(existing) ? existing : [];
+        await window.aether.store.set(FEEDBACK_STORAGE_KEY, [payload, ...list].slice(0, 50));
+        saved = true;
+      } else {
+        const raw = localStorage.getItem(FEEDBACK_STORAGE_KEY);
+        const list = raw ? JSON.parse(raw) : [];
+        localStorage.setItem(FEEDBACK_STORAGE_KEY, JSON.stringify([payload, ...(Array.isArray(list) ? list : [])].slice(0, 50)));
+        saved = true;
+      }
+
+      const title = encodeURIComponent(`[${payload.type}] ${summary}`);
+      const body = encodeURIComponent([
+        details,
+        '',
+        '---',
+        `Build: ${BUILD_VERSION}`,
+        `UX: ${UX_VERSION}`,
+        `Platform: ${payload.platform}`,
+        trackSnapshot ? `Track: ${trackSnapshot.title} - ${trackSnapshot.author}` : 'Track: none',
+      ].join('\n'));
+      const issueUrl = `${FEEDBACK_ISSUE_URL}?title=${title}&body=${body}`;
+      if (isStandalone && window.aether?.openExternal) {
+        await window.aether.openExternal(issueUrl);
+      } else {
+        window.open(issueUrl, '_blank', 'noopener,noreferrer');
+      }
+
+      setFeedbackStatus(saved ? 'Saved locally and opened GitHub issue draft.' : 'Opened GitHub issue draft.');
+      appendRecentEvent('feedback', summary, { tone: 'success' });
+      setFeedbackDraft(DEFAULT_FEEDBACK_DRAFT);
+    } catch (error) {
+      console.warn('[Aether/Feedback] Failed to submit feedback', error);
+      setFeedbackStatus(error?.message || 'Feedback failed. Copy details and try again.');
+      appendRecentEvent('feedback_failed', error?.message || 'Feedback failed', { tone: 'error' });
+    } finally {
+      setIsFeedbackSending(false);
+    }
+  }, [appendRecentEvent, auraPreset, currentTrack, feedbackDraft, getActivePlaybackPositionMs, isStandalone, lyricsCount, platform, queueLength, videoMode, visualizerMode]);
+
+  if (!isOpen) return null;
+
+  return createPortal(
+    <AnimatePresence>
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[350] flex items-center justify-center bg-black/82 p-4 backdrop-blur-xl">
+        <div className="absolute inset-0" onClick={close} />
+        <motion.div initial={{ scale: 0.96, y: 18 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.96, y: 18 }} className="relative z-10 w-full max-w-2xl overflow-hidden rounded-[2rem] border border-brand-accent/20 bg-[#080c10]/96 shadow-[0_28px_100px_rgba(0,0,0,0.55)]">
+          <div className="flex items-start justify-between gap-4 border-b border-white/10 bg-black/22 p-5">
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/10 text-brand-accent"><MessageSquare size={18} /></div>
+              <div>
+                <div className="text-[10px] font-black uppercase tracking-[0.3em] text-brand-accent">Send Feedback</div>
+                <div className="mt-1 text-[11px] uppercase tracking-[0.18em] text-white/40">Issues open on GitHub unless a feedback endpoint is configured.</div>
+              </div>
+            </div>
+            <button onClick={close} disabled={isFeedbackSending} className={sharedModalCloseButtonClass} title="Close"><X size={16} /></button>
+          </div>
+          <div className="space-y-4 p-5">
+            <div className="grid grid-cols-3 gap-2">
+              {['Problem', 'Improvement', 'Idea'].map((type) => (
+                <button key={type} onClick={() => updateFeedbackDraft({ type })} className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${feedbackDraft.type === type ? 'border-brand-accent/40 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}>{type}</button>
+              ))}
+            </div>
+            <input value={feedbackDraft.summary} onChange={(e) => updateFeedbackDraft({ summary: e.target.value })} placeholder="Short title" className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-white outline-none transition-all placeholder:text-white/24 focus:border-brand-accent/45" />
+            <textarea value={feedbackDraft.details} onChange={(e) => updateFeedbackDraft({ details: e.target.value })} placeholder="What happened, or what should be better?" className="min-h-[150px] w-full resize-none rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm leading-6 text-white outline-none transition-all placeholder:text-white/24 focus:border-brand-accent/45" />
+            <input value={feedbackDraft.contact} onChange={(e) => updateFeedbackDraft({ contact: e.target.value })} placeholder="Contact handle/email optional" className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white outline-none transition-all placeholder:text-white/24 focus:border-brand-accent/45" />
+            {feedbackStatus && <div className="rounded-2xl border border-white/8 bg-black/24 px-4 py-3 text-[11px] font-semibold leading-5 text-white/58">{feedbackStatus}</div>}
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-[10px] uppercase tracking-[0.2em] text-white/30">Build {BUILD_VERSION} // {platform || 'web'}</div>
+              <button onClick={submitFeedback} disabled={isFeedbackSending || !feedbackDraft.summary.trim() || !feedbackDraft.details.trim()} className="flex items-center gap-2 rounded-2xl bg-brand-accent px-5 py-3 text-[11px] font-black uppercase tracking-[0.2em] text-black transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-45 disabled:hover:scale-100">
+                {isFeedbackSending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+                Send
+              </button>
+            </div>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>,
+    document.body
+  );
+}));
+
+const GestureLabIsland = memo(forwardRef(function GestureLabIsland({
+  isGestureControlEnabled,
+  setIsGestureControlEnabled,
+  isFaceControlEnabled,
+  setIsFaceControlEnabled,
+  faceControlStatus,
+  faceControlSignal,
+  cameraHandSignal,
+  sharedModalCloseButtonClass,
+}, ref) {
+  const [isOpen, setIsOpen] = useState(false);
+  const close = useCallback(() => setIsOpen(false), []);
+
+  useImperativeHandle(ref, () => ({
+    open: () => setIsOpen(true),
+    close,
+    isOpen: () => isOpen,
+  }), [close, isOpen]);
+
+  if (!isOpen) return null;
+
+  return createPortal(
+    <AnimatePresence>
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[345] flex items-center justify-center bg-black/82 p-4 backdrop-blur-xl">
+        <div className="absolute inset-0" onClick={close} />
+        <motion.div initial={{ scale: 0.96, y: 18 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.96, y: 18 }} className="relative z-10 flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-[2rem] border border-brand-accent/20 bg-[#080c10]/96 shadow-[0_28px_100px_rgba(0,0,0,0.55)]">
+          <div className="flex items-start justify-between gap-4 border-b border-white/10 bg-black/22 p-5">
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/10 text-brand-accent"><Hand size={18} /></div>
+              <div>
+                <div className="text-[10px] font-black uppercase tracking-[0.3em] text-brand-accent">Gesture + Face Lab</div>
+                <div className="mt-1 text-[11px] uppercase tracking-[0.18em] text-white/40">Pointer, swipe, and camera face/hand controls</div>
+              </div>
+            </div>
+            <button onClick={close} className={sharedModalCloseButtonClass} title="Close"><X size={16} /></button>
+          </div>
+          <div className="custom-scrollbar overflow-y-auto p-5">
+            <button onClick={() => setIsGestureControlEnabled((prev) => { const next = !prev; if (!next) setIsFaceControlEnabled(false); return next; })} className={`mb-4 flex w-full items-center justify-between rounded-2xl border px-4 py-4 text-left transition-all ${isGestureControlEnabled ? 'border-brand-accent/35 bg-brand-accent/12 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/70 hover:border-brand-accent/35 hover:text-brand-accent'}`}>
+              <span><span className="block text-[11px] font-black uppercase tracking-[0.22em]">Gesture controls</span><span className="mt-1 block text-[11px] font-semibold text-white/42">Pointer motion drives stage depth. Fast swipes control playback.</span></span>
+              <span className="rounded-full border border-current px-3 py-1 text-[9px] font-black uppercase tracking-[0.2em]">{isGestureControlEnabled ? 'On' : 'Off'}</span>
+            </button>
+            <button onClick={() => { const next = !isFaceControlEnabled; if (next) setIsGestureControlEnabled(true); setIsFaceControlEnabled(next); }} className={`mb-4 flex w-full items-center justify-between rounded-2xl border px-4 py-4 text-left transition-all ${isFaceControlEnabled ? 'border-brand-accent/35 bg-brand-accent/12 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/70 hover:border-brand-accent/35 hover:text-brand-accent'}`}>
+              <span className="flex items-center gap-3"><Camera size={18} className="shrink-0" /><span><span className="block text-[11px] font-black uppercase tracking-[0.22em]">Camera controls</span><span className="mt-1 block text-[11px] font-semibold text-white/42">Camera tracks face position and hand swipes for app control.</span></span></span>
+              <span className="rounded-full border border-current px-3 py-1 text-[9px] font-black uppercase tracking-[0.2em]">{isFaceControlEnabled ? 'On' : 'Off'}</span>
+            </button>
+            <div className="mb-4 rounded-2xl border border-white/8 bg-black/24 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div><div className="text-[9px] font-black uppercase tracking-[0.24em] text-white/30">Camera Status</div><div className="mt-1 text-[11px] font-bold text-white/55">{faceControlStatus}</div></div>
+                <div className="text-right text-[10px] font-mono text-brand-accent/75">FACE {faceControlSignal.x.toFixed(2)}, {faceControlSignal.y.toFixed(2)}<br />HAND {cameraHandSignal.x.toFixed(2)}, {cameraHandSignal.y.toFixed(2)}</div>
+              </div>
+              <div className="mt-3 space-y-2">
+                <div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-brand-accent transition-all" style={{ width: `${Math.round(clamp01(faceControlSignal.confidence) * 100)}%` }} /></div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-brand-accent/65 transition-all" style={{ width: `${Math.round(clamp01(cameraHandSignal.motion) * 100)}%` }} /></div>
+                <div className="text-[9px] font-black uppercase tracking-[0.18em] text-white/28">Hand {cameraHandSignal.last}</div>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              {[
+                [MousePointer2, 'Pointer depth', 'Move pointer/finger to tilt the Aura Stage layers.'],
+                [ChevronLeft, 'Swipe left', 'Skip to the next track.'],
+                [ChevronRight, 'Swipe right', 'Restart or go to the previous track.'],
+                [Hand, '2-finger swipe L/R', 'Two fingers slide left or right to change tracks.'],
+                [Volume2, '2-finger swipe U/D', 'Two fingers slide up or down to adjust volume.'],
+                [Fingerprint, 'Pinch in', 'Two-finger pinch to pause playback.'],
+                [Fingerprint, 'Spread out', 'Two-finger spread to resume playback.'],
+                [MousePointer2, 'Double-tap', 'Quickly tap twice on empty space to toggle play/pause.'],
+                [Camera, 'Camera wave', 'Wave your hand or look around for playback controls.'],
+                [Eye, 'Face zones', 'Look or tilt to trigger volume and transport controls.'],
+              ].map(([Icon, title, detail]) => (
+                <div key={title} className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                  <Icon size={18} className="text-brand-accent" />
+                  <div className="mt-3 text-[11px] font-black uppercase tracking-[0.2em] text-white/80">{title}</div>
+                  <div className="mt-1 text-[11px] leading-5 text-white/42">{detail}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>,
+    document.body
+  );
+}));
+
+const AppLockSettingsIsland = memo(forwardRef(function AppLockSettingsIsland({
+  isStandalone,
+  lockStatus,
+  lockIdleMinutes,
+  setLockIdleMinutes,
+  refreshLockStatus,
+  setIsAppLocked,
+  setLastAdded,
+  sharedModalCloseButtonClass,
+}, ref) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [lockPasswordInput, setLockPasswordInput] = useState('');
+  const [lockPasswordConfirm, setLockPasswordConfirm] = useState('');
+  const [lockDisablePassword, setLockDisablePassword] = useState('');
+  const [lockUseTouchId, setLockUseTouchId] = useState(false);
+  const [lockError, setLockError] = useState('');
+  const [isLockBusy, setIsLockBusy] = useState(false);
+  const [lockRecoveryStatus, setLockRecoveryStatus] = useState({
+    phrase: { enabled: false, createdAt: null },
+  });
+  const [lockRecoveryStatusError, setLockRecoveryStatusError] = useState('');
+  const [recoverySetupError, setRecoverySetupError] = useState('');
+  const [phraseBusy, setPhraseBusy] = useState(false);
+  const [phraseGenerated, setPhraseGenerated] = useState('');
+  const [phraseCopied, setPhraseCopied] = useState(false);
+
+  const refreshLockRecoveryStatusLocal = useCallback(async () => {
+    if (!window.aether?.getLockRecoveryStatus) return;
+    setLockRecoveryStatusError('');
+    try {
+      const res = await window.aether.getLockRecoveryStatus();
+      if (res?.success) {
+        setLockRecoveryStatus({
+          phrase: res.phrase || { enabled: false, createdAt: null },
+        });
+      } else {
+        setLockRecoveryStatusError(res?.error || 'Failed to load recovery status.');
+      }
+    } catch (e) {
+      setLockRecoveryStatusError(e?.message || 'Failed to load recovery status.');
+    }
+  }, []);
+
+  const close = useCallback(() => {
+    if (!isLockBusy) setIsOpen(false);
+  }, [isLockBusy]);
+
+  const open = useCallback(() => {
+    setLockError('');
+    setRecoverySetupError('');
+    setLockUseTouchId(!!lockStatus.touchIdEnabled);
+    setIsOpen(true);
+    refreshLockRecoveryStatusLocal();
+  }, [lockStatus.touchIdEnabled, refreshLockRecoveryStatusLocal]);
+
+  useImperativeHandle(ref, () => ({
+    open,
+    close,
+    isOpen: () => isOpen,
+    isBusy: () => isLockBusy,
+  }), [close, isLockBusy, isOpen, open]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setLockPasswordInput('');
+      setLockPasswordConfirm('');
+      setLockDisablePassword('');
+      setLockError('');
+      setRecoverySetupError('');
+      setPhraseGenerated('');
+      setPhraseCopied(false);
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (isOpen) setLockUseTouchId(!!lockStatus.touchIdEnabled);
+  }, [isOpen, lockStatus.touchIdEnabled]);
+
+  const handleEnableLock = useCallback(async () => {
+    if (!window.aether?.setAppLock) return;
+    if (!lockPasswordInput || lockPasswordInput.length < 4) {
+      setLockError('Password must be at least 4 characters.');
+      return;
+    }
+    if (lockPasswordInput !== lockPasswordConfirm) {
+      setLockError('Passwords do not match.');
+      return;
+    }
+    setIsLockBusy(true);
+    setLockError('');
+    try {
+      const res = await window.aether.setAppLock(lockPasswordInput, !!lockUseTouchId);
+      if (!res?.success) {
+        setLockError(res?.error || 'Failed to enable lock.');
+        return;
+      }
+      setLockPasswordInput('');
+      setLockPasswordConfirm('');
+      await refreshLockStatus();
+      setIsOpen(false);
+      setLastAdded('App lock enabled');
+      setTimeout(() => setLastAdded(null), 2000);
+    } finally {
+      setIsLockBusy(false);
+    }
+  }, [lockPasswordConfirm, lockPasswordInput, lockUseTouchId, refreshLockStatus, setLastAdded]);
+
+  const handleDisableLock = useCallback(async () => {
+    if (!window.aether?.disableAppLock || !lockDisablePassword) {
+      setLockError('Enter password to disable lock.');
+      return;
+    }
+    setIsLockBusy(true);
+    setLockError('');
+    try {
+      const res = await window.aether.disableAppLock(lockDisablePassword);
+      if (!res?.success) {
+        setLockError(res?.error || 'Failed to disable lock.');
+        return;
+      }
+      setLockDisablePassword('');
+      await refreshLockStatus();
+      setIsAppLocked(false);
+      setIsOpen(false);
+      setLastAdded('App lock disabled');
+      setTimeout(() => setLastAdded(null), 2000);
+    } finally {
+      setIsLockBusy(false);
+    }
+  }, [lockDisablePassword, refreshLockStatus, setIsAppLocked, setLastAdded]);
+
+  const handleToggleTouchIdLock = useCallback(async (enabled) => {
+    setLockUseTouchId(enabled);
+    if (!lockStatus.enabled || !window.aether?.setAppLockTouchId) return;
+    const res = await window.aether.setAppLockTouchId(enabled);
+    if (res?.success) {
+      await refreshLockStatus();
+    }
+  }, [lockStatus.enabled, refreshLockStatus]);
+
+  const handleCopyPhrase = useCallback(() => {
+    if (!phraseGenerated) return;
+    navigator.clipboard.writeText(phraseGenerated).then(() => {
+      setPhraseCopied(true);
+      setTimeout(() => setPhraseCopied(false), 2000);
+    }).catch(err => {
+      console.error('Failed to copy phrase:', err);
+    });
+  }, [phraseGenerated]);
+
+  const handleGenerateRecoveryPhrase = useCallback(async () => {
+    if (!window.aether?.generateRecoveryPhrase) return;
+    setPhraseBusy(true);
+    setRecoverySetupError('');
+    try {
+      const res = await window.aether.generateRecoveryPhrase();
+      if (!res?.success) {
+        setRecoverySetupError(res?.error || 'Failed to generate phrase.');
+        return;
+      }
+      setPhraseGenerated(String(res.phrase || ''));
+      await refreshLockRecoveryStatusLocal();
+    } catch (e) {
+      setRecoverySetupError(e?.message || 'Failed to generate phrase.');
+    } finally {
+      setPhraseBusy(false);
+    }
+  }, [refreshLockRecoveryStatusLocal]);
+
+  if (typeof document === 'undefined') return null;
+
+  return createPortal(
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[245] flex items-center justify-center p-4"
+        >
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-md" onClick={close} />
+          <motion.div
+            initial={{ y: 12, scale: 0.98, opacity: 0 }}
+            animate={{ y: 0, scale: 1, opacity: 1 }}
+            exit={{ y: 10, scale: 0.98, opacity: 0 }}
+            className="relative z-10 flex w-full max-w-lg max-h-[min(88vh,760px)] flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-[#0a0a0a]/95 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
+              <div>
+                <div className="text-[10px] font-black uppercase tracking-[0.28em] text-brand-accent">App Lock</div>
+                <div className="text-[11px] text-white/45 mt-1">Secure Aether with password and optional Touch ID. Idle auto-lock stays enabled.</div>
+              </div>
+              <button
+                onClick={close}
+                className={sharedModalCloseButtonClass}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 space-y-4">
+              {lockStatus.enabled ? (
+                <>
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                    <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Status</div>
+                    <div className="text-[12px] text-brand-accent font-black">Enabled</div>
+                  </div>
+
+                  {lockStatus.touchIdAvailable && (
+                    <label className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 cursor-pointer">
+                      <span className="text-[11px] text-white/70">Use Touch ID</span>
+                      <input
+                        type="checkbox"
+                        checked={lockUseTouchId}
+                        onChange={(e) => handleToggleTouchIdLock(e.target.checked)}
+                        className="accent-brand-accent"
+                      />
+                    </label>
+                  )}
+
+                  <label className="block rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[11px] text-white/70">Idle auto-lock</span>
+                      <span className="text-[11px] font-black text-brand-accent">{lockIdleMinutes}m</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={1}
+                      max={60}
+                      step={1}
+                      value={lockIdleMinutes}
+                      onChange={(e) => {
+                        const parsed = parseInt(e.target.value || '5', 10);
+                        setLockIdleMinutes(Number.isFinite(parsed) ? Math.max(1, parsed) : 5);
+                      }}
+                      className="w-full accent-brand-accent"
+                    />
+                  </label>
+
+                  <input
+                    type="password"
+                    value={lockDisablePassword}
+                    onChange={(e) => setLockDisablePassword(e.target.value)}
+                    placeholder="Enter password to disable lock"
+                    className="w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50"
+                  />
+                  <button
+                    onClick={handleDisableLock}
+                    disabled={isLockBusy || !lockDisablePassword}
+                    className="w-full px-5 py-2.5 rounded-xl bg-red-500/20 text-red-300 border border-red-500/30 font-black text-sm disabled:opacity-50"
+                  >
+                    Disable Lock
+                  </button>
+                </>
+              ) : (
+                <>
+                  <input
+                    type="password"
+                    value={lockPasswordInput}
+                    onChange={(e) => setLockPasswordInput(e.target.value)}
+                    placeholder="Set password"
+                    className="w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50"
+                  />
+                  <input
+                    type="password"
+                    value={lockPasswordConfirm}
+                    onChange={(e) => setLockPasswordConfirm(e.target.value)}
+                    placeholder="Confirm password"
+                    className="w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50"
+                  />
+                  {lockStatus.touchIdAvailable && (
+                    <label className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 cursor-pointer">
+                      <span className="text-[11px] text-white/70">Enable Touch ID unlock</span>
+                      <input
+                        type="checkbox"
+                        checked={lockUseTouchId}
+                        onChange={(e) => setLockUseTouchId(e.target.checked)}
+                        className="accent-brand-accent"
+                      />
+                    </label>
+                  )}
+                  <button
+                    onClick={handleEnableLock}
+                    disabled={isLockBusy || !lockPasswordInput || !lockPasswordConfirm}
+                    className="w-full px-5 py-2.5 rounded-xl bg-brand-accent text-black font-black text-sm disabled:opacity-50"
+                  >
+                    Enable Lock
+                  </button>
+                </>
+              )}
+
+              {lockStatus.enabled && (
+                <button
+                  onClick={() => { setIsAppLocked(true); setIsOpen(false); }}
+                  className="w-full px-5 py-2.5 rounded-xl border border-brand-accent/30 bg-brand-accent/10 text-brand-accent font-black text-sm"
+                >
+                  Lock Now
+                </button>
+              )}
+
+              {isStandalone && lockStatus.enabled && window.aether?.getLockRecoveryStatus && (
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">Recovery</div>
+                      <div className="mt-1 text-[11px] text-white/55">Set up recovery now so you can reset your lock later.</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={refreshLockRecoveryStatusLocal}
+                      className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/60 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
+                      title="Refresh recovery status"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+
+                  {(lockRecoveryStatusError || recoverySetupError) && (
+                    <div className="mt-2 text-[11px] text-red-400">{lockRecoveryStatusError || recoverySetupError}</div>
+                  )}
+
+                  <div className="mt-3 space-y-3">
+                    <div className="rounded-2xl border border-white/10 bg-black/25 px-3 py-3">
+                      <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Backup Phrase</div>
+                      <div className="text-[11px] text-white/55">
+                        Status:{' '}
+                        {lockRecoveryStatus?.phrase?.enabled ? <span className="text-white/70">Enabled</span> : <span className="text-white/45">Not set</span>}
+                      </div>
+
+                      {phraseGenerated && (
+                        <div className="mt-3 rounded-2xl border border-brand-accent/20 bg-brand-accent/10 px-3 py-2">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="flex-1">
+                              <div className="text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent/80">Save this phrase now</div>
+                              <div className="mt-2 text-[12px] font-mono text-white/85 break-words select-all cursor-pointer" onClick={handleCopyPhrase} title="Click to copy">{phraseGenerated}</div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={handleCopyPhrase}
+                              className={`mt-1 p-2 rounded-xl border transition-all ${phraseCopied ? 'border-brand-accent/40 bg-brand-accent/10 text-brand-accent' : 'border-white/10 bg-white/5 text-white/50 hover:text-brand-accent hover:border-brand-accent/40'}`}
+                              title="Copy phrase to clipboard"
+                            >
+                              {phraseCopied ? <Check size={14} /> : <Copy size={14} />}
+                            </button>
+                          </div>
+                          <div className="mt-2 text-[10px] text-white/45 border-t border-white/5 pt-2">It will not be shown again after closing this dialog.</div>
+                        </div>
+                      )}
+
+                      <div className="mt-3 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleGenerateRecoveryPhrase}
+                          disabled={phraseBusy}
+                          className="rounded-xl bg-brand-accent text-black px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] disabled:opacity-50"
+                          title={lockRecoveryStatus?.phrase?.enabled ? 'Generate a new phrase (replaces the old one)' : 'Generate backup phrase'}
+                        >
+                          {phraseBusy ? 'Generating...' : (lockRecoveryStatus?.phrase?.enabled ? 'Regenerate' : 'Generate')}
+                        </button>
+                        <div className="text-[10px] text-white/35">Use this if you forget your lock password.</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {lockError && <div className="text-[11px] text-red-400">{lockError}</div>}
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>,
+    document.body
+  );
+}));
 
 function App() {
   // --- App Lock Recovery (Electron only) ---
@@ -694,7 +2317,7 @@ function App() {
   const [isAudioBuffering, setIsAudioBuffering] = useState(false);
   const [isAutoplaySeeking, setIsAutoplaySeeking] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [currentTime, setCurrentTime] = useState(0);
+  const [currentTime, setCurrentTimeState] = useState(0);
   const [lyricOffsetMs, setLyricOffsetMs] = useState(0);
   const [isMaximized, setIsMaximized] = useState(false);
   const [lyrics, setLyrics] = useState([]);
@@ -758,6 +2381,12 @@ function App() {
   const [isLooksPanelOpen, setIsLooksPanelOpen] = useState(false);
   const [isAuraStageOpen, setIsAuraStageOpen] = useState(false);
   const [isDepthMotionEnabled, setIsDepthMotionEnabled] = useState(true);
+  const headerControlsRef = useRef(null);
+  const sleepTimerControlsRef = useRef(null);
+  const soundCapsuleRef = useRef(null);
+  const feedbackRef = useRef(null);
+  const gestureLabRef = useRef(null);
+  const appLockSettingsRef = useRef(null);
   const [isGestureLabOpen, setIsGestureLabOpen] = useState(false);
   const [isGestureControlEnabled, setIsGestureControlEnabled] = useState(false);
   const [isFaceControlEnabled, setIsFaceControlEnabled] = useState(false);
@@ -770,9 +2399,8 @@ function App() {
   const [feedbackDraft, setFeedbackDraft] = useState(DEFAULT_FEEDBACK_DRAFT);
   const [feedbackStatus, setFeedbackStatus] = useState('');
   const [isFeedbackSending, setIsFeedbackSending] = useState(false);
-  const [uptime, setUptime] = useState("00:00:00");
   const [isLyricsExpanded, setIsLyricsExpanded] = useState(false);
-  const [typedBuffer, setTypedBuffer] = useState("");
+  const typedBufferRef = useRef('');
   const [isMixtapeVaultOpen, setIsMixtapeVaultOpen] = useState(false);
   const [sharedScene, setSharedScene] = useState(null);
   const [isSharedSceneOpen, setIsSharedSceneOpen] = useState(false);
@@ -788,6 +2416,11 @@ function App() {
     const [isViewingFullQueue, setIsViewingFullQueue] = useState(false);
     const [isViewingFullDiscovery, setIsViewingFullDiscovery] = useState(false);
     const [isViewingFullPlaylist, setIsViewingFullPlaylist] = useState(null);
+    const [isFullQueueContentReady, setIsFullQueueContentReady] = useState(false);
+    const [isFullDiscoveryContentReady, setIsFullDiscoveryContentReady] = useState(false);
+    const [isFullPlaylistContentReady, setIsFullPlaylistContentReady] = useState(false);
+    const [isLibraryOverlayContentReady, setIsLibraryOverlayContentReady] = useState(false);
+    const [isMixtapeVaultContentReady, setIsMixtapeVaultContentReady] = useState(false);
   const [isLibraryOverlayOpen, setIsLibraryOverlayOpen] = useState(false);
   const [isSoundCapsuleOpen, setIsSoundCapsuleOpen] = useState(false);
   const [soundCapsuleData, setSoundCapsuleData] = useState(null);
@@ -837,6 +2470,7 @@ function App() {
   const [miniPlayerInfoMode, setMiniPlayerInfoMode] = useState('artist');
   const [isMiniQueuePeekOpen, setIsMiniQueuePeekOpen] = useState(false);
   const [isSpotifyImportOpen, setIsSpotifyImportOpen] = useState(false);
+  const [musicImportProvider, setMusicImportProvider] = useState('');
   const [spotifyImportUrl, setSpotifyImportUrl] = useState('');
   const [spotifyImportProgress, setSpotifyImportProgress] = useState({ stage: 'idle', progress: 0, message: '' });
   const [isSpotifyImporting, setIsSpotifyImporting] = useState(false);
@@ -907,6 +2541,8 @@ function App() {
     isMixtapeVaultOpen: false,
   });
   const visualizerErrorCountRef = useRef(0);
+  const visualizerFrameBudgetRef = useRef({ lastStyleAt: 0, brandAccent: '#00ffbf', brandContrast: '#ff00ff', canvas: null, ctx: null, pulseCanvas: null, pulseCtx: null });
+  const visualizerBarsRef = useRef(null);
   const playButtonRef = useRef(null);
   const beatRingsRef = useRef(null);
   const lastBeatRingTimeRef = useRef(0);
@@ -1019,6 +2655,7 @@ function App() {
   }, []);
 
   const inspectPlaylistTracks = useMemo(() => isPlaylistInspect && Array.isArray(inspectTarget?.tracks) ? inspectTarget.tracks.filter(Boolean) : [], [isPlaylistInspect, inspectTarget?.tracks]);
+  const inspectPrimaryTrack = inspectPlaylistTracks[0] || null;
   const inspectTrack = isPlaylistInspect ? null : inspectTarget?.track || null;
   const inspectSourceUrl = useMemo(() => {
     if (!inspectTrack) return '';
@@ -1085,7 +2722,10 @@ function App() {
   const [dualFocusMode, setDualFocusMode] = useState(null); // null | 'video' | 'lyrics'
   const videoModeRef = useRef(null); // synchronous mirror — safe to read in audio callbacks
   const isPlayingRef = useRef(false); // live mirror of isPlaying for video handler closures
+  const queueRef = useRef([]);
   const currentTimeRef = useRef(0);   // live mirror of currentTime for video handler closures
+  const currentTimeCommitRef = useRef({ committed: 0, at: 0 });
+  const ledgerSessionRef = useRef({ id: '', trackKey: '', counted: false, lastLoggedMs: 0 });
   const liveStreamStartOffsetMsRef = useRef(0);
   const [cinemaControlsVisible, setCinemaControlsVisible] = useState(true);
   const cinemaHideTimerRef = useRef(null);
@@ -1093,6 +2733,30 @@ function App() {
   const [showVisualLyrics, setShowVisualLyrics] = useState(true);
   const [visualControlsPinned, setVisualControlsPinned] = useState(false);
   const [visualVideoFit, setVisualVideoFit] = useState('contain');
+
+  const setCurrentTime = useCallback((nextValue) => {
+    const previous = Math.max(0, Number(currentTimeRef.current) || 0);
+    const resolved = typeof nextValue === 'function' ? nextValue(previous) : nextValue;
+    const nextMs = Math.max(0, Math.floor(Number(resolved) || 0));
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const last = currentTimeCommitRef.current;
+    const previousCommitted = last.committed;
+
+    currentTimeRef.current = nextMs;
+
+    const isReset = nextMs === 0;
+    const isLargeJump = Math.abs(nextMs - previousCommitted) >= 900;
+    const isStaleCommit = now - last.at >= 8000;
+    if (!isReset && !isLargeJump && !isStaleCommit) return;
+
+    last.committed = nextMs;
+    last.at = now;
+    if (isReset || Math.abs(nextMs - previousCommitted) > 3000) {
+      setCurrentTimeState(nextMs);
+      return;
+    }
+    startTransition(() => setCurrentTimeState(nextMs));
+  }, []);
 
   // MASTER SINGLETON: Lazy-initialized once to prevent memory leaks and ghost audio streams.
   const localAudioRef = useRef(null);
@@ -1261,9 +2925,64 @@ function App() {
   useEffect(() => { videoModeRef.current = videoMode; }, [videoMode]);
   // Live mirrors so video handler closures never go stale on isPlaying / currentTime
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
-  useEffect(() => { currentTimeRef.current = currentTime; }, [currentTime]);
+  useEffect(() => { queueRef.current = Array.isArray(queue) ? queue : []; }, [queue]);
+  useEffect(() => {
+    if (currentTime === 0 || Math.abs(currentTime - currentTimeRef.current) > 1200) {
+      currentTimeRef.current = currentTime;
+    }
+  }, [currentTime]);
   useEffect(() => { currentTrackRef.current = queue?.[0] || null; }, [queue]);
   useEffect(() => { pendingResumeTimeRef.current = pendingResumeTime; }, [pendingResumeTime]);
+  useEffect(() => {
+    let raf = 0;
+    if (isViewingFullQueue) {
+      setIsFullQueueContentReady(false);
+      raf = requestAnimationFrame(() => setIsFullQueueContentReady(true));
+      return () => cancelAnimationFrame(raf);
+    }
+    setIsFullQueueContentReady(false);
+    return undefined;
+  }, [isViewingFullQueue]);
+  useEffect(() => {
+    let raf = 0;
+    if (isViewingFullDiscovery) {
+      setIsFullDiscoveryContentReady(false);
+      raf = requestAnimationFrame(() => setIsFullDiscoveryContentReady(true));
+      return () => cancelAnimationFrame(raf);
+    }
+    setIsFullDiscoveryContentReady(false);
+    return undefined;
+  }, [isViewingFullDiscovery]);
+  useEffect(() => {
+    let raf = 0;
+    if (isViewingFullPlaylist) {
+      setIsFullPlaylistContentReady(false);
+      raf = requestAnimationFrame(() => setIsFullPlaylistContentReady(true));
+      return () => cancelAnimationFrame(raf);
+    }
+    setIsFullPlaylistContentReady(false);
+    return undefined;
+  }, [isViewingFullPlaylist]);
+  useEffect(() => {
+    let raf = 0;
+    if (isLibraryOverlayOpen) {
+      setIsLibraryOverlayContentReady(false);
+      raf = requestAnimationFrame(() => setIsLibraryOverlayContentReady(true));
+      return () => cancelAnimationFrame(raf);
+    }
+    setIsLibraryOverlayContentReady(false);
+    return undefined;
+  }, [isLibraryOverlayOpen]);
+  useEffect(() => {
+    let raf = 0;
+    if (isMixtapeVaultOpen) {
+      setIsMixtapeVaultContentReady(false);
+      raf = requestAnimationFrame(() => setIsMixtapeVaultContentReady(true));
+      return () => cancelAnimationFrame(raf);
+    }
+    setIsMixtapeVaultContentReady(false);
+    return undefined;
+  }, [isMixtapeVaultOpen]);
   useEffect(() => {
     visualizerStateRef.current = {
       visualizerMode,
@@ -1537,6 +3256,9 @@ function App() {
   const platform = isStandalone ? window.aether?.platform : '';
   const isMacPlatform = isStandalone ? platform === 'darwin' : /mac/i.test(navigator?.platform || '');
   const isWindowsPlatform = isStandalone ? platform === 'win32' : /win/i.test(navigator?.platform || '');
+  const parsedShortcuts = useMemo(() => Object.fromEntries(
+    SHORTCUT_FIELDS.map(({ id }) => [id, parseShortcutCombo(shortcuts[id], isMacPlatform)]),
+  ), [isMacPlatform, shortcuts]);
   const windowChromeInsetClass = isMacPlatform ? 'pt-7' : (isWindowsPlatform ? (isMaximized ? 'pt-0' : 'pt-[34px]') : 'pt-0');
   const defaultGlobalMediaShortcutsEnabled = isMacPlatform;
 
@@ -1830,6 +3552,9 @@ function App() {
   }, [currentTrack?.id, currentTrack?.title]);
 
   const closeHeaderSurfaces = useCallback((except = null) => {
+    if (except !== 'looks' && except !== 'shortcuts' && except !== 'header') headerControlsRef.current?.close();
+    if (except !== 'sleep') sleepTimerControlsRef.current?.close();
+    if (except !== 'lock') appLockSettingsRef.current?.close();
     if (except !== 'tips') setIsTipsOverlayOpen(false);
     if (except !== 'shortcuts') {
       setIsShortcutSettingsOpen(false);
@@ -1840,11 +3565,43 @@ function App() {
     if (except !== 'sleep') setIsSleepTimerMenuOpen(false);
   }, []);
 
+  const runAfterInputPaint = useCallback((fn) => {
+    if (typeof window === 'undefined') {
+      startTransition(fn);
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      window.setTimeout(() => startTransition(fn), 0);
+    });
+  }, []);
+
+  const openLibraryOverlay = useCallback((target = null) => {
+    runAfterInputPaint(() => {
+      setLibraryActionTarget(target);
+      setIsLibraryOverlayOpen(true);
+    });
+  }, [runAfterInputPaint]);
+
   const openFeedbackPanel = useCallback(() => {
-    closeHeaderSurfaces('feedback');
-    setFeedbackStatus('');
-    setIsFeedbackOpen(true);
-  }, [closeHeaderSurfaces]);
+    runAfterInputPaint(() => {
+      closeHeaderSurfaces('feedback');
+      feedbackRef.current?.open();
+    });
+  }, [closeHeaderSurfaces, runAfterInputPaint]);
+
+  const openGestureLab = useCallback(() => {
+    runAfterInputPaint(() => {
+      closeHeaderSurfaces('gesture');
+      gestureLabRef.current?.open();
+    });
+  }, [closeHeaderSurfaces, runAfterInputPaint]);
+
+  const openSignalLedger = useCallback(() => {
+    runAfterInputPaint(() => {
+      closeHeaderSurfaces('ledger');
+      soundCapsuleRef.current?.open();
+    });
+  }, [closeHeaderSurfaces, runAfterInputPaint]);
 
   const openTipsOverlay = useCallback(() => {
     closeHeaderSurfaces('tips');
@@ -1905,11 +3662,11 @@ function App() {
   }, [persistHideFirstRunTips, tipsDontShowAgain]);
 
   const openShortcutSettings = useCallback(() => {
-    closeHeaderSurfaces('shortcuts');
-    setShortcutSettingsError('');
-    setShortcutDraft(shortcuts);
-    setIsShortcutSettingsOpen(true);
-  }, [closeHeaderSurfaces, shortcuts]);
+    runAfterInputPaint(() => {
+      closeHeaderSurfaces('shortcuts');
+      headerControlsRef.current?.openShortcutSettings();
+    });
+  }, [closeHeaderSurfaces, runAfterInputPaint]);
 
   const closeShortcutSettings = useCallback(() => {
     setIsShortcutSettingsOpen(false);
@@ -2336,8 +4093,10 @@ function App() {
   }, [isAppLocked, lockIdleMinutes, lockStatus.enabled]);
 
   const getProxyUrl = (url) => {
-    if (!url) return '';
-    let processed = url.startsWith('//') ? 'https:' + url : url;
+    if (!url) return null;
+    let processed = String(url);
+    if (!processed.trim()) return null;
+    processed = processed.startsWith('//') ? 'https:' + processed : processed;
     try {
       const parsed = new URL(processed);
       const isYtImg = /(^|\.)ytimg\.com$/i.test(parsed.hostname);
@@ -2359,11 +4118,13 @@ function App() {
      if (!isStandalone) return;
      const int = setInterval(() => {
         axios.post(`http://localhost:${streamPort}/api/device/sync`, {
-           isPlaying, currentTime, track: currentTrack
+           isPlaying: isPlayingRef.current,
+           currentTime: Math.max(0, Math.floor(currentTimeRef.current || 0)),
+           track: currentTrackRef.current
         }).catch(()=>{});
      }, 1000);
      return () => clearInterval(int);
-  }, [isStandalone, isPlaying, currentTime, currentTrack, streamPort]);
+  }, [isStandalone, streamPort]);
 
 
   const getEffectiveGuildId = useCallback(() => {
@@ -2430,8 +4191,8 @@ function App() {
         }))
       : [{
           id: `${Date.now()}-0-${Math.random().toString(36).slice(2, 8)}`,
-          time: Math.max(0, Math.trunc(Number(currentTime) || 0)),
-          timestamp: formatManualLyricsTimestamp(Math.max(0, Math.trunc(Number(currentTime) || 0))).slice(1, -1),
+          time: Math.max(0, Math.trunc(Number(getActivePlaybackPositionMs()) || 0)),
+          timestamp: formatManualLyricsTimestamp(Math.max(0, Math.trunc(Number(getActivePlaybackPositionMs()) || 0))).slice(1, -1),
           text: '',
         }];
 
@@ -2441,7 +4202,7 @@ function App() {
     setIsManualLyricsRawEditorOpen(false);
     setIsManualLyricsTapMode(false);
     setIsManualLyricsEditorOpen(true);
-  }, [currentManualLyricsLines, currentTime, lyrics]);
+  }, [currentManualLyricsLines, getActivePlaybackPositionMs, lyrics]);
 
   const updateManualLyricsDraftLine = useCallback((index, patch) => {
     setManualLyricsDraft((prev) => {
@@ -2452,7 +4213,7 @@ function App() {
     });
   }, []);
 
-  const appendManualLyricsDraftLine = useCallback((timestamp = currentTime) => {
+  const appendManualLyricsDraftLine = useCallback((timestamp = getActivePlaybackPositionMs()) => {
     setManualLyricsDraft((prev) => {
       const nextTimestamp = Math.max(0, Math.trunc(Number(timestamp) || 0));
       const next = [
@@ -2466,7 +4227,7 @@ function App() {
       ];
       return next;
     });
-  }, [currentTime]);
+  }, [getActivePlaybackPositionMs]);
 
   useEffect(() => {
     if (!isManualLyricsEditorOpen) return;
@@ -2519,7 +4280,7 @@ function App() {
   }, []);
 
   const appendStampedManualLyricsLine = useCallback(() => {
-    const nextTimestamp = Math.max(0, Math.trunc(Number(currentTime) || 0));
+    const nextTimestamp = Math.max(0, Math.trunc(Number(getActivePlaybackPositionMs()) || 0));
     setManualLyricsDraftAndSync((prev) => ([
       ...prev,
       {
@@ -2530,10 +4291,10 @@ function App() {
       },
     ]));
     setIsManualLyricsTapMode(true);
-  }, [currentTime, setManualLyricsDraftAndSync]);
+  }, [getActivePlaybackPositionMs, setManualLyricsDraftAndSync]);
 
   const appendAndStampCurrentLine = useCallback((index) => {
-    const nextTimestamp = Math.max(0, Math.trunc(Number(currentTime) || 0));
+    const nextTimestamp = Math.max(0, Math.trunc(Number(getActivePlaybackPositionMs()) || 0));
     setManualLyricsDraftAndSync((prev) => prev.map((line, lineIndex) => (
       lineIndex === index
         ? {
@@ -2543,7 +4304,7 @@ function App() {
           }
         : line
     )));
-  }, [currentTime, setManualLyricsDraftAndSync]);
+  }, [getActivePlaybackPositionMs, setManualLyricsDraftAndSync]);
 
   const removeManualLyricsDraftLine = useCallback((index) => {
     setManualLyricsDraft((prev) => prev.filter((_, lineIndex) => lineIndex !== index));
@@ -2551,7 +4312,7 @@ function App() {
 
   const stampManualLyricsDraftLine = useCallback((index) => {
     setManualLyricsDraft((prev) => {
-      const nextTimestamp = Math.max(0, Math.trunc(Number(currentTime) || 0));
+      const nextTimestamp = Math.max(0, Math.trunc(Number(getActivePlaybackPositionMs()) || 0));
       return prev.map((line, lineIndex) => (
         lineIndex === index
           ? {
@@ -2562,7 +4323,7 @@ function App() {
           : line
       ));
     });
-  }, [currentTime]);
+  }, [getActivePlaybackPositionMs]);
 
   const handleSaveManualLyrics = useCallback(async () => {
     if (!currentTrackPresetKey) {
@@ -2993,21 +4754,28 @@ function App() {
   }, [isStandalone, shortcuts]);
 
   useEffect(() => {
-    if (!isStandalone || !sessionReadyRef.current) return;
+    if (!isStandalone) return undefined;
 
-    const playback = {
-      queue: Array.isArray(queue) ? queue.slice(0, 120) : [],
-      isPlaying: !!isPlaying,
-      currentTime: Math.max(0, Math.floor(currentTime || 0)),
-      savedAt: Date.now(),
+    const persistPlayback = () => {
+      if (!sessionReadyRef.current) return;
+      const playback = {
+        queue: queueRef.current.slice(0, 120),
+        isPlaying: !!isPlayingRef.current,
+        currentTime: Math.max(0, Math.floor(currentTimeRef.current || 0)),
+        savedAt: Date.now(),
+      };
+
+      try {
+        window.aether?.store?.set?.(SESSION_PLAYBACK_STORAGE_KEY, playback);
+      } catch (e) {
+        console.warn('[Aether/Session] Failed to persist playback', e);
+      }
     };
 
-    try {
-      window.aether?.store?.set?.(SESSION_PLAYBACK_STORAGE_KEY, playback);
-    } catch (e) {
-      console.warn('[Aether/Session] Failed to persist playback', e);
-    }
-  }, [isStandalone, queue, isPlaying, Math.floor((currentTime || 0) / 1000)]);
+    persistPlayback();
+    const interval = window.setInterval(persistPlayback, 5000);
+    return () => window.clearInterval(interval);
+  }, [isStandalone]);
 
   useEffect(() => {
     let pollInterval;
@@ -3231,9 +4999,6 @@ function App() {
       initDiscord();
     }
 
-    fetchSystemStats();
-    const statsInterval = setInterval(fetchSystemStats, 10000);
-    
     // Maximized State Listener (NOVA - Fixed bridge + Height fail-safe
     if (window.aether?.onMaximized) {
       window.aether.onMaximized((state) => {
@@ -3275,24 +5040,27 @@ function App() {
       });
     }
 
+    let resizeRaf = 0;
+    let lastTallState = null;
     const handleResize = () => {
-      // If window is significantly taller than the standard 800px, assume we want elastic mode
-      if (window.innerHeight > 820) setIsMaximized(true);
-      else if (window.innerHeight <= 800) setIsMaximized(false);
+      if (resizeRaf) return;
+      resizeRaf = window.requestAnimationFrame(() => {
+        resizeRaf = 0;
+        const nextTallState = window.innerHeight > 820 ? true : window.innerHeight <= 800 ? false : lastTallState;
+        if (typeof nextTallState === 'boolean' && nextTallState !== lastTallState) {
+          lastTallState = nextTallState;
+          setIsMaximized(nextTallState);
+        }
+      });
     };
     window.addEventListener('resize', handleResize);
     handleResize(); // Initial check
 
-    const uptimeInterval = setInterval(() => {
-      const now = new Date();
-      setUptime(now.toTimeString().split(' ')[0]);
-    }, 1000);
-
     return () => { 
       if (pollInterval) clearInterval(pollInterval); 
-      clearInterval(statsInterval); 
-      clearInterval(uptimeInterval);
       if (typeof unsubscribeUpdateStatus === 'function') unsubscribeUpdateStatus();
+      window.removeEventListener('resize', handleResize);
+      if (resizeRaf) window.cancelAnimationFrame(resizeRaf);
     };
   }, []);
 
@@ -3598,7 +5366,7 @@ function App() {
   useEffect(() => {
     if (!isStandalone || !isPlaying || !isAudioBuffering || !currentTrack || !localAudioRef.current || videoModeRef.current) return;
     // Rescue only during startup buffering. Mid-song stalls should recover naturally without forced source switch.
-    if ((currentTime || 0) > 5000) return;
+    if ((currentTimeRef.current || 0) > 5000) return;
 
     const trackKey = currentTrack.id || currentTrack.youtubeId || `${currentTrack.title || ''}|${currentTrack.author || ''}`;
     const timer = setTimeout(() => {
@@ -3655,7 +5423,7 @@ function App() {
     }, 8500);
 
     return () => clearTimeout(timer);
-  }, [isStandalone, isPlaying, isAudioBuffering, currentTime, currentTrack?.id, currentTrack?.youtubeId, currentTrack?.title, currentTrack?.author, currentTrack?.actualUrl, currentTrack?.url, streamPort]);
+  }, [isStandalone, isPlaying, isAudioBuffering, currentTrack?.id, currentTrack?.youtubeId, currentTrack?.title, currentTrack?.author, currentTrack?.actualUrl, currentTrack?.url, streamPort]);
 
   useEffect(() => {
     if (!isStandalone || videoMode || !isPlaying || !isAudioBuffering) return;
@@ -3696,7 +5464,7 @@ function App() {
       if (!audio || videoModeRef.current) return;
 
       const nextMs = Math.max(0, Math.floor((audio.currentTime || 0) * 1000));
-      if (Math.abs(nextMs - currentTimeRef.current) >= 180) {
+      if (Math.abs(nextMs - currentTimeRef.current) >= 500) {
         currentTimeRef.current = nextMs;
         setCurrentTime(nextMs);
       }
@@ -3705,7 +5473,7 @@ function App() {
       if (isHealthy && isAudioBuffering) {
         setIsAudioBuffering(false);
       }
-    }, 220);
+    }, 750);
 
     return () => window.clearInterval(interval);
   }, [isStandalone, videoMode, isPlaying, currentTrack?.id, currentTrack?.queueNonce, isAudioBuffering]);
@@ -3734,9 +5502,10 @@ function App() {
               !lastRPCEndRef.current;
 
             if (shouldRecalculateClock) {
-              lastRPCStartRef.current = Date.now() - currentTime;
-              const computedEnd = Date.now() + Math.max(0, durationMs - currentTime);
-              lastRPCEndRef.current = Number.isFinite(durationMs) && durationMs > currentTime + 1000
+              const liveCurrentTime = Math.max(0, Math.floor(currentTimeRef.current || 0));
+              lastRPCStartRef.current = Date.now() - liveCurrentTime;
+              const computedEnd = Date.now() + Math.max(0, durationMs - liveCurrentTime);
+              lastRPCEndRef.current = Number.isFinite(durationMs) && durationMs > liveCurrentTime + 1000
                 ? computedEnd
                 : null;
             }
@@ -3857,28 +5626,49 @@ function App() {
       const draw = () => {
         try {
           if (cancelled) return;
+          const frameNow = performance.now();
+          const frameBudget = visualizerFrameBudgetRef.current;
 
-          const canvas = visualizerCanvasRef.current;
-          const pulseCanvas = pulseCanvasRef.current;
-          if (!canvas && !pulseCanvas) return;
-
-          const ctx = canvas?.getContext('2d');
-          const pCtx = pulseCanvas?.getContext('2d');
           const visualizerState = visualizerStateRef.current;
           const liveVisualizerMode = visualizerState.visualizerMode;
           const liveThemeColor = visualizerState.themeColor;
           const liveAuraPreset = visualizerState.auraPreset;
           const isVaultOpen = visualizerState.isMixtapeVaultOpen;
           const auraModeActive = liveVisualizerMode === 'pulse';
-          const rootStyle = document.documentElement ? getComputedStyle(document.documentElement) : null;
+          const canvas = liveVisualizerMode === 'bars' ? visualizerCanvasRef.current : null;
+          const pulseCanvas = liveVisualizerMode === 'pulse' ? pulseCanvasRef.current : null;
+          if (!canvas && !pulseCanvas && !isVaultOpen) return;
+
+          if (canvas && frameBudget.canvas !== canvas) {
+            frameBudget.canvas = canvas;
+            frameBudget.ctx = canvas.getContext('2d', { alpha: true });
+          } else if (!canvas) {
+            frameBudget.canvas = null;
+            frameBudget.ctx = null;
+          }
+          if (pulseCanvas && frameBudget.pulseCanvas !== pulseCanvas) {
+            frameBudget.pulseCanvas = pulseCanvas;
+            frameBudget.pulseCtx = pulseCanvas.getContext('2d', { alpha: true });
+          } else if (!pulseCanvas) {
+            frameBudget.pulseCanvas = null;
+            frameBudget.pulseCtx = null;
+          }
+          const ctx = frameBudget.ctx;
+          const pCtx = frameBudget.pulseCtx;
+          if (document.documentElement && frameNow - frameBudget.lastStyleAt > 500) {
+            const rootStyle = getComputedStyle(document.documentElement);
+            frameBudget.brandAccent = rootStyle.getPropertyValue('--brand-accent')?.trim() || liveThemeColor || '#00ffbf';
+            frameBudget.brandContrast = rootStyle.getPropertyValue('--brand-contrast')?.trim() || '#ff00ff';
+            frameBudget.lastStyleAt = frameNow;
+          }
           
           const width = canvas?.width || 800;
           const height = canvas?.height || 40;
           const pWidth = pulseCanvas?.width || 800;
           const pHeight = pulseCanvas?.height || 400;
 
-        if (ctx) ctx.clearRect(0, 0, width, height);
-        if (pCtx) pCtx.clearRect(0, 0, pWidth, pHeight);
+        if (liveVisualizerMode === 'bars' && ctx) ctx.clearRect(0, 0, width, height);
+        if (liveVisualizerMode === 'pulse' && pCtx) pCtx.clearRect(0, 0, pWidth, pHeight);
 
         if (!analyserRef.current) return;
         analyserRef.current.getByteFrequencyData(dataArray);
@@ -4038,15 +5828,21 @@ function App() {
         if (liveVisualizerMode === 'bars' && ctx) {
             const barWidth = (width / bufferLength) * 2.5;
             let x = 0;
+            ctx.fillStyle = frameBudget.brandContrast || '#ff00ff';
+            if (!visualizerBarsRef.current || visualizerBarsRef.current.length !== bufferLength) {
+              visualizerBarsRef.current = new Float32Array(bufferLength);
+            }
+            const smoothedBars = visualizerBarsRef.current;
             for (let i = 0; i < bufferLength; i++) {
-                const barHeight = (dataArray[i] / 255) * height;
-                ctx.fillStyle = rootStyle?.getPropertyValue('--brand-contrast')?.trim() || '#ff00ff'; 
+                const targetHeight = (dataArray[i] / 255) * height;
+                smoothedBars[i] = lerp(smoothedBars[i] || 0, targetHeight, targetHeight > smoothedBars[i] ? 0.42 : 0.24);
+                const barHeight = smoothedBars[i];
                 ctx.fillRect(x, height - barHeight, barWidth, barHeight);
                 x += barWidth + 2;
             }
         } else if (liveVisualizerMode === 'pulse' && pCtx) {
-          const accent = rootStyle?.getPropertyValue('--brand-accent')?.trim() || liveThemeColor || '#00ffbf';
-          const contrast = rootStyle?.getPropertyValue('--brand-contrast')?.trim() || '#ff00ff';
+          const accent = frameBudget.brandAccent || liveThemeColor || '#00ffbf';
+          const contrast = frameBudget.brandContrast || '#ff00ff';
 
           const centerX = pWidth / 2;
           const centerY = pHeight / 2;
@@ -4487,12 +6283,9 @@ function App() {
   };
 
   const activeLyric = useMemo(() => {
-    if (!lyrics || lyrics.length === 0) return null;
-    const offsetMs = (currentTrack?.introOffsetMs || 0) + (lyricOffsetMs || 0);
-    const currentMs = currentTime - offsetMs;
-    const line = [...lyrics].reverse().find(l => l.time <= currentMs);
-    return line ? line.text : null;
-  }, [lyrics, currentTime, currentTrack?.introOffsetMs, lyricOffsetMs]);
+    if (!lyrics || lyrics.length === 0 || activeLyricIndex < 0) return null;
+    return lyrics[activeLyricIndex]?.text || null;
+  }, [lyrics, activeLyricIndex]);
 
   const compactLyric = useMemo(() => {
     if (!lyrics || lyrics.length === 0) return null;
@@ -4673,19 +6466,25 @@ function App() {
     }
   };
 
+  const fetchQueueRef = useRef(null);
   useEffect(() => {
-    const interval = setInterval(() => {
-        fetchQueue();
-        if (isPlaying) {
+    fetchQueueRef.current = fetchQueue;
+  });
+
+  useEffect(() => {
+    if (isStandalone) return undefined;
+    const interval = window.setInterval(() => {
+        fetchQueueRef.current?.();
+        if (isPlayingRef.current) {
             // Heartbeat Sync (NOVA
-            axios.post(`${API_BASE}/api/heartbeat/${DEFAULT_GUILD_ID}`, { 
-                currentTime, 
-                isPlaying 
+            axios.post(`${API_BASE}/api/heartbeat/${DEFAULT_GUILD_ID}`, {
+                currentTime: Math.max(0, Math.floor(currentTimeRef.current || 0)),
+                isPlaying: true
             }).catch(() => {});
         }
     }, 3000);
-    return () => clearInterval(interval);
-  }, [currentTime, isPlaying, queue.length, isAutoplayEnabled, isStandalone, isManualStop]);
+    return () => window.clearInterval(interval);
+  }, [isStandalone]);
 
   // Autoplay Trigger Logic
   useEffect(() => {
@@ -4939,11 +6738,13 @@ function App() {
       }
       
       const serverMs = resp.data.currentMs || 0;
-      if (!isStandalone && queueLength > 0 && (Math.abs(currentTime - serverMs) > 1000 || currentTime === 0)) setCurrentTime(serverMs);
+      const liveCurrentTime = currentTimeRef.current;
+      const liveIsPlaying = isPlayingRef.current;
+      if (!isStandalone && queueLength > 0 && (Math.abs(liveCurrentTime - serverMs) > 1000 || liveCurrentTime === 0)) setCurrentTime(serverMs);
       // Only adopt isPlaying=true from the server (a new song started / resumed).
       // Never let another tab's paused heartbeat silence your local audio.
       // Each tab manages its own pause/resume independently after unlock.
-      if (!isStandalone && resp.data.isPlaying === true && !isPlaying) {
+      if (!isStandalone && resp.data.isPlaying === true && !liveIsPlaying) {
         setIsPlaying(true);
       }
 
@@ -4982,17 +6783,18 @@ function App() {
   useEffect(() => {
     const SEQUENCE = 'mixtape';
     const handleKeyDown = (e) => {
-      const tag = document.activeElement?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (e.defaultPrevented || e.repeat || isNativeKeyboardTarget(e) || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (!e.key || e.key.length !== 1) {
+        typedBufferRef.current = '';
+        return;
+      }
 
-      setTypedBuffer(prev => {
-        const next = (prev + e.key.toLowerCase()).slice(-SEQUENCE.length);
-        if (next === SEQUENCE) {
-          setIsMixtapeVaultOpen(true);
-          return "";
-        }
-        return next;
-      });
+      const next = `${typedBufferRef.current}${e.key.toLowerCase()}`.slice(-SEQUENCE.length);
+      typedBufferRef.current = next;
+      if (next === SEQUENCE) {
+        typedBufferRef.current = '';
+        startTransition(() => setIsMixtapeVaultOpen(true));
+      }
     };
 
     window.addEventListener("keydown", handleKeyDown);
@@ -5034,7 +6836,7 @@ function App() {
     }
   };
 
-  const fetchSystemStats = async () => {
+  const fetchSystemStats = useCallback(async () => {
     const startedAt = performance.now();
     try {
       if (isStandalone) {
@@ -5057,7 +6859,14 @@ function App() {
         lastSystemError: err?.message || 'system fetch failed',
       }));
     }
-  };
+  }, [isStandalone]);
+
+  useEffect(() => {
+    if (!isDiagnosticsOpen) return undefined;
+    fetchSystemStats();
+    const statsInterval = window.setInterval(fetchSystemStats, 10000);
+    return () => window.clearInterval(statsInterval);
+  }, [fetchSystemStats, isDiagnosticsOpen]);
 
   const refreshStorageStats = useCallback(async () => {
     if (!isStandalone || !window.aether?.getStorageStats) return;
@@ -5234,19 +7043,32 @@ function App() {
   useEffect(() => {
     let interval;
     if (isPlaying && currentTrack && !isAudioBuffering && !videoMode && !localAudioRef.current) {
-        interval = setInterval(() => setCurrentTime(prev => prev + 250), 250);
+        interval = window.setInterval(() => setCurrentTime((prev) => prev + 500), 500);
     }
-    return () => clearInterval(interval);
-  }, [isPlaying, currentTrack, isAudioBuffering, videoMode]);
+    return () => {
+      if (interval) window.clearInterval(interval);
+    };
+  }, [isPlaying, currentTrack, isAudioBuffering, setCurrentTime, videoMode]);
 
   useEffect(() => {
-    if (!lyrics || lyrics.length === 0) { setActiveLyricIndex(-1); return; }
-    const offsetMs = (currentTrack?.introOffsetMs || 0) + (lyricOffsetMs || 0);
-    const idx = lyrics.findLastIndex(l => l.time <= (currentTime - offsetMs));
-    if (idx !== -1 && idx !== activeLyricIndex) {
-      setActiveLyricIndex(idx);
+    if (!lyrics || lyrics.length === 0) {
+      setActiveLyricIndex(-1);
+      return undefined;
     }
-  }, [currentTime, lyrics, lyricOffsetMs]);
+
+    const offsetMs = (currentTrack?.introOffsetMs || 0) + (lyricOffsetMs || 0);
+    const updateActiveLyric = () => {
+      const liveMs = getActivePlaybackPositionMs();
+      const idx = lyrics.findLastIndex((line) => line.time <= (liveMs - offsetMs));
+      setActiveLyricIndex((prev) => (idx !== -1 && idx !== prev ? idx : prev));
+    };
+
+    updateActiveLyric();
+    if (!isPlaying && !isLyricsExpanded) return undefined;
+
+    const interval = window.setInterval(updateActiveLyric, 250);
+    return () => window.clearInterval(interval);
+  }, [currentTrack?.introOffsetMs, getActivePlaybackPositionMs, isLyricsExpanded, isPlaying, lyrics, lyricOffsetMs]);
 
   const centerCompactLyrics = useCallback((behavior = 'smooth') => {
     if (!activeLyricRef.current || !lyricsContainerRef.current) return;
@@ -5314,28 +7136,34 @@ function App() {
     };
   }, [activeLyricIndex, isAutoScrollPaused, isLyricsExpanded, centerCompactLyrics, centerImmersiveLyrics]);
 
-  // High-performance 60fps karaoke fill for Immersive Lyrics
   useEffect(() => {
-    if (!isLyricsExpanded || !expandedActiveRef.current || activeLyricIndex < 0 || !lyrics[activeLyricIndex]) return;
-    
-    let raf;
+    if (!isLyricsExpanded || !expandedActiveRef.current || activeLyricIndex < 0 || !lyrics[activeLyricIndex]) return undefined;
+
+    let raf = 0;
+    let lastPaintAt = 0;
     const lyric = lyrics[activeLyricIndex];
-    const nextLyric = lyrics[activeLyricIndex + 1];
-    const durationMs = nextLyric ? Math.max(100, nextLyric.time - lyric.time) : 4000;
+    const nextLyricLine = lyrics[activeLyricIndex + 1];
+    const durationMs = nextLyricLine ? Math.max(100, nextLyricLine.time - lyric.time) : 4000;
     const startMs = lyric.time + (currentTrack?.introOffsetMs || 0) + (lyricOffsetMs || 0);
 
-    const updateKaraoke = () => {
-      if (expandedActiveRef.current) {
+    const updateKaraokeFill = (now) => {
+      const activeLine = expandedActiveRef.current;
+      if (activeLine && now - lastPaintAt >= 16) {
         const currentMs = getActivePlaybackPositionMs();
         const fillPercent = Math.max(0, Math.min(100, ((currentMs - startMs) / durationMs) * 100));
-        expandedActiveRef.current.style.backgroundImage = `linear-gradient(90deg, #00ffbf ${fillPercent}%, rgba(255,255,255,0.4) ${fillPercent}%)`;
+        activeLine.style.setProperty('--karaoke-fill', `${fillPercent.toFixed(1)}%`);
+        lastPaintAt = now;
       }
-      raf = requestAnimationFrame(updateKaraoke);
+      raf = requestAnimationFrame(updateKaraokeFill);
     };
-    raf = requestAnimationFrame(updateKaraoke);
-    
-    return () => cancelAnimationFrame(raf);
-  }, [isLyricsExpanded, activeLyricIndex, lyrics, currentTrack?.introOffsetMs, lyricOffsetMs, getActivePlaybackPositionMs]);
+
+    raf = requestAnimationFrame(updateKaraokeFill);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      expandedActiveRef.current?.style.removeProperty('--karaoke-fill');
+    };
+  }, [activeLyricIndex, currentTrack?.introOffsetMs, getActivePlaybackPositionMs, isLyricsExpanded, lyricOffsetMs, lyrics]);
 
   const parseLRC = (lrcString) => {
     if (!lrcString) return [];
@@ -5461,6 +7289,30 @@ function App() {
   };
 
   const closeTopmostOverlay = useCallback(() => {
+    if (headerControlsRef.current?.isOpen()) {
+      headerControlsRef.current.close();
+      return true;
+    }
+    if (sleepTimerControlsRef.current?.isOpen()) {
+      sleepTimerControlsRef.current.close();
+      return true;
+    }
+    if (soundCapsuleRef.current?.isOpen()) {
+      soundCapsuleRef.current.close();
+      return true;
+    }
+    if (feedbackRef.current?.isOpen()) {
+      feedbackRef.current.close();
+      return true;
+    }
+    if (gestureLabRef.current?.isOpen()) {
+      gestureLabRef.current.close();
+      return true;
+    }
+    if (appLockSettingsRef.current?.isOpen()) {
+      appLockSettingsRef.current.close();
+      return true;
+    }
     if (oauthPrompt) {
       setOauthPrompt(null);
       return true;
@@ -5710,17 +7562,20 @@ function App() {
     };
   }, []);
 
-  const handleSearch = async (e) => {
-    if (e) e.preventDefault();
-    if (!searchQuery.trim()) return;
+  const handleSearch = async (eventOrQuery) => {
+    if (eventOrQuery?.preventDefault) eventOrQuery.preventDefault();
+    const submittedQuery = typeof eventOrQuery === 'string' ? eventOrQuery : searchQuery;
+    const normalizedQuery = submittedQuery.trim();
+    if (!normalizedQuery) return;
+    setSearchQuery(normalizedQuery);
     setIsSearching(true);
     setHasCompletedSearch(true);
     try {
       if (isStandalone) {
-          const results = await window.aether.search(searchQuery);
+          const results = await window.aether.search(normalizedQuery);
           setSearchResults(Array.isArray(results) ? results : []);
       } else {
-          const resp = await axios.get(`${API_BASE}/api/search?q=${encodeURIComponent(searchQuery)}`);
+          const resp = await axios.get(`${API_BASE}/api/search?q=${encodeURIComponent(normalizedQuery)}`);
           setSearchResults(Array.isArray(resp.data) ? resp.data : []);
       }
       if (isMobileSearchOpen) setIsMobileSearchOpen(false);
@@ -6042,23 +7897,32 @@ function App() {
   };
 
   const handleImportSpotifyPlaylist = async () => {
-      if (!isStandalone || !window.aether?.importSpotifyPlaylist) return;
+      if (!isStandalone) return;
       const url = spotifyImportUrl.trim();
-      if (!url) return;
+      const provider = musicImportProvider || (url.includes('music.apple.com') ? 'apple' : 'spotify');
+      const importer = provider === 'apple' ? window.aether?.importAppleMusicPlaylist : window.aether?.importSpotifyPlaylist;
+      if (!url || !importer) {
+        setSpotifyImportProgress({
+          stage: 'error',
+          progress: 0,
+          message: provider === 'apple' ? 'Apple Music import is unavailable in this desktop build.' : 'Spotify import is unavailable in this desktop build.',
+        });
+        return;
+      }
 
       setIsSpotifyImporting(true);
       setSpotifyImportLogs([]);
-      appendSpotifyImportLog(`start url=${url}`);
-      setSpotifyImportProgress({ stage: 'starting', progress: 1, message: 'Preparing import…' });
+      appendSpotifyImportLog(`start provider=${provider} url=${url}`);
+      setSpotifyImportProgress({ stage: 'starting', progress: 1, message: `Preparing ${provider === 'apple' ? 'Apple Music' : 'Spotify'} import...` });
       try {
-        const res = await window.aether.importSpotifyPlaylist(url.trim());
+        const res = await importer(url.trim());
         appendSpotifyImportLog(`result success=${!!res?.success} matched=${res?.matchedTracks ?? 0} total=${res?.totalTracks ?? 0}`);
         if (!res?.success) {
           const debug = res?.debug
             ? ` [id=${res.debug.playlistId || '-'} htmlIds=${res.debug.htmlTrackIdCount ?? '-'} htmlLabels=${res.debug.htmlLabelCount ?? '-'}]`
             : '';
-          setSpotifyImportProgress({ stage: 'error', progress: 0, message: `${res?.error || 'Spotify import failed.'}${debug}` });
-          appendSpotifyImportLog(`error ${res?.error || 'Spotify import failed.'}${debug}`);
+          setSpotifyImportProgress({ stage: 'error', progress: 0, message: `${res?.error || 'Playlist import failed.'}${debug}` });
+          appendSpotifyImportLog(`error ${res?.error || 'Playlist import failed.'}${debug}`);
           return;
         }
 
@@ -6066,22 +7930,25 @@ function App() {
           const debugHint = res?.debug
             ? ` (${res.debug.matchedTracks}/${res.debug.searchedTracks} matched${res.debug.missedSamples?.length ? ` • sample misses: ${res.debug.missedSamples.slice(0, 2).join(' | ')}` : ''})`
             : '';
-          setSpotifyImportProgress({ stage: 'complete', progress: 100, message: `Imported the shell for “${res.playlistName}”, but no playable matches were found${debugHint}.` });
+          setSpotifyImportProgress({ stage: 'complete', progress: 100, message: `Imported the shell for "${res.playlistName}", but no playable matches were found${debugHint}.` });
           return;
         }
 
-        const playlistName = res.playlistName || 'Spotify Playlist';
-        const uniquePlaylistName = playlists[playlistName] ? `${playlistName} (Spotify)` : playlistName;
+        const providerLabel = provider === 'apple' ? 'Apple Music' : 'Spotify';
+        const playlistName = res.playlistName || `${providerLabel} Playlist`;
+        const uniquePlaylistName = playlists[playlistName] ? `${playlistName} (${providerLabel})` : playlistName;
         const nextPlaylists = { ...playlists, [uniquePlaylistName]: res.tracks };
         setPlaylists(nextPlaylists);
+        persistPlaylistOrder([...playlistOrder.filter((name) => name !== uniquePlaylistName), uniquePlaylistName]);
         window.aether?.store?.set('playlists', nextPlaylists);
-        setLastAdded(`Imported ${res.matchedTracks}/${res.totalTracks} Spotify tracks`);
+        setLastAdded(`Imported ${res.matchedTracks}/${res.totalTracks} ${providerLabel} tracks`);
         setTimeout(() => setLastAdded(null), 3500);
         setIsSpotifyImportOpen(false);
         setSpotifyImportUrl('');
+        setMusicImportProvider('');
         setSpotifyImportProgress({ stage: 'complete', progress: 100, message: `Imported ${res.matchedTracks}/${res.totalTracks} tracks` });
       } catch (err) {
-        const message = err?.message || 'Spotify import failed.';
+        const message = err?.message || 'Playlist import failed.';
         appendSpotifyImportLog(`exception ${message}`);
         setSpotifyImportProgress({ stage: 'error', progress: 0, message });
       } finally {
@@ -6157,68 +8024,114 @@ function App() {
       const trackKey = track.id || track.youtubeId || normalizeTrackIdentity(track);
       const dateKey = getLocalDateKey(now);
       const completed = options.reason === 'natural_end' || (trackDurationMs > 0 && playedMs >= trackDurationMs * 0.92);
+      const sessionState = ledgerSessionRef.current;
+      const sessionId = sessionState.trackKey === trackKey && sessionState.id
+        ? sessionState.id
+        : `${trackKey || 'track'}-${track.queueNonce || now.getTime()}`;
+      const previousLoggedMs = sessionState.trackKey === trackKey && sessionState.id === sessionId
+        ? Math.max(0, Math.floor(Number(sessionState.lastLoggedMs) || 0))
+        : 0;
+      const deltaMs = Math.max(0, playedMs - previousLoggedMs);
+      const shouldCountSession = !(sessionState.trackKey === trackKey && sessionState.id === sessionId && sessionState.counted);
+      const isFinalWrite = options.reason === 'natural_end' || options.reason === 'skip' || options.reason === 'previous' || options.final;
+      const hasMeaningfulProgress = playedMs >= 15000 || completed || isFinalWrite;
+      const shouldPersist = hasMeaningfulProgress && (shouldCountSession || deltaMs >= 12000 || isFinalWrite);
 
-      if (trackKey) {
-        if (!data.tracks[trackKey]) {
-          data.tracks[trackKey] = {
-            count: 0,
-            totalMs: 0,
-            title: track.title,
-            author: track.author,
-            thumbnail: track.thumbnail,
-            lastListened: null,
-            lastCompletedAt: null,
-          };
-        }
-        data.tracks[trackKey].count += 1;
-        data.tracks[trackKey].totalMs = Math.max(0, Math.floor(Number(data.tracks[trackKey].totalMs) || 0)) + playedMs;
-        data.tracks[trackKey].lastListened = now.toISOString();
-        if (completed) data.tracks[trackKey].lastCompletedAt = now.toISOString();
+      if (!trackKey || !shouldPersist) return;
+
+      if (!data.tracks[trackKey]) {
+        data.tracks[trackKey] = {
+          count: 0,
+          totalMs: 0,
+          title: track.title,
+          author: track.author,
+          thumbnail: track.thumbnail,
+          lastListened: null,
+          lastCompletedAt: null,
+        };
       }
+      if (shouldCountSession) data.tracks[trackKey].count += 1;
+      data.tracks[trackKey].totalMs = Math.max(0, Math.floor(Number(data.tracks[trackKey].totalMs) || 0)) + deltaMs;
+      data.tracks[trackKey].title = track.title || data.tracks[trackKey].title;
+      data.tracks[trackKey].author = track.author || data.tracks[trackKey].author;
+      data.tracks[trackKey].thumbnail = track.thumbnail || data.tracks[trackKey].thumbnail;
+      data.tracks[trackKey].lastListened = now.toISOString();
+      if (completed) data.tracks[trackKey].lastCompletedAt = now.toISOString();
 
       const author = track.author?.trim();
       if (author) {
         if (!data.artists[author]) data.artists[author] = { count: 0, totalMs: 0 };
-        data.artists[author].count += 1;
-        data.artists[author].totalMs = Math.max(0, Math.floor(Number(data.artists[author].totalMs) || 0)) + playedMs;
+        if (shouldCountSession) data.artists[author].count += 1;
+        data.artists[author].totalMs = Math.max(0, Math.floor(Number(data.artists[author].totalMs) || 0)) + deltaMs;
       }
 
-      data.hourlyTrends[hour] = (data.hourlyTrends[hour] || 0) + 1;
-      data.weeklyTrends[day] = (data.weeklyTrends[day] || 0) + 1;
-      data.dailyMinutes[dateKey] = (data.dailyMinutes[dateKey] || 0) + playedMs;
-      data.dailyPlays[dateKey] = (data.dailyPlays[dateKey] || 0) + 1;
+      data.dailyMinutes[dateKey] = (data.dailyMinutes[dateKey] || 0) + deltaMs;
+      if (shouldCountSession) {
+        data.hourlyTrends[hour] = (data.hourlyTrends[hour] || 0) + 1;
+        data.weeklyTrends[day] = (data.weeklyTrends[day] || 0) + 1;
+        data.dailyPlays[dateKey] = (data.dailyPlays[dateKey] || 0) + 1;
+      }
 
       const titleLower = track.title?.toLowerCase() || '';
       const authorLower = track.author?.toLowerCase() || '';
-      PLAYBACK_GENRE_SIGNALS.forEach((signal) => {
-        if (titleLower.includes(signal) || authorLower.includes(signal)) {
-          data.genres[signal] = (data.genres[signal] || 0) + 1;
-        }
-      });
+      if (shouldCountSession) {
+        PLAYBACK_GENRE_SIGNALS.forEach((signal) => {
+          if (titleLower.includes(signal) || authorLower.includes(signal)) {
+            data.genres[signal] = (data.genres[signal] || 0) + 1;
+          }
+        });
+      }
 
-      data.totalMs = Math.max(0, Math.floor(Number(data.totalMs) || 0)) + playedMs;
+      data.totalMs = Math.max(0, Math.floor(Number(data.totalMs) || 0)) + deltaMs;
       data.totalMinutes = Math.round(data.totalMs / 60000);
-      data.totalPlays = Math.max(0, Math.floor(Number(data.totalPlays) || 0)) + 1;
-      data.totalSessions = Math.max(0, Math.floor(Number(data.totalSessions) || 0)) + 1;
+      if (shouldCountSession) {
+        data.totalPlays = Math.max(0, Math.floor(Number(data.totalPlays) || 0)) + 1;
+        data.totalSessions = Math.max(0, Math.floor(Number(data.totalSessions) || 0)) + 1;
+      }
+      const existingSession = (Array.isArray(data.recentSessions) ? data.recentSessions : []).find((entry) => entry?.id === sessionId);
       data.recentSessions = [
         {
-          id: `${trackKey}-${now.getTime()}`,
+          id: sessionId,
           trackId: String(trackKey || ''),
           title: String(track.title || 'Unknown track'),
           author: String(track.author || 'Unknown artist'),
           thumbnail: String(track.thumbnail || ''),
-          playedMs,
-          completed,
-          startedAt: null,
+          playedMs: Math.max(playedMs, Math.floor(Number(existingSession?.playedMs) || 0)),
+          completed: Boolean(completed || existingSession?.completed),
+          startedAt: existingSession?.startedAt || now.toISOString(),
           endedAt: now.toISOString(),
           reason: String(options.reason || 'session'),
         },
-        ...(Array.isArray(data.recentSessions) ? data.recentSessions : []).filter((entry) => entry?.id !== `${trackKey}-${now.getTime()}`),
+        ...(Array.isArray(data.recentSessions) ? data.recentSessions : []).filter((entry) => entry?.id !== sessionId),
       ].slice(0, 24);
 
       await window.aether.store.set(PLAYBACK_LEDGER_STORAGE_KEY, data);
+      ledgerSessionRef.current = {
+        id: sessionId,
+        trackKey,
+        counted: true,
+        lastLoggedMs: Math.max(playedMs, previousLoggedMs),
+      };
     } catch (e) { console.error('[Aether] Sound capsule write failed', e); }
   }, [isStandalone, normalizeTrackIdentity]);
+
+  useEffect(() => {
+    ledgerSessionRef.current = { id: '', trackKey: '', counted: false, lastLoggedMs: 0 };
+  }, [currentTrack?.actualUrl, currentTrack?.id, currentTrack?.queueNonce, currentTrack?.url, currentTrack?.youtubeId]);
+
+  useEffect(() => {
+    if (!isStandalone || !isPlaying || !currentTrack || !window.aether?.store) return;
+    const flushLiveLedger = () => {
+      if (Math.max(0, Math.floor(Number(currentTimeRef.current) || 0)) < 15000) return;
+      logSoundCapsulePlayback(currentTrack, { reason: 'live' });
+    };
+    const interval = window.setInterval(flushLiveLedger, 45000);
+    const warmup = window.setTimeout(flushLiveLedger, 18000);
+    return () => {
+      window.clearInterval(interval);
+      window.clearTimeout(warmup);
+    };
+  }, [currentTrack, isPlaying, isStandalone, logSoundCapsulePlayback]);
 
   // Consolidate queue advancement logic
   const advanceQueue = useCallback((reason) => {
@@ -6318,7 +8231,7 @@ function App() {
     currentTimeRef.current = 0;
     setCurrentTime(0);
     manualTransportAdvanceRef.current = null;
-  }, [appendRecentEvent, getTrackActionKey, isAutoplayEnabled, isPlaying, noteSkipReason, queue, repeatMode, triggerAutoplay]);
+  }, [appendRecentEvent, getTrackActionKey, isAutoplayEnabled, isPlaying, logSoundCapsulePlayback, noteSkipReason, queue, repeatMode, triggerAutoplay]);
 
   const advanceQueueRef = useRef(advanceQueue);
   useEffect(() => {
@@ -6342,7 +8255,7 @@ function App() {
         
         // PREVIOUS TRACK: If > 3s into current, restart. Otherwise go to previous track.
         if (action === 'previous') {
-            if (currentTime > 3000) {
+            if ((currentTimeRef.current || 0) > 3000) {
                 // Restart current track
                 console.log("[Aether/Control] Restarting current track (> 3s in)");
                 seekActivePlaybackTo(0);
@@ -6458,55 +8371,9 @@ function App() {
         guildId: getEffectiveGuildId(),
       });
     }
-  }, [isStandalone, API_BASE, history, isAutoplayEnabled, getEffectiveGuildId, noteSkipReason, queue, currentTime, getTrackActionKey, seekActivePlaybackTo]);
+  }, [isStandalone, API_BASE, history, isAutoplayEnabled, getEffectiveGuildId, noteSkipReason, queue, getTrackActionKey, seekActivePlaybackTo]);
 
   const [accentColor, setAccentColor] = useState('#00ffbf');
-
-  useEffect(() => {
-    if (!isPlaying) {
-      uiPulseRef.current = 1;
-      uiPulseSignalRef.current = { bass: 0, rms: 0 };
-      uiPulsePeakRef.current = 0;
-      return;
-    }
-    let animationFrame;
-    const updatePulse = () => {
-      if (analyserRef.current) {
-        const freq = new Uint8Array(analyserRef.current.frequencyBinCount);
-        analyserRef.current.getByteFrequencyData(freq);
-
-        const bassBins = Math.max(8, Math.floor(freq.length * 0.08));
-        let bassSum = 0;
-        for (let i = 0; i < bassBins; i += 1) bassSum += freq[i] || 0;
-        const bassNorm = (bassSum / bassBins) / 255;
-
-        const timeDomain = new Uint8Array(analyserRef.current.fftSize);
-        analyserRef.current.getByteTimeDomainData(timeDomain);
-        let sq = 0;
-        for (let i = 0; i < timeDomain.length; i += 1) {
-          const v = (timeDomain[i] - 128) / 128;
-          sq += v * v;
-        }
-        const rmsNorm = Math.min(1, Math.sqrt(sq / timeDomain.length) * 2.1);
-
-        const smoothBass = lerp(uiPulseSignalRef.current.bass, bassNorm, 0.35);
-        const smoothRms = lerp(uiPulseSignalRef.current.rms, rmsNorm, 0.28);
-        uiPulseSignalRef.current = { bass: smoothBass, rms: smoothRms };
-
-        const beatAccent = clamp01(Math.max(0, bassNorm - smoothBass) * 3.2);
-        uiPulsePeakRef.current = Math.max(beatAccent, uiPulsePeakRef.current * 0.9);
-        const peak = uiPulsePeakRef.current;
-        const energy = clamp01(smoothBass * 0.95 + smoothRms * 0.75 + peak * 1.05);
-
-        const target = (visualizerMode === 'pulse') ? (1 + energy * 0.22) : 1;
-        const smoothing = target > uiPulseRef.current ? 0.62 : 0.2;
-        uiPulseRef.current = lerp(uiPulseRef.current, target, smoothing);
-      }
-      animationFrame = requestAnimationFrame(updatePulse);
-    };
-    updatePulse();
-    return () => cancelAnimationFrame(animationFrame);
-  }, [isPlaying, visualizerMode]);
 
   const handleSeek = useCallback(async (time) => {
     // Neural Seek Link
@@ -6518,47 +8385,26 @@ function App() {
     seekActivePlaybackTo(time);
   }, [API_BASE, getEffectiveGuildId, seekActivePlaybackTo]);
 
-  const memoizedLyricsContent = useMemo(() => lyrics.map((line, idx) => {
-    const isActive = idx === activeLyricIndex;
-    const distance = Math.abs(idx - activeLyricIndex);
-    
-    // Optimized class selection to avoid building massive strings every render
-    let lyricLineClass = "";
-    if (isDualWorkspaceMode) {
-      lyricLineClass = "max-w-[min(92%,760px)] px-3 md:px-5 text-2xl sm:text-3xl lg:text-5xl font-black leading-tight w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] transition-[transform,opacity,filter,color,text-shadow] duration-450 ease-[cubic-bezier(0.22,1,0.36,1)] transform-gpu origin-center will-change-[transform,opacity,filter]";
-      if (isActive) lyricLineClass += " text-brand-accent scale-[1.06] opacity-100 drop-shadow-[0_0_24px_rgba(0,255,191,0.34)]";
-      else if (distance === 1) lyricLineClass += " text-white/52 opacity-68 scale-[1.02]";
-      else if (distance === 2) lyricLineClass += " text-white/30 opacity-34 scale-100 blur-[0.45px]";
-      else lyricLineClass += " text-white/18 opacity-18 scale-[0.985] blur-[0.85px]";
-    } else {
-      lyricLineClass = "text-base sm:text-lg lg:text-xl font-bold transition-[transform,opacity,filter,color,text-shadow] duration-380 ease-[cubic-bezier(0.22,1,0.36,1)] transform-gpu leading-snug py-1.5 relative will-change-[transform,opacity,filter]";
-      if (isActive) lyricLineClass += " text-brand-accent scale-[1.035] opacity-100 drop-shadow-[0_0_12px_rgba(0,255,191,0.34)]";
-      else if (distance === 1) lyricLineClass += " text-white/78 opacity-92";
-      else if (distance === 2) lyricLineClass += " text-white/48 opacity-68 blur-[0.25px]";
-      else lyricLineClass += " text-white/30 opacity-48 blur-[0.7px]";
-    }
+  const handleLyricLineSeek = useCallback((lineTime) => {
+    handleSeek(lineTime + (currentTrackRef.current?.introOffsetMs || 0) + (lyricOffsetMs || 0));
+  }, [handleSeek, lyricOffsetMs]);
 
+  const memoizedLyricsContent = useMemo(() => lyrics.map((line, idx) => {
+    const distance = Math.abs(idx - activeLyricIndex);
+    const bucket = distance === 0 ? 'active' : distance === 1 ? 'near' : distance === 2 ? 'mid' : 'far';
     return (
-      <div 
-        key={`${idx}-${line.time}`} 
-        ref={isActive ? activeLyricRef : null} 
-        className={`${lyricLineClass} cursor-pointer hover:!opacity-90 hover:!text-white/75 hover:!scale-[1.015] hover:-translate-y-[1px] transition-all`}
-        onClick={() => handleSeek(line.time + (currentTrack?.introOffsetMs || 0) + (lyricOffsetMs || 0))}
-        style={isDualWorkspaceMode ? { textWrap: 'balance', transitionDelay: `${Math.min(distance, 3) * 18}ms` } : { transitionDelay: `${Math.min(distance, 3) * 14}ms` }}
-      >
-        {line.text}
-        {isActive && isAuraMode && !isDualWorkspaceMode && (
-          <div 
-            className="absolute bottom-0 left-0 right-0 h-1 rounded-full bg-gradient-to-r from-transparent via-brand-accent to-transparent lyric-pulse-line"
-            style={{
-              animation: `lyric-shimmer ${0.4 + (parseFloat(String(vaultPulse.bass)) || 0) * 0.2}s ease-in-out infinite`,
-              transition: 'opacity 60ms ease-out'
-            }}
-          />
-        )}
-      </div>
+      <LyricLineIsland
+        key={`${idx}-${line.time}`}
+        bucket={bucket}
+        index={idx}
+        isActive={idx === activeLyricIndex}
+        isDualWorkspaceMode={isDualWorkspaceMode}
+        line={line}
+        onSeek={handleLyricLineSeek}
+        setActiveRef={activeLyricRef}
+      />
     );
-  }), [lyrics, activeLyricIndex, isDualWorkspaceMode, isAuraMode, vaultPulse.bass, handleSeek, currentTrack?.introOffsetMs, lyricOffsetMs]);
+  }), [lyrics, activeLyricIndex, isDualWorkspaceMode, handleLyricLineSeek]);
 
   const handleRemove = useCallback(async (index) => {
     if (isStandalone) {
@@ -6607,28 +8453,28 @@ function App() {
   }, [videoMode]);
 
   const toggleDiagnostics = useCallback(() => {
-    setIsDiagnosticsOpen((prev) => {
-      const next = !prev;
+    const next = !isDiagnosticsOpen;
+    runAfterInputPaint(() => {
       if (next) closeHeaderSurfaces('diagnostics');
-      return next;
+      setIsDiagnosticsOpen(next);
     });
-  }, [closeHeaderSurfaces]);
+  }, [closeHeaderSurfaces, isDiagnosticsOpen, runAfterInputPaint]);
 
   const toggleLooksPanel = useCallback(() => {
-    setIsLooksPanelOpen((prev) => {
-      const next = !prev;
+    const next = !isLooksPanelOpen;
+    runAfterInputPaint(() => {
       if (next) closeHeaderSurfaces('looks');
-      return next;
+      setIsLooksPanelOpen(next);
     });
-  }, [closeHeaderSurfaces]);
+  }, [closeHeaderSurfaces, isLooksPanelOpen, runAfterInputPaint]);
 
   const toggleSleepTimerMenu = useCallback(() => {
-    setIsSleepTimerMenuOpen((prev) => {
-      const next = !prev;
+    const next = !isSleepTimerMenuOpen;
+    runAfterInputPaint(() => {
       if (next) closeHeaderSurfaces('sleep');
-      return next;
+      setIsSleepTimerMenuOpen(next);
     });
-  }, [closeHeaderSurfaces]);
+  }, [closeHeaderSurfaces, isSleepTimerMenuOpen, runAfterInputPaint]);
 
   const cycleRepeatMode = useCallback(() => {
     setRepeatMode((prev) => {
@@ -7346,9 +9192,16 @@ function App() {
     };
 
     const onShortcut = (e) => {
+      if (e.defaultPrevented || e.repeat || isNativeKeyboardTarget(e)) return;
+
       const hasBlockingOverlayOpen = Boolean(
         oauthPrompt
         || isTipsOverlayOpen
+        || headerControlsRef.current?.isOpen()
+        || feedbackRef.current?.isOpen()
+        || gestureLabRef.current?.isOpen()
+        || soundCapsuleRef.current?.isOpen()
+        || appLockSettingsRef.current?.isOpen()
         || isShortcutSettingsOpen
         || isLockModalOpen
         || isSpotifyImportOpen
@@ -7373,22 +9226,22 @@ function App() {
       const hasControlMods = e.metaKey || e.ctrlKey || e.altKey;
       if (isTypingTarget(document.activeElement) && !hasControlMods) return;
 
-      if (isShortcutEventMatch(e, shortcuts.playPause, isMacPlatform)) {
+      if (isParsedShortcutEventMatch(e, parsedShortcuts.playPause)) {
         e.preventDefault();
         handleControl(isPlaying ? 'pause' : 'resume');
         return;
       }
-      if (isShortcutEventMatch(e, shortcuts.previous, isMacPlatform)) {
+      if (isParsedShortcutEventMatch(e, parsedShortcuts.previous)) {
         e.preventDefault();
         handleControl('previous');
         return;
       }
-      if (isShortcutEventMatch(e, shortcuts.next, isMacPlatform)) {
+      if (isParsedShortcutEventMatch(e, parsedShortcuts.next)) {
         e.preventDefault();
         handleControl('skip');
         return;
       }
-      if (isShortcutEventMatch(e, shortcuts.volumeUp, isMacPlatform)) {
+      if (isParsedShortcutEventMatch(e, parsedShortcuts.volumeUp)) {
         e.preventDefault();
         setVolume(prev => {
           const next = Math.min(1, prev + 0.08);
@@ -7400,7 +9253,7 @@ function App() {
         setTimeout(() => setVolumeToast(false), 1200);
         return;
       }
-      if (isShortcutEventMatch(e, shortcuts.volumeDown, isMacPlatform)) {
+      if (isParsedShortcutEventMatch(e, parsedShortcuts.volumeDown)) {
         e.preventDefault();
         setVolume(prev => {
           const next = Math.max(0, prev - 0.08);
@@ -7412,27 +9265,27 @@ function App() {
         setTimeout(() => setVolumeToast(false), 1200);
         return;
       }
-      if (isShortcutEventMatch(e, shortcuts.mute, isMacPlatform)) {
+      if (isParsedShortcutEventMatch(e, parsedShortcuts.mute)) {
         e.preventDefault();
         handleControl('mute');
         return;
       }
-      if (isShortcutEventMatch(e, shortcuts.clearQueue, isMacPlatform)) {
+      if (isParsedShortcutEventMatch(e, parsedShortcuts.clearQueue)) {
         e.preventDefault();
         handleControl('clear');
         return;
       }
-      if (isShortcutEventMatch(e, shortcuts.focusMode, isMacPlatform)) {
+      if (isParsedShortcutEventMatch(e, parsedShortcuts.focusMode)) {
         e.preventDefault();
         toggleFocusMode();
         return;
       }
-      if (isStandalone && isShortcutEventMatch(e, shortcuts.miniPlayer, isMacPlatform)) {
+      if (isStandalone && isParsedShortcutEventMatch(e, parsedShortcuts.miniPlayer)) {
         e.preventDefault();
         toggleMiniPlayer();
         return;
       }
-      if (isShortcutEventMatch(e, shortcuts.diagnostics, isMacPlatform)) {
+      if (isParsedShortcutEventMatch(e, parsedShortcuts.diagnostics)) {
         e.preventDefault();
         toggleDiagnostics();
       }
@@ -7440,7 +9293,7 @@ function App() {
 
     window.addEventListener('keydown', onShortcut);
     return () => window.removeEventListener('keydown', onShortcut);
-  }, [handleControl, inspectTarget, isAuraStageOpen, isFeedbackOpen, isGestureLabOpen, isLibraryOverlayOpen, isLockModalOpen, isMacPlatform, isManualLyricsEditorOpen, isManualLyricsRawEditorOpen, isMixtapeVaultOpen, isPlayerOverlayOpen, isPlaying, isShortcutSettingsOpen, isSharedSceneOpen, isSpotifyImportOpen, isStandalone, isTipsOverlayOpen, isViewingFullDiscovery, isViewingFullPlaylist, isViewingFullQueue, oauthPrompt, shortcuts, toggleDiagnostics, toggleFocusMode, toggleMiniPlayer]);
+  }, [handleControl, inspectTarget, isAuraStageOpen, isFeedbackOpen, isGestureLabOpen, isLibraryOverlayOpen, isLockModalOpen, isManualLyricsEditorOpen, isManualLyricsRawEditorOpen, isMixtapeVaultOpen, isPlayerOverlayOpen, isPlaying, isShortcutSettingsOpen, isSharedSceneOpen, isSpotifyImportOpen, isStandalone, isTipsOverlayOpen, isViewingFullDiscovery, isViewingFullPlaylist, isViewingFullQueue, oauthPrompt, parsedShortcuts, toggleDiagnostics, toggleFocusMode, toggleMiniPlayer]);
 
   if (loading) return (
     <div className="h-screen w-full bg-[#0a0a0a] flex flex-col items-center justify-center gap-6 p-6 text-center">
@@ -7615,11 +9468,9 @@ function App() {
 
   if (isMiniPlayer) {
     const miniDurationMs = currentTrack?.totalDurationMs || currentTrack?.duration || 0;
-    const miniProgressPct = miniDurationMs > 0 ? clamp01(currentTime / miniDurationMs) * 100 : 0;
     const miniTitle = currentTrack?.title || '';
     const miniArtist = currentTrack?.author || '';
     const miniTitleMarquee = miniTitle.length > 34;
-    const miniProgressSafePct = Number.isFinite(miniProgressPct) ? miniProgressPct : 0;
     const miniUpcomingQueue = queue.slice(1, 4);
     const miniQueueCount = Math.max(0, queue.length - 1);
     const miniShowingLyric = miniPlayerInfoMode === 'lyric' && Boolean(compactLyric);
@@ -7756,25 +9607,17 @@ function App() {
                         </button>
 
                         <div className="space-y-1.5 no-drag">
-                          <div
-                            className={`relative h-1.5 overflow-hidden rounded-full bg-white/10 ${miniDurationMs > 0 ? 'cursor-pointer' : 'cursor-default'}`}
-                            onClick={(e) => {
-                              if (miniDurationMs <= 0) return;
-                              const rect = e.currentTarget.getBoundingClientRect();
-                              const pos = (e.clientX - rect.left) / rect.width;
-                              handleSeek(pos * miniDurationMs);
-                            }}
-                          >
-                            <div
-                              className="absolute inset-y-0 left-0 rounded-full transition-all"
-                              style={{ width: `${miniProgressSafePct}%`, background: miniTrackProgressAccent, boxShadow: `0 0 14px ${miniTrackProgressGlow}` }}
-                            />
-                          </div>
-                          <div className="flex items-center justify-between gap-3 text-[9px] font-mono text-white/36">
-                            <span>{formatTime(currentTime)}</span>
-                            <span className="truncate uppercase tracking-[0.18em] text-white/22">{miniQueueCount > 0 ? `${miniQueueCount} up next` : 'Live audio'}</span>
-                            <span>{formatTime(miniDurationMs)}</span>
-                          </div>
+                          <PlaybackProgressIsland
+                            durationMs={miniDurationMs}
+                            getPositionMs={getActivePlaybackPositionMs}
+                            onSeek={handleSeek}
+                            accent={miniTrackProgressAccent}
+                            glow={miniTrackProgressGlow}
+                            barClassName={`relative h-1.5 overflow-hidden rounded-full bg-white/10 ${miniDurationMs > 0 ? 'cursor-pointer' : 'cursor-default'}`}
+                            fillClassName="absolute inset-y-0 left-0 w-full rounded-full"
+                            timeRowClassName="flex items-center justify-between gap-3 text-[9px] font-mono text-white/36"
+                            middleContent={<span className="truncate uppercase tracking-[0.18em] text-white/22">{miniQueueCount > 0 ? `${miniQueueCount} up next` : 'Live audio'}</span>}
+                          />
                         </div>
                       </div>
 
@@ -7871,6 +9714,8 @@ function App() {
   const trimmedSearchQuery = searchQuery.trim();
   const isSearchActive = trimmedSearchQuery.length > 0;
   const hasActiveSearchState = Boolean(trimmedSearchQuery || searchResults.length > 0 || hasCompletedSearch);
+  const discoveryItems = isSearchActive ? searchResults : neuralRecommendations;
+  const discoveryModeLabel = isSearchActive ? 'RESULT' : 'RECOMMENDATION';
 
   const diagnosticsApiBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
   const queuePollDisplay = isStandalone ? 'local' : `${diagnostics.lastQueueFetchMs ?? '—'}ms`;
@@ -8025,7 +9870,6 @@ function App() {
     setTimeout(() => setLastAdded(null), 2600);
   };
   const auraStageDurationMs = currentTrack?.totalDurationMs || currentTrack?.duration || 0;
-  const auraStageProgress = auraStageDurationMs > 0 ? clamp01(currentTime / auraStageDurationMs) * 100 : 0;
   const auraStagePulseScale = 1 + immersiveBeatIntensity * 0.12;
   const rootModeClass = [
     isVerticalStack ? 'vertical-stack-mode' : '',
@@ -8294,8 +10138,8 @@ function App() {
               <span className="rounded-full border border-brand-accent/30 bg-brand-accent/10 px-1.5 py-[2px] text-[7px] font-black uppercase tracking-[0.18em] text-brand-accent/80">
                 {BUILD_VERSION}
               </span>
-              <span className="rounded-full border border-white/10 bg-white/[0.03] px-1.5 py-[2px] text-[7px] font-black uppercase tracking-[0.18em] text-white/45">
-                beta
+              <span className="rounded-full border border-white/10 bg-white/[0.035] px-1.5 py-[2px] text-[7px] font-black uppercase tracking-[0.16em] text-white/55">
+                v{APP_VERSION}
               </span>
             </div>
             <div className="mt-1 flex min-w-0 items-center gap-2 text-[8px] font-black uppercase tracking-[0.22em] text-white/38">
@@ -8305,381 +10149,68 @@ function App() {
           </div>
         </div>
 
-        <div className="hidden md:flex items-center gap-2 no-drag" data-no-maximize="true">
-          <button
-            onClick={async () => {
-              if (window.aether?.store) {
-                const data = await window.aether.store.get(PLAYBACK_LEDGER_STORAGE_KEY);
-                setSoundCapsuleData(normalizePlaybackLedgerData(data));
-              }
-              setIsSoundCapsuleOpen(true);
-            }}
-            className={`${headerAccentButtonClass} group`}
-            title="Open Signal Ledger"
-          >
-            <Activity size={16} className="group-hover:animate-pulse" />
-          </button>
-          <button
-            onClick={() => setIsGestureLabOpen(true)}
-            className={`${headerIconButtonClass} ${isGestureControlEnabled ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`}
-            title="Gesture Lab"
-          >
-            <Hand size={15} />
-          </button>
-          <button
-            onClick={openFeedbackPanel}
-            className={headerIconButtonClass}
-            title="Send Feedback"
-          >
-            <MessageSquare size={15} />
-          </button>
-          <button
-            onClick={openShortcutSettings}
-            className={headerIconButtonClass}
-            title="Shortcut Settings"
-          >
-            <Keyboard size={16} />
-          </button>
-
-          <div className="relative" ref={looksPanelRef} data-no-maximize="true">
-            <button
-              onClick={toggleLooksPanel}
-              className={`${headerIconButtonClass} ${isLooksPanelOpen ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`}
-              title="Visual presets"
-            >
-              <Sparkles size={14} />
-            </button>
-
-            {isLooksPanelOpen && (
-              <div className="absolute left-0 mt-2 z-[340] w-64 rounded-2xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-3 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
-                <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Visualizer</div>
-                <div className="grid grid-cols-2 gap-1.5 mb-3">
-                  <button
-                    onClick={() => setVisualizerMode('bars')}
-                    className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${visualizerMode === 'bars' ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                  >
-                    Bars
-                  </button>
-                  <button
-                    onClick={() => setVisualizerMode('pulse')}
-                    className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${visualizerMode === 'pulse' ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                  >
-                    Aura
-                  </button>
-                </div>
-
-                <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Aura Preset</div>
-                <div className="grid grid-cols-3 gap-1.5 mb-3">
-                  {AURA_PRESETS.map((preset) => (
-                    <button
-                      key={preset.id}
-                      onClick={() => {
-                        setAuraPreset(preset.id);
-                        setLastAdded(`Aura preset • ${preset.label}`);
-                        setTimeout(() => setLastAdded(null), 1500);
-                      }}
-                      className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${auraPreset === preset.id ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="grid grid-cols-2 gap-1.5 mb-3">
-                  <button
-                    onClick={() => {
-                      setIsDepthMotionEnabled((prev) => !prev);
-                      setLastAdded(isDepthMotionEnabled ? 'Depth motion disabled' : 'Depth motion enabled');
-                      setTimeout(() => setLastAdded(null), 1500);
-                    }}
-                    className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${isDepthMotionEnabled ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                  >
-                    Depth
-                  </button>
-                  <button
-                    onClick={() => {
-                      setIsGestureLabOpen(true);
-                      setIsLooksPanelOpen(false);
-                    }}
-                    className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${isGestureControlEnabled ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                  >
-                    Gesture
-                  </button>
-                </div>
-
-                <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Doodle Preset</div>
-                <div className="grid grid-cols-3 gap-1.5 mb-3">
-                  {DOODLE_PRESETS.map((preset) => (
-                    <button
-                      key={preset.id}
-                      onClick={() => {
-                        setDoodleIntensity(preset.id);
-                        setLastAdded(`Doodle preset • ${preset.label}`);
-                        setTimeout(() => setLastAdded(null), 1500);
-                      }}
-                      className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${doodleIntensity === preset.id ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                    >
-                      {preset.badge}
-                    </button>
-                  ))}
-                </div>
-
-                <button
-                  onClick={() => {
-                    const next = !isDoodleMode;
-                    setIsDoodleMode(next);
-                    setLastAdded(next ? 'Doodle mode enabled' : 'Doodle mode disabled');
-                    setTimeout(() => setLastAdded(null), 1600);
-                  }}
-                  className={`w-full px-3 py-2 rounded-xl border text-[10px] font-black uppercase tracking-[0.14em] transition-colors ${isDoodleMode ? 'bg-brand-accent/15 border-brand-accent/40 text-brand-accent mb-3' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35 mb-3'}`}
-                >
-                  {isDoodleMode ? `Doodle ON • ${doodleIntensityBadge}` : 'Enable Doodle'}
-                </button>
-
-                <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2 mt-1 border-t border-white/10 pt-3">System & Tools</div>
-                <div className="grid grid-cols-2 gap-1.5">
-                  <button
-                    onClick={() => {
-                      setIsAuraStageOpen(true);
-                      setIsLooksPanelOpen(false);
-                    }}
-                    className="flex flex-col items-center justify-center gap-1.5 px-2 py-2 rounded-xl border border-white/10 bg-white/[0.03] text-white/65 transition-colors hover:text-brand-accent hover:border-brand-accent/35"
-                  >
-                    <Layers size={14} />
-                    <span className="text-[8px] font-black uppercase tracking-[0.12em]">Aura Stage</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      toggleDiagnostics();
-                      setIsLooksPanelOpen(false);
-                    }}
-                    className={`flex flex-col items-center justify-center gap-1.5 px-2 py-2 rounded-xl border transition-colors ${isDiagnosticsOpen ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'border-white/10 bg-white/[0.03] text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                  >
-                    <Monitor size={14} />
-                    <span className="text-[8px] font-black uppercase tracking-[0.12em]">Diagnostics</span>
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
+        <HeaderVisualControls
+          ref={headerControlsRef}
+          headerIconButtonClass={headerIconButtonClass}
+          headerAccentButtonClass={headerAccentButtonClass}
+          isGestureControlEnabled={isGestureControlEnabled}
+          openFeedbackPanel={openFeedbackPanel}
+          openGestureLab={openGestureLab}
+          openSignalLedger={openSignalLedger}
+          setVisualizerMode={setVisualizerMode}
+          visualizerMode={visualizerMode}
+          auraPreset={auraPreset}
+          setAuraPreset={setAuraPreset}
+          isDepthMotionEnabled={isDepthMotionEnabled}
+          setIsDepthMotionEnabled={setIsDepthMotionEnabled}
+          isDoodleMode={isDoodleMode}
+          setIsDoodleMode={setIsDoodleMode}
+          doodleIntensity={doodleIntensity}
+          setDoodleIntensity={setDoodleIntensity}
+          doodleIntensityBadge={doodleIntensityBadge}
+          setIsAuraStageOpen={setIsAuraStageOpen}
+          toggleDiagnostics={toggleDiagnostics}
+          isDiagnosticsOpen={isDiagnosticsOpen}
+          setLastAdded={setLastAdded}
+          shortcuts={shortcuts}
+          setShortcuts={setShortcuts}
+          isMacPlatform={isMacPlatform}
+          isStandalone={isStandalone}
+          globalMediaShortcutsEnabled={globalMediaShortcutsEnabled}
+          setGlobalMediaShortcutsEnabled={setGlobalMediaShortcutsEnabled}
+          onSurfaceOpen={(surface) => closeHeaderSurfaces(surface)}
+        />
         <div className="order-3 flex w-full justify-center ultra-compact-hide no-drag md:order-2 md:flex-1 md:max-w-[900px] md:px-4 lg:px-6" data-no-maximize="true">
-          <form onSubmit={handleSearch} className="relative w-full group no-drag" data-no-maximize="true">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-brand-text-dim group-focus-within:text-brand-accent z-10 transition-colors" size={18} />
-            <input
-              type="text"
-              placeholder="Search tracks, artists, or paste a YouTube link"
-              className={`w-full rounded-full pl-12 pr-28 h-11 text-sm md:text-[14px] outline-none transition-all text-ellipsis overflow-hidden whitespace-nowrap ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/[0.04] border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'} disabled:opacity-30 disabled:cursor-not-allowed`}
-              value={searchQuery}
-              disabled={videoMode === 'dual'}
-              onChange={(e) => {
-                setSearchQuery(e.target.value);
-                setHasCompletedSearch(false);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape' && hasActiveSearchState) {
-                  setSearchQuery('');
-                  clearDiscoveryResults();
-                }
-              }}
-            />
-            <div className="absolute right-3 top-1/2 z-10 flex -translate-y-1/2 items-center gap-2">
-              {isSearchActive && /(youtube\.com|youtu\.be)/i.test(trimmedSearchQuery) && (
-                <span className="rounded-full border border-brand-accent/22 bg-brand-accent/10 px-2 py-1 text-[8px] font-black uppercase tracking-[0.18em] text-brand-accent/78">
-                  Link
-                </span>
-              )}
-              {isSearching ? (
-                <Loader2 className="animate-spin text-brand-accent" size={16} />
-              ) : (
-                <button
-                  type="submit"
-                  className="flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-white/42 transition-all hover:border-brand-accent/35 hover:bg-brand-accent/[0.08] hover:text-brand-accent"
-                  title="Run search"
-                >
-                  <Search size={12} />
-                </button>
-              )}
-              {hasActiveSearchState && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSearchQuery('');
-                    clearDiscoveryResults();
-                  }}
-                  className="flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-white/38 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
-                  title="Clear search"
-                >
-                  <X size={12} />
-                </button>
-              )}
-            </div>
-          </form>
+          <HeaderSearchBox
+            searchQuery={searchQuery}
+            isSearching={isSearching}
+            hasActiveSearchState={hasActiveSearchState}
+            isAuraMode={isAuraMode}
+            disabled={videoMode === 'dual'}
+            onSearch={handleSearch}
+            onClear={() => {
+              setSearchQuery('');
+              clearDiscoveryResults();
+            }}
+          />
         </div>
 
         <div className="flex items-center justify-end gap-2 min-w-fit order-3 no-drag" data-no-maximize="true">
-          <div className="relative" ref={sleepTimerMenuRef} data-no-maximize="true">
-            <button
-              onClick={() => setIsSleepTimerOverlayOpen((p) => !p)}
-              className={`${(sleepTimerValue > 0 || stopAfterTrack) ? 'no-drag flex h-10 items-center gap-1.5 rounded-2xl border border-brand-accent/35 bg-brand-accent/12 px-3 text-brand-accent shadow-[0_0_14px_rgba(0,255,191,0.12)] transition-all hover:border-brand-accent/55 hover:bg-brand-accent/18' : headerIconButtonClass}`}
-              title={(sleepTimerValue > 0 || stopAfterTrack) ? `Sleep active • ${stopAfterTrack ? 'End of track' : (sleepRemainingStr || `${sleepTimerValue}m`)}` : 'Sleep Timer'}
-            >
-              <div className="relative flex items-center justify-center">
-                <Clock size={14} className={(sleepTimerValue > 0 || stopAfterTrack) ? 'animate-pulse' : ''} />
-                {(sleepTimerValue > 0) && (
-                  <svg className="absolute -inset-1 -rotate-90" viewBox="0 0 24 24">
-                    <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="2" strokeOpacity="0.1" />
-                    <circle 
-                      cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
-                      strokeDasharray="62.8"
-                      strokeDashoffset={62.8 * (1 - Math.max(0, (sleepDeadline - Date.now()) / (sleepTimerValue * 60000)))}
-                    />
-                  </svg>
-                )}
-              </div>
-              {(sleepTimerValue > 0 || stopAfterTrack) && (
-                <span className="ml-1 text-[11px] font-black tracking-[0.12em] tabular-nums">
-                  {stopAfterTrack ? 'END' : (sleepRemainingStr || `${sleepTimerValue}m`)}
-                </span>
-              )}
-            </button>
-
-            {isSleepTimerOverlayOpen && (
-              <div className="absolute right-0 mt-2 z-[340] w-72 rounded-2xl border border-white/12 bg-[#080c10]/96 backdrop-blur-2xl p-4 shadow-[0_18px_60px_rgba(0,0,0,0.55)]">
-                {/* Header */}
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <Clock size={13} className="text-brand-accent" />
-                    <span className="text-[10px] font-black uppercase tracking-[0.26em] text-white/60">Sleep Timer</span>
-                  </div>
-                  {sleepTimerValue > 0 && (
-                    <div className="flex items-center gap-1.5 rounded-full border border-brand-accent/30 bg-brand-accent/10 px-2.5 py-1">
-                      <span className="text-[11px] font-black tabular-nums text-brand-accent">{sleepRemainingStr || `${sleepTimerValue}m`}</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Countdown ring if active */}
-                {sleepTimerValue > 0 && sleepDeadline && (
-                  <div className="mb-4 flex flex-col items-center gap-2">
-                    <div className="relative flex h-20 w-20 items-center justify-center">
-                      <svg className="absolute inset-0 -rotate-90" viewBox="0 0 80 80">
-                        <circle cx="40" cy="40" r="34" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="5" />
-                        <circle
-                          cx="40" cy="40" r="34" fill="none"
-                          stroke="rgba(0,255,191,0.7)" strokeWidth="5"
-                          strokeLinecap="round"
-                          strokeDasharray={`${2 * Math.PI * 34}`}
-                          strokeDashoffset={`${2 * Math.PI * 34 * (1 - Math.max(0, (sleepDeadline - Date.now()) / (sleepTimerValue * 60000)))}`}
-                          style={{ transition: 'stroke-dashoffset 1s linear' }}
-                        />
-                      </svg>
-                      <span className="text-[13px] font-black tabular-nums text-white">{sleepRemainingStr}</span>
-                    </div>
-                    <p className="text-[9px] uppercase tracking-[0.22em] text-white/35">Pausing when timer ends</p>
-                  </div>
-                )}
-
-                {/* Preset buttons */}
-                <div className="mb-3">
-                  <div className="text-[8px] uppercase tracking-[0.22em] text-white/30 mb-2">Presets</div>
-                  <div className="grid grid-cols-4 gap-1.5">
-                    {[15, 30, 60, 120].map((m) => (
-                      <button
-                        key={`sleep-${m}`}
-                        onClick={() => handleSetSleepTimer(m)}
-                        className={`rounded-xl py-2 text-[10px] font-black transition-all ${sleepTimerValue === m ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.3)]' : 'border border-white/10 bg-white/[0.04] text-white/60 hover:border-brand-accent/35 hover:text-brand-accent'}`}
-                      >
-                        {m < 60 ? `${m}m` : `${m / 60}h`}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Custom minutes input */}
-                <div className="mb-3">
-                  <div className="text-[8px] uppercase tracking-[0.22em] text-white/30 mb-2">Custom</div>
-                  <div className="flex gap-2">
-                    <input
-                      type="number"
-                      min="1" max="480"
-                      value={sleepCustomMinutes}
-                      onChange={(e) => setSleepCustomMinutes(e.target.value)}
-                      placeholder="Minutes…"
-                      className="no-drag flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[12px] font-black text-white outline-none placeholder:text-white/25 focus:border-brand-accent/50 focus:bg-brand-accent/[0.04] transition-all"
-                      style={{ WebkitUserSelect: 'text', userSelect: 'text' }}
-                    />
-                    <button
-                      onClick={() => {
-                        const val = parseInt(sleepCustomMinutes, 10);
-                        if (val > 0 && val <= 480) { handleSetSleepTimer(val); setSleepCustomMinutes(''); }
-                      }}
-                      disabled={!sleepCustomMinutes || parseInt(sleepCustomMinutes, 10) <= 0}
-                      className="rounded-xl border border-brand-accent/25 bg-brand-accent/10 px-3 py-2 text-[10px] font-black text-brand-accent transition-all hover:bg-brand-accent hover:text-black disabled:opacity-30"
-                    >
-                      Set
-                    </button>
-                  </div>
-                </div>
-
-                {/* Pausing after current track toggle */}
-                <div className="mb-3 flex items-center justify-between rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2.5 transition-all hover:border-white/15">
-                  <div className="flex items-center gap-2.5">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-accent/10 text-brand-accent">
-                      <Music size={14} />
-                    </div>
-                    <div>
-                      <div className="text-[10px] font-black text-white/85">Stop after track</div>
-                      <div className="text-[8px] text-white/35 mt-0.5">Pause when current song ends</div>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => {
-                        setStopAfterTrack(!stopAfterTrack);
-                        if (!stopAfterTrack) {
-                            setSleepTimerValue(0);
-                            setSleepDeadline(null);
-                        }
-                    }}
-                    className={`h-5 w-9 rounded-full p-1 transition-all ${stopAfterTrack ? 'bg-brand-accent' : 'bg-white/10'}`}
-                  >
-                    <div className={`h-3 w-3 rounded-full bg-white shadow-sm transition-all ${stopAfterTrack ? 'translate-x-4' : 'translate-x-0'}`} />
-                  </button>
-                </div>
-
-                {/* Fade-out toggle */}
-                <div className="mb-4 flex items-center justify-between rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2.5 transition-all hover:border-white/15">
-                  <div className="flex items-center gap-2.5">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/5 text-white/50">
-                      <Zap size={14} />
-                    </div>
-                    <div>
-                      <div className="text-[10px] font-black text-white/85">Fade out audio</div>
-                      <div className="text-[8px] text-white/35 mt-0.5">Smooth volume ramp-down</div>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setSleepFadeEnabled((p) => !p)}
-                    className={`relative h-5 w-9 rounded-full transition-colors ${sleepFadeEnabled ? 'bg-brand-accent' : 'bg-white/15'}`}
-                  >
-                    <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${sleepFadeEnabled ? 'left-[calc(100%-18px)]' : 'left-0.5'}`} />
-                  </button>
-                </div>
-
-                {/* Cancel */}
-                {sleepTimerValue > 0 && (
-                  <button
-                    onClick={() => handleSetSleepTimer(0)}
-                    className="w-full rounded-xl border border-red-500/20 bg-red-500/8 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-red-400 transition-all hover:bg-red-500/18"
-                  >
-                    Cancel Timer
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-
+          <HeaderSleepTimerControls
+            ref={sleepTimerControlsRef}
+            headerIconButtonClass={headerIconButtonClass}
+            sleepTimerValue={sleepTimerValue}
+            stopAfterTrack={stopAfterTrack}
+            sleepRemainingStr={sleepRemainingStr}
+            sleepDeadline={sleepDeadline}
+            handleSetSleepTimer={handleSetSleepTimer}
+            sleepCustomMinutes={sleepCustomMinutes}
+            setSleepCustomMinutes={setSleepCustomMinutes}
+            setStopAfterTrack={setStopAfterTrack}
+            sleepFadeEnabled={sleepFadeEnabled}
+            setSleepFadeEnabled={setSleepFadeEnabled}
+            onSurfaceOpen={() => closeHeaderSurfaces('sleep')}
+          />
           <div className={`hidden md:flex items-center gap-1 rounded-[1.15rem] border p-1 no-drag ${isDualLayoutLocked ? 'border-white/8 bg-white/[0.03]' : 'border-white/12 bg-white/[0.04]'}`} title={isDualLayoutLocked ? 'Layout switching is unavailable while Dual View is active' : 'Workspace layout'}>
             <button
               onClick={() => setIsVerticalStack(false)}
@@ -8700,9 +10231,10 @@ function App() {
           {isStandalone && (
             <button
               onClick={() => {
-                closeHeaderSurfaces();
-                setLockError('');
-                setIsLockModalOpen(true);
+                runAfterInputPaint(() => {
+                  closeHeaderSurfaces('lock');
+                  appLockSettingsRef.current?.open();
+                });
               }}
               className={`${headerIconButtonClass} ${lockStatus.enabled ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`}
               title="App Lock"
@@ -8739,6 +10271,50 @@ function App() {
         </div>
       </header>
       )}
+
+      <SignalLedgerIsland
+        ref={soundCapsuleRef}
+        getProxyUrl={getProxyUrl}
+        currentTrack={currentTrack}
+        isPlaying={isPlaying}
+        getActivePlaybackPositionMs={getActivePlaybackPositionMs}
+      />
+      <GestureLabIsland
+        ref={gestureLabRef}
+        isGestureControlEnabled={isGestureControlEnabled}
+        setIsGestureControlEnabled={setIsGestureControlEnabled}
+        isFaceControlEnabled={isFaceControlEnabled}
+        setIsFaceControlEnabled={setIsFaceControlEnabled}
+        faceControlStatus={faceControlStatus}
+        faceControlSignal={faceControlSignal}
+        cameraHandSignal={cameraHandSignal}
+        sharedModalCloseButtonClass={sharedModalCloseButtonClass}
+      />
+      <FeedbackIsland
+        ref={feedbackRef}
+        platform={platform}
+        isStandalone={isStandalone}
+        currentTrack={currentTrack}
+        getActivePlaybackPositionMs={getActivePlaybackPositionMs}
+        videoMode={videoMode}
+        visualizerMode={visualizerMode}
+        auraPreset={auraPreset}
+        queueLength={queue.length}
+        lyricsCount={lyrics.length}
+        appendRecentEvent={appendRecentEvent}
+        sharedModalCloseButtonClass={sharedModalCloseButtonClass}
+      />
+      <AppLockSettingsIsland
+        ref={appLockSettingsRef}
+        isStandalone={isStandalone}
+        lockStatus={lockStatus}
+        lockIdleMinutes={lockIdleMinutes}
+        setLockIdleMinutes={setLockIdleMinutes}
+        refreshLockStatus={refreshLockStatus}
+        setIsAppLocked={setIsAppLocked}
+        setLastAdded={setLastAdded}
+        sharedModalCloseButtonClass={sharedModalCloseButtonClass}
+      />
 
       <AnimatePresence>
         {isSoundCapsuleOpen && soundCapsuleData && (
@@ -9506,12 +11082,12 @@ function App() {
       >
         
         {/* PLAYER & LYRICS PILLAR */}
-        <div className={`flex flex-col gap-4 min-w-0 overflow-hidden ${leftWorkspaceClass}`}>
+        <div className={`performance-island flex flex-col gap-4 min-w-0 overflow-hidden ${leftWorkspaceClass}`}>
           
           {/* PLAYER CARD */}
           {isDualWorkspaceMode ? (
             <div
-              className={`glass-card relative overflow-hidden shrink-0 rounded-[2.35rem] border border-white/[0.08] px-4 py-4 md:px-5 md:py-4 transition-all duration-500 ${isAuraMode ? 'bg-white/[0.02] border-white/[0.14] backdrop-blur-[28px] shadow-[0_20px_70px_rgba(0,0,0,0.26)]' : 'bg-[#080b10]/88'}`}
+              className={`performance-island glass-card relative overflow-hidden shrink-0 rounded-[2.35rem] border border-white/[0.08] px-4 py-4 md:px-5 md:py-4 transition-all duration-500 ${isAuraMode ? 'bg-white/[0.02] border-white/[0.14] backdrop-blur-[28px] shadow-[0_20px_70px_rgba(0,0,0,0.26)]' : 'bg-[#080b10]/88'}`}
               style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder } : undefined}
             >
               {currentTrack ? (
@@ -9548,50 +11124,14 @@ function App() {
                     </div>
                   </div>
 
-                  <div className="space-y-2">
-                    <div
-                      className="h-1.5 w-full cursor-pointer overflow-hidden rounded-full bg-white/10"
-                      onClick={(e) => {
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        const pos = (e.clientX - rect.left) / rect.width;
-                        handleSeek(pos * (currentTrack.totalDurationMs || currentTrack.duration || 0));
-                      }}
-                    >
-                      <div
-                        className="h-full rounded-full transition-all"
-                        style={{
-                          width: `${currentTrack ? (currentTime / (currentTrack.totalDurationMs || currentTrack.duration || 1)) * 100 : 0}%`,
-                          background: trackProgressAccent,
-                          boxShadow: `0 0 14px ${trackProgressGlow}`,
-                        }}
-                      />
-                    </div>
-
-                    <div className="flex items-center justify-between gap-3 text-[10px] font-mono text-white/42">
-                      <span>{formatTime(currentTime)}</span>
-                      <div className="flex items-center rounded-full border border-white/10 bg-white/[0.04] p-1">
-                        <button
-                          onClick={() => switchVideoMode(null)}
-                          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] transition-all ${videoMode === null ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.34)]' : 'text-white/45 hover:text-white'}`}
-                        >
-                          <Music size={10} /> Audio
-                        </button>
-                        <button
-                          onClick={() => switchVideoMode('dual')}
-                          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] transition-all ${videoMode === 'dual' ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.34)]' : 'text-white/45 hover:text-white'}`}
-                        >
-                          <Columns2 size={10} /> Dual
-                        </button>
-                        <button
-                          onClick={() => switchVideoMode('cinema')}
-                          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] transition-all ${videoMode === 'cinema' ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.34)]' : 'text-white/45 hover:text-white'}`}
-                        >
-                          <Clapperboard size={10} /> Cinema
-                        </button>
-                      </div>
-                      <span>{formatTime(currentTrack.totalDurationMs || currentTrack.duration || 0)}</span>
-                    </div>
-                  </div>
+                  <PlaybackProgressIsland
+                    durationMs={currentTrack.totalDurationMs || currentTrack.duration || 0}
+                    getPositionMs={getActivePlaybackPositionMs}
+                    onSeek={handleSeek}
+                    accent={trackProgressAccent}
+                    glow={trackProgressGlow}
+	                    middleContent={<PlayerModePill videoMode={videoMode} switchVideoMode={switchVideoMode} variant="dual" />}
+                  />
                 </div>
               ) : (
                 <div className="flex h-28 items-center justify-center text-white/25">Standby</div>
@@ -9599,7 +11139,7 @@ function App() {
             </div>
           ) : (
           <div
-            className={`glass-card flex relative overflow-hidden group shrink-0 transition-all duration-700 flex-col sm:flex-row flex-none rounded-[3.5rem] shadow-2xl transition-all ${playerCardClass} ${isAuraMode ? 'bg-white/[0.015] border-white/[0.14] backdrop-blur-[30px] shadow-[0_24px_90px_rgba(0,0,0,0.32)]' : 'border-white/5'}`}
+            className={`performance-island glass-card flex relative overflow-hidden group shrink-0 transition-all duration-700 flex-col sm:flex-row flex-none rounded-[3.5rem] shadow-2xl transition-all ${playerCardClass} ${isAuraMode ? 'bg-white/[0.015] border-white/[0.14] backdrop-blur-[30px] shadow-[0_24px_90px_rgba(0,0,0,0.32)]' : 'border-white/5'}`}
             style={isAuraMode ? { boxShadow: auraCardShadow, borderColor: auraCardBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
           >
             {isAuraMode && (
@@ -9672,96 +11212,58 @@ function App() {
                               <span className="w-1 h-1 rounded-full bg-brand-accent animate-pulse" />
                                {isAudioBuffering ? "Buffering" : "Now Playing"}
                            </div>
-                           <div className="flex items-center gap-1 no-drag ml-auto">
-                             <button disabled={queue.length === 0} onClick={() => handleControl('clear')} className="p-2 text-white/20 hover:text-red-500 transition-colors disabled:opacity-25 disabled:cursor-not-allowed" title="Clear Queue"><Trash2 size={14} /></button>
-                             <button onClick={cycleRepeatMode} className={`relative p-2 transition-colors ${repeatMode === 'off' ? 'text-white/20 hover:text-brand-accent' : 'text-brand-accent'}`} title={repeatModeLabel}>
-                               <Repeat size={14} />
-                               {repeatModeBadge && <span className="absolute right-0 top-0 text-[8px] font-black">{repeatModeBadge}</span>}
-                             </button>
-                             <button onClick={() => {
-                               if (!canOpenCurrentSource) return;
-                               window.aether?.openExternal(currentTrackSourceUrl);
-                             }} disabled={!canOpenCurrentSource} className="p-2 text-white/20 hover:text-brand-accent transition-colors disabled:opacity-25 disabled:cursor-not-allowed" title="Open Source"><ExternalLink size={14} /></button>
-                             <button onClick={handleDownloadCurrentTrack} disabled={!canDownloadCurrentTrack || isDownloadingTrack} className="p-2 text-white/20 hover:text-brand-accent transition-colors disabled:opacity-25 disabled:cursor-not-allowed" title={isDownloadingTrack ? 'Exporting…' : 'Export Audio to File'}><Download size={14} className={isDownloadingTrack ? 'animate-pulse' : ''} /></button>
-                             <button onClick={() => { setLibraryActionTarget({ type: 'track', items: [currentTrack] }); setIsLibraryOverlayOpen(true); }} className="p-2 text-white/20 hover:text-brand-accent transition-colors" title="Save to Library Overlay"><Plus size={14} /></button>
-                             <button onClick={() => openTrackInspect(currentTrack, 'now-playing')} className="p-2 text-white/20 hover:text-brand-accent transition-colors" title="Inspect Track"><Eye size={14} /></button>
-                             <div className="w-px h-3 bg-white/10 mx-1" />
-                               <button onClick={() => setIsPlayerOverlayOpen(true)} className="p-2 text-white/40 hover:text-brand-accent transition-colors" title="Open Player Overlay"><ListMusic size={16} /></button>
-                             <button onClick={() => setIsFocusedMode(!isFocusedMode)} className={`p-2 transition-colors ${isFocusedMode ? 'text-brand-accent' : 'text-white/40 hover:text-brand-accent'}`} title="Toggle Focus Mode"><Target size={16} /></button>
-                           </div>
+	                           <PlayerActionButtons
+	                             canDownloadCurrentTrack={canDownloadCurrentTrack}
+	                             canOpenCurrentSource={canOpenCurrentSource}
+	                             currentTrack={currentTrack}
+	                             currentTrackSourceUrl={currentTrackSourceUrl}
+	                             cycleRepeatMode={cycleRepeatMode}
+	                             handleControl={handleControl}
+	                             handleDownloadCurrentTrack={handleDownloadCurrentTrack}
+	                             isDownloadingTrack={isDownloadingTrack}
+	                             isFocusedMode={isFocusedMode}
+	                             openLibraryOverlay={openLibraryOverlay}
+	                             openTrackInspect={openTrackInspect}
+	                             queueLength={queue.length}
+	                             repeatMode={repeatMode}
+	                             repeatModeBadge={repeatModeBadge}
+	                             repeatModeLabel={repeatModeLabel}
+	                             setIsFocusedMode={setIsFocusedMode}
+	                             setIsPlayerOverlayOpen={setIsPlayerOverlayOpen}
+	                           />
                         </div>
                         <h1 className={`${playerTitleClass} font-black text-white/95 leading-none uppercase tracking-tighter mb-2 line-clamp-2 transition-all duration-700`} style={{ textShadow: visualizerMode === 'pulse' ? `0 0 20px ${themeColor}44` : 'none' }}>{currentTrack.title}</h1>
                         <p className="text-brand-accent text-xs font-black uppercase tracking-[0.3em] opacity-80 transition-all duration-700" style={{ textShadow: visualizerMode === 'pulse' ? `0 0 10px ${themeColor}88` : 'none' }}>{currentTrack.author}</p>
                     </div>
 
                     <div className="mt-auto space-y-6">
-                       <div className="space-y-3">
-                          <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden relative group cursor-pointer" onClick={(e) => {
-                              const rect = e.currentTarget.getBoundingClientRect();
-                              const pos = (e.clientX - rect.left) / rect.width;
-                              handleSeek(pos * (currentTrack.totalDurationMs || currentTrack.duration || 0));
-                          }}>
-                              <motion.div initial={{ width: 0 }} animate={{ width: `${(currentTime / (currentTrack.totalDurationMs || currentTrack.duration || 1)) * 100}%` }} className="absolute inset-0 left-0" style={{ background: trackProgressAccent, boxShadow: `0 0 16px ${trackProgressGlow}` }} />
-                          </div>
-                          <div className="flex justify-between text-[10px] font-mono text-white/30 font-black tracking-widest uppercase">
-                              <span>{formatTime(currentTime)}</span>
-                              <span>{formatTime(currentTrack.totalDurationMs || currentTrack.duration || 0)}</span>
-                          </div>
-                       </div>
+                       <PlaybackProgressIsland
+                         durationMs={currentTrack.totalDurationMs || currentTrack.duration || 0}
+                         getPositionMs={getActivePlaybackPositionMs}
+                         onSeek={handleSeek}
+                         accent={trackProgressAccent}
+                         glow={trackProgressGlow}
+                         barClassName="h-1.5 w-full bg-white/5 rounded-full overflow-hidden relative group cursor-pointer"
+                         fillClassName="absolute inset-0 left-0 w-full"
+                         timeRowClassName="flex justify-between text-[10px] font-mono text-white/30 font-black tracking-widest uppercase"
+                       />
 
                         {/* COMPACT TRANSPORT CLUSTER - CENTERED */}
-                        <div className="flex items-center justify-center w-full mt-2 relative">
-                           <div className={`flex items-center backdrop-blur-3xl border p-2 rounded-3xl gap-4 relative z-10 ${isAuraMode ? 'bg-white/[0.04] border-white/[0.16] shadow-[0_12px_40px_rgba(0,0,0,0.22)]' : 'bg-white/5 border-white/5'}`}>
-                              <button onClick={() => handleControl('previous')} className="p-3 hover:text-brand-accent transition-colors active:scale-90"><Rewind size={22} fill="currentColor" /></button>
-                              <button 
-                                ref={playButtonRef}
-                                onClick={() => handleControl(isPlaying ? 'pause' : 'resume')} 
-                                className="w-16 h-16 text-black rounded-2xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all relative overflow-hidden"
-                                style={{ background: trackControlAccent, boxShadow: `0 0 32px ${trackControlGlow}` }}
-                              >
-                                {isAuraMode && <div ref={beatRingsRef} className="absolute inset-0" />}
-                                {isPlaying ? <Pause size={28} fill="currentColor" /> : <Play size={28} fill="currentColor" className="ml-1" />}
-                              </button>
-                              <button onClick={() => handleControl('skip')} className="p-3 hover:text-brand-accent transition-colors active:scale-90"><FastForward size={22} fill="currentColor" /></button>
-                            </div>
-                         </div>
+	                        <PlayerTransportControls
+	                          beatRingsRef={beatRingsRef}
+	                          handleControl={handleControl}
+	                          isAuraMode={isAuraMode}
+	                          isPlaying={isPlaying}
+	                          playButtonRef={playButtonRef}
+	                          trackControlAccent={trackControlAccent}
+	                          trackControlGlow={trackControlGlow}
+	                        />
 
                          {/* VIDEO MODE TOGGLE PILL */}
                          {currentTrack && isStandalone && (
-                           <div className="flex items-center justify-center mt-4">
-                             <div className="flex items-center bg-white/[0.04] border border-white/10 rounded-2xl p-1 gap-1">
-                               <button
-                                 onClick={() => switchVideoMode(null)}
-                                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                                   videoMode === null
-                                     ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.4)]'
-                                     : 'text-white/40 hover:text-white'
-                                 }`}
-                               >
-                                 <Music size={11} /> Audio
-                               </button>
-                               <button
-                                 onClick={() => switchVideoMode('dual')}
-                                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                                   videoMode === 'dual'
-                                     ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.4)]'
-                                     : 'text-white/40 hover:text-white'
-                                 }`}
-                               >
-                                 <Columns2 size={11} /> Dual
-                               </button>
-                               <button
-                                 onClick={() => switchVideoMode('cinema')}
-                                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                                   videoMode === 'cinema'
-                                     ? 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.4)]'
-                                     : 'text-white/40 hover:text-white'
-                                 }`}
-                               >
-                                 <Clapperboard size={11} /> Cinema
-                               </button>
-                             </div>
-                           </div>
+	                           <div className="flex items-center justify-center mt-4">
+	                             <PlayerModePill videoMode={videoMode} switchVideoMode={switchVideoMode} />
+	                           </div>
                          )}
                       </div>
                    </div>
@@ -9779,7 +11281,7 @@ function App() {
 
           {/* LYRICS PANEL - FLEX-1 TO FILL GAP */}
           <div
-            className={`glass-card overflow-hidden flex flex-col transition-all duration-300 min-h-0 ${panelGlassClass} ${panelInteractiveClass} ${lyricsPanelHeightClass}`}
+            className={`performance-island glass-card overflow-hidden flex flex-col transition-all duration-300 min-h-0 ${panelGlassClass} ${panelInteractiveClass} ${lyricsPanelHeightClass}`}
             style={{
               ...(isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : {}),
             }}
@@ -9904,10 +11406,10 @@ function App() {
 
         {/* RIGHT COLUMN */}
         {showSecondaryColumn && (
-          <div className={`flex flex-col gap-4 min-w-0 ${isVerticalStack ? '!w-full !max-w-full !flex-none pb-20' : 'w-[33.333%] h-full overflow-hidden flex-none'}`}>
+          <div className={`performance-island flex flex-col gap-4 min-w-0 ${isVerticalStack ? '!w-full !max-w-full !flex-none pb-20' : 'w-[33.333%] h-full overflow-hidden flex-none'}`}>
             {/* QUEUE */}
             <div
-              className={`${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col ${isAutoplayMenuOpen ? 'overflow-visible z-[340]' : 'overflow-hidden'} transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}
+              className={`performance-island ${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col ${isAutoplayMenuOpen ? 'overflow-visible z-[340]' : 'overflow-hidden'} transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}
               style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
             >
             <div className={`p-3 border-b border-white/5 flex items-center justify-between ${panelHeaderClass}`}>
@@ -9917,7 +11419,7 @@ function App() {
                </div>
                <div className="flex items-center gap-3">
                  <button 
-                  onClick={() => { if (queue.length > 0) { setLibraryActionTarget({ type: 'queue', items: queue.slice() }); setIsLibraryOverlayOpen(true); } }}
+                  onClick={() => { if (queue.length > 0) openLibraryOverlay({ type: 'queue', items: queue.slice() }); }}
                   className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-brand-accent/20 hover:text-brand-accent"
                   title="Flash Queue to Target Vault"
                  >
@@ -10001,9 +11503,8 @@ function App() {
                 {queue.length > 1 ? queue.slice(1).map((track, idx) => {
                    const warmupId = resolveWarmupTrackId(track);
                    const isDownloaded = warmupId ? downloadedTracks.includes(warmupId) : downloadedTracks.includes(track.id);
-                   if (isDownloaded) console.log(`[Aether] Track ${track.id} is downloaded`);
                    return (
-                   <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} key={`${track.id}-${idx}`} className={`group glass-card p-3 flex items-center gap-4 hover:border-brand-accent/30 transition-all border-white/5 ${isDownloaded ? 'bg-red-500/15 border-red-500/30 shadow-[0_0_20px_rgba(255,0,0,0.35)]' : 'bg-white/[0.01]'}`}>
+                   <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} key={`${track.id}-${idx}`} className={`performance-list-item group glass-card p-3 flex items-center gap-4 hover:border-brand-accent/30 transition-all border-white/5 ${isDownloaded ? 'bg-red-500/15 border-red-500/30 shadow-[0_0_20px_rgba(255,0,0,0.35)]' : 'bg-white/[0.01]'}`}>
                      <img src={getProxyUrl(track.thumbnail)} className="w-12 h-12 rounded-xl object-cover" alt="" />
                      <div className="flex-1 min-w-0">
                        <div className="text-[12px] font-black truncate group-hover:text-brand-accent transition-colors uppercase tracking-widest">{track.title}</div>
@@ -10032,7 +11533,7 @@ function App() {
 
           {/* DISCOVERY */}
           <div
-            className={`${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col overflow-hidden transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}
+            className={`performance-island ${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col overflow-hidden transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}
             style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
           >
             <div className={`p-3 border-b border-white/5 flex items-center justify-between ${panelHeaderClass}`}>
@@ -10053,21 +11554,21 @@ function App() {
             </div>
             <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 pb-6">
               <AnimatePresence>
-                {(searchQuery ? searchResults : neuralRecommendations).map((t) => (
-                   <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} key={t.id} className="glass-card p-4 flex items-center gap-4 hover:border-brand-accent group overflow-hidden relative transition-all active:scale-[0.98] border-white/5">
+                {discoveryItems.map((t) => (
+                   <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} key={t.id} className="performance-list-item glass-card p-4 flex items-center gap-4 hover:border-brand-accent group overflow-hidden relative transition-all active:scale-[0.98] border-white/5">
                      <img src={getProxyUrl(t.thumbnail)} className="w-14 h-14 rounded-2xl object-cover z-10" alt="" />
                      <div className="flex-1 min-w-0 z-10">
                        <div className="text-[13px] font-black truncate group-hover:text-brand-accent transition-colors uppercase tracking-widest">{t.title}</div>
                        <div className="text-[10px] text-brand-text-dim truncate font-bold opacity-50 mt-1 uppercase leading-none">{t.author}</div>
                      </div>
                      <div className="flex items-center gap-2 z-10">
-                        <button onClick={() => openTrackInspect(t, searchQuery ? 'discovery' : 'recommendation')} className="w-10 h-10 rounded-xl bg-white/5 text-white/30 flex items-center justify-center hover:bg-brand-accent/20 hover:text-brand-accent transition-all border border-white/10" title="Inspect Track">
+                        <button onClick={() => openTrackInspect(t, isSearchActive ? 'discovery' : 'recommendation')} className="w-10 h-10 rounded-xl bg-white/5 text-white/30 flex items-center justify-center hover:bg-brand-accent/20 hover:text-brand-accent transition-all border border-white/10" title="Inspect Track">
                           <Eye size={18} />
                         </button>
                         <button onClick={() => handleAdd(t)} className="w-10 h-10 rounded-xl bg-brand-accent/10 text-brand-accent flex items-center justify-center hover:bg-brand-accent hover:text-brand-dark transition-all border border-brand-accent/20">
                           <Plus size={22} />
                         </button>
-                        <button onClick={() => { setLibraryActionTarget({ type: 'track', items: [t] }); setIsLibraryOverlayOpen(true); }} className="w-10 h-10 rounded-xl bg-white/5 text-white/30 flex items-center justify-center hover:bg-brand-accent/20 hover:text-brand-accent transition-all border border-white/10">
+                        <button onClick={() => openLibraryOverlay({ type: 'track', items: [t] })} className="w-10 h-10 rounded-xl bg-white/5 text-white/30 flex items-center justify-center hover:bg-brand-accent/20 hover:text-brand-accent transition-all border border-white/10">
                           <HardDrive size={18} />
                         </button>
                      </div>
@@ -10103,7 +11604,7 @@ function App() {
 
           {/* STUDIO LIBRARY */}
             <div
-              className={`glass-card flex flex-col overflow-hidden studio-vault-container relative shadow-inner library-panel transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass} ${isVerticalStack ? 'min-h-[500px] flex-none' : 'h-full min-h-0'}`}
+              className={`performance-island glass-card flex flex-col overflow-hidden studio-vault-container relative shadow-inner library-panel transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass} ${isVerticalStack ? 'min-h-[500px] flex-none' : 'h-full min-h-0'}`}
               style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
             >
             <div className={`px-2.5 py-2 border-b border-white/5 flex items-center justify-between gap-1.5 ${panelHeaderClass}`}>
@@ -10114,8 +11615,8 @@ function App() {
               <div className="flex items-center gap-1 shrink-0">
                 <button onClick={handleGenerateSmartMix} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Generate Smart Mix"><Zap size={10} /></button>
                 <button onClick={handleCleanVault} disabled={isVaultCleaning} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors disabled:opacity-40 flex items-center justify-center" title="Clean Vault (dedupe + remove unavailable + normalize metadata)"><RefreshCw size={10} className={isVaultCleaning ? 'animate-spin' : ''} /></button>
-                <button onClick={() => setIsLibraryOverlayOpen(true)} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Open Vault Overlay"><ListMusic size={10} /></button>
-                <button onClick={() => { closeHeaderSurfaces(); setSpotifyImportUrl(''); setSpotifyImportProgress({ stage: 'idle', progress: 0, message: '' }); setSpotifyImportLogs([]); setIsSpotifyImportOpen(true); }} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Import Spotify Playlist"><Music size={10} /></button>
+                <button onClick={() => openLibraryOverlay(null)} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Open Vault Overlay"><ListMusic size={10} /></button>
+                <button onClick={() => { closeHeaderSurfaces(); setMusicImportProvider(''); setSpotifyImportUrl(''); setSpotifyImportProgress({ stage: 'idle', progress: 0, message: '' }); setSpotifyImportLogs([]); setIsSpotifyImportOpen(true); }} className="w-7 h-7 rounded-lg bg-white/5 text-white/45 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center no-drag" title="Import Music Playlist"><Music size={11} /></button>
                 <button onClick={handleImportVault} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Import Vault (.aether)"><Upload size={10} /></button>
               </div>
             </div>
@@ -10280,7 +11781,7 @@ function App() {
                     Enter one line per row. Use <span className="text-brand-accent">mm:ss.xx</span> timestamps and keep the order sorted before saving.
                   </div>
                   <button
-                    onClick={() => appendManualLyricsDraftLine(currentTime)}
+                    onClick={() => appendManualLyricsDraftLine(getActivePlaybackPositionMs())}
                     className="flex items-center gap-1.5 rounded-xl border border-brand-accent/30 bg-brand-accent/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent hover:bg-brand-accent/20 transition-all"
                   >
                     <PlusCircle size={12} /> Add line
@@ -10420,7 +11921,7 @@ function App() {
             initial={{ opacity: 0, y: -20, scale: 0.96 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -16, scale: 0.96 }}
-            className="fixed top-20 left-1/2 -translate-x-1/2 px-6 py-3 bg-white/10 text-white font-black rounded-2xl border border-brand-accent/30 backdrop-blur-xl z-[210] flex items-center gap-3"
+            className="fixed top-20 left-1/2 -translate-x-1/2 px-6 py-3 bg-white/10 text-white font-black rounded-2xl border border-brand-accent/30 backdrop-blur-xl z-[520] flex items-center gap-3"
           >
             <Clock size={14} className="text-brand-accent" />
             <span className="text-[10px] uppercase tracking-[0.2em]">{sessionRestoreNotice}</span>
@@ -10432,7 +11933,7 @@ function App() {
             initial={{ opacity: 0, y: -18, scale: 0.96 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -12, scale: 0.96 }}
-            className="fixed top-32 left-1/2 -translate-x-1/2 px-5 py-2.5 bg-[#06090d]/90 text-brand-accent font-black rounded-2xl border border-brand-accent/30 backdrop-blur-xl z-[210] flex items-center gap-3"
+            className="fixed top-32 left-1/2 -translate-x-1/2 px-5 py-2.5 bg-[#06090d]/90 text-brand-accent font-black rounded-2xl border border-brand-accent/30 backdrop-blur-xl z-[520] flex items-center gap-3"
           >
             <RefreshCw size={12} className={`${updateInfo?.status === 'downloading' || updateInfo?.status === 'checking' ? 'animate-spin' : ''}`} />
             <span className="text-[9px] uppercase tracking-[0.18em]">{updateToast}</span>
@@ -10444,14 +11945,14 @@ function App() {
             initial={{ opacity: 0, y: 20, scale: 0.96 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 12, scale: 0.96 }}
-            className="fixed right-5 bottom-24 px-4 py-2 bg-black/70 text-brand-accent font-mono rounded-xl border border-brand-accent/30 backdrop-blur-xl z-[210]"
+            className="fixed right-5 bottom-24 px-4 py-2 bg-black/70 text-brand-accent font-mono rounded-xl border border-brand-accent/30 backdrop-blur-xl z-[520]"
           >
             <span className="text-[10px] uppercase tracking-[0.16em]">skip: {skipReasonToast}</span>
           </motion.div>
         )}
 
         {lastAdded && (
-          <motion.div initial={{ opacity: 0, y: 100 }} animate={{ opacity: 1, y: -40 }} exit={{ opacity: 0, y: 100 }} className="fixed bottom-0 left-1/2 -translate-x-1/2 px-10 py-5 bg-brand-accent text-brand-dark font-black rounded-[2rem] shadow-neon-strong z-[200] flex items-center gap-6 whitespace-nowrap border-t-2 border-white/20">
+          <motion.div initial={{ opacity: 0, y: 100 }} animate={{ opacity: 1, y: -40 }} exit={{ opacity: 0, y: 100 }} className="fixed bottom-0 left-1/2 -translate-x-1/2 px-10 py-5 bg-brand-accent text-brand-dark font-black rounded-[2rem] shadow-neon-strong z-[520] flex items-center gap-6 whitespace-nowrap border-t-2 border-white/20">
             <Zap size={24} fill="currentColor" />
             <div className="flex flex-col leading-none">
                <span className="text-[10px] uppercase tracking-[0.2em] opacity-80 mb-1 font-bold">Node Initialized</span>
@@ -10542,30 +12043,20 @@ function App() {
                         : distance === 1
                           ? 'clamp(1.8rem, min(4.1vw, 6.2vh), 4.35rem)'
                           : 'clamp(1.35rem, min(3vw, 4.6vh), 3.2rem)';
-                      const nextLine = lyrics[idx + 1];
-                      const durationMs = nextLine ? (nextLine.time - line.time) : 4000;
-                      const safeDurationMs = Math.max(durationMs, 100);
-                      
-                      const karaokeStyle = isActive ? {
-                        WebkitBackgroundClip: 'text',
-                        WebkitTextFillColor: 'transparent',
-                        backgroundClip: 'text',
-                        color: 'transparent'
-                      } : {};
-
                       return (
                         <div
                           key={idx} 
                           ref={isActive ? expandedActiveRef : null} 
-                          onClick={() => handleSeek(line.time + (currentTrack?.introOffsetMs || 0) + (lyricOffsetMs || 0))}
-                          className={`${lyricLineLayoutClass} px-3 md:px-5 font-black cursor-pointer transition-[transform,opacity,filter,text-shadow] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] transform-gpu origin-center leading-[1.04] w-full min-w-0 break-words whitespace-pre-wrap [overflow-wrap:anywhere] z-20 will-change-[transform,opacity,filter] ${lyricStateClass} hover:scale-[1.055]`}
+                          onClick={() => handleLyricLineSeek(line.time)}
+                          className={`${lyricLineLayoutClass} immersive-lyric-line px-3 md:px-5 font-black cursor-pointer transition-[transform,opacity,filter,text-shadow] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] transform-gpu origin-center leading-[1.04] w-full min-w-0 break-words whitespace-pre-wrap [overflow-wrap:anywhere] z-20 will-change-[transform,opacity,filter] ${lyricStateClass} hover:scale-[1.055]`}
                           style={{
                             fontSize: lyricFontSize,
-                            transitionDelay: `${Math.min(distance, 3) * 18}ms`,
-                            ...karaokeStyle
+                            transitionDelay: `${Math.min(distance, 3) * 18}ms`
                           }}
                         >
-                          {line.text}
+                          <span className={isActive ? 'immersive-karaoke-text immersive-karaoke-text-active' : 'immersive-karaoke-text'}>
+                            {line.text}
+                          </span>
                         </div>
                       );
                     })}
@@ -10806,8 +12297,8 @@ function App() {
             >
               <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
                 <div>
-                  <div className="text-[10px] font-black uppercase tracking-[0.28em] text-brand-accent">Spotify Import</div>
-                  <div className="text-[11px] text-white/45 mt-1">Paste a public playlist URL and match it into Aether.</div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.28em] text-brand-accent">Music Import</div>
+                  <div className="text-[11px] text-white/45 mt-1">Choose a source, paste a public playlist URL, then match it into Aether.</div>
                 </div>
                 <button
                   onClick={() => !isSpotifyImporting && setIsSpotifyImportOpen(false)}
@@ -10819,14 +12310,40 @@ function App() {
               </div>
 
               <div className="flex-1 overflow-y-auto p-5 space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  {[
+                    ['spotify', 'Spotify', 'Open Spotify playlist links'],
+                    ['apple', 'Apple Music', 'music.apple.com playlist links'],
+                  ].map(([provider, label, detail]) => (
+                    <button
+                      key={provider}
+                      type="button"
+                      disabled={isSpotifyImporting}
+                      onClick={() => {
+                        setMusicImportProvider(provider);
+                        setSpotifyImportUrl('');
+                        setSpotifyImportProgress({ stage: 'idle', progress: 0, message: `${label} selected. Paste a public playlist URL.` });
+                        setSpotifyImportLogs([]);
+                      }}
+                      className={`no-drag rounded-2xl border px-4 py-4 text-left transition-all ${musicImportProvider === provider ? 'border-brand-accent/45 bg-brand-accent/12 text-brand-accent shadow-[0_0_22px_rgba(0,255,191,0.08)]' : 'border-white/10 bg-white/[0.035] text-white/60 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                    >
+                      <div className="flex items-center gap-2 text-[12px] font-black uppercase tracking-[0.18em]">
+                        <Music size={14} />
+                        <span>{label}</span>
+                      </div>
+                      <div className="mt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/35">{detail}</div>
+                    </button>
+                  ))}
+                </div>
+
                 <div>
                   <label className="block text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Playlist URL</label>
                   <input
                     value={spotifyImportUrl}
                     onChange={(e) => setSpotifyImportUrl(e.target.value)}
-                    disabled={isSpotifyImporting}
-                    placeholder="https://open.spotify.com/playlist/..."
-                    className="w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50 focus:bg-brand-accent/[0.04] transition-all disabled:opacity-60"
+                    disabled={isSpotifyImporting || !musicImportProvider}
+                    placeholder={musicImportProvider === 'apple' ? 'https://music.apple.com/.../playlist/...' : musicImportProvider === 'spotify' ? 'https://open.spotify.com/playlist/...' : 'Choose Spotify or Apple Music first'}
+                    className="no-drag w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50 focus:bg-brand-accent/[0.04] transition-all disabled:opacity-60"
                   />
                 </div>
 
@@ -10860,16 +12377,16 @@ function App() {
                 <div className="flex items-center justify-end gap-3 pt-1">
                   <button
                     onClick={() => { if (!isSpotifyImporting) setIsSpotifyImportOpen(false); }}
-                    className="px-4 py-2 rounded-xl border border-white/10 bg-white/5 text-white/60 hover:text-white hover:border-white/20 transition-all text-sm"
+                    className="no-drag px-4 py-2 rounded-xl border border-white/10 bg-white/5 text-white/60 hover:text-white hover:border-white/20 transition-all text-sm"
                   >
                     Cancel
                   </button>
                   <button
                     onClick={handleImportSpotifyPlaylist}
-                    disabled={isSpotifyImporting || !spotifyImportUrl.trim()}
-                    className="px-5 py-2 rounded-xl bg-brand-accent text-brand-dark font-black text-sm hover:scale-[1.01] active:scale-95 transition-all disabled:opacity-50 disabled:hover:scale-100"
+                    disabled={isSpotifyImporting || !musicImportProvider || !spotifyImportUrl.trim()}
+                    className="no-drag px-5 py-2 rounded-xl bg-brand-accent text-brand-dark font-black text-sm hover:scale-[1.01] active:scale-95 transition-all disabled:opacity-50 disabled:hover:scale-100"
                   >
-                    {isSpotifyImporting ? 'Importing…' : 'Import Playlist'}
+                    {isSpotifyImporting ? 'Importing...' : `Import ${musicImportProvider === 'apple' ? 'Apple' : musicImportProvider === 'spotify' ? 'Spotify' : ''} Playlist`}
                   </button>
                 </div>
               </div>
@@ -10932,6 +12449,12 @@ function App() {
                   </div>
                 </div>
 
+                {!isMixtapeVaultContentReady ? (
+                  <div className="flex h-72 flex-col items-center justify-center gap-3 rounded-2xl border border-white/10 bg-black/30 p-5 text-center md:p-6">
+                    <Loader2 size={26} className="animate-spin text-brand-accent/70" />
+                    <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/32">Preparing Analog Scene</div>
+                  </div>
+                ) : (
                 <div className="rounded-2xl border border-white/10 bg-black/30 p-5 md:p-6">
                   <div className="flex items-center justify-center mb-6">
                     <motion.div
@@ -10998,6 +12521,7 @@ function App() {
                     </div>
                   </div>
                 </div>
+                )}
               </div>
             </motion.div>
           </motion.div>
@@ -11031,7 +12555,7 @@ function App() {
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-black/30 p-4 md:p-5 flex flex-col md:flex-row gap-4 md:gap-5">
                   <img
-                    src={sharedScene.thumbnail || (sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : '')}
+                    src={sharedScene.thumbnail || (sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : null)}
                     alt="scene"
                     className="w-full md:w-40 h-40 rounded-2xl object-cover border border-white/10"
                     onError={(e) => {
@@ -11093,14 +12617,14 @@ function App() {
                 </div>
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => setIsGestureLabOpen(true)}
+                    onClick={openGestureLab}
                     className={`flex h-10 w-10 items-center justify-center rounded-2xl border transition-all ${isGestureControlEnabled ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
                     title="Gesture Lab"
                   >
                     <Hand size={15} />
                   </button>
                   <button
-                    onClick={() => openFeedbackPanel()}
+                    onClick={openFeedbackPanel}
                     className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/55 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
                     title="Send Feedback"
                   >
@@ -11165,11 +12689,15 @@ function App() {
               </div>
 
               <div className="mx-auto w-full max-w-5xl rounded-[1.6rem] border border-white/10 bg-black/36 px-4 py-4 backdrop-blur-2xl">
-                <div className="mb-3 h-1.5 w-full overflow-hidden rounded-full bg-white/12">
-                  <div className="h-full rounded-full transition-all" style={{ width: `${auraStageProgress}%`, background: trackProgressAccent, boxShadow: `0 0 18px ${trackProgressGlow}` }} />
-                </div>
-                <div className="flex items-center justify-between gap-4">
-                  <span className="w-16 text-left text-[10px] font-mono text-white/42">{formatTime(currentTime)}</span>
+                <PlaybackProgressIsland
+                  durationMs={auraStageDurationMs}
+                  getPositionMs={getActivePlaybackPositionMs}
+                  onSeek={handleSeek}
+                  accent={trackProgressAccent}
+                  glow={trackProgressGlow}
+                  barClassName="mb-3 h-1.5 w-full cursor-pointer overflow-hidden rounded-full bg-white/12"
+                  timeRowClassName="flex items-center justify-between gap-4 text-[10px] font-mono text-white/42"
+                  middleContent={(
                   <div className="flex items-center gap-5">
                     <button onClick={() => handleControl('previous')} className="text-white/55 transition-colors hover:text-brand-accent active:scale-90" title="Previous">
                       <Rewind size={22} fill="currentColor" />
@@ -11186,8 +12714,8 @@ function App() {
                       <FastForward size={22} fill="currentColor" />
                     </button>
                   </div>
-                  <span className="w-16 text-right text-[10px] font-mono text-white/42">{formatTime(auraStageDurationMs)}</span>
-                </div>
+                  )}
+                />
               </div>
             </motion.div>
           </motion.div>
@@ -11342,7 +12870,7 @@ function App() {
                           <button onClick={() => playInspectPlaylist(false)} className="rounded-xl border border-brand-accent/25 bg-brand-accent/12 px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black">Play Playlist</button>
                           <button onClick={queueInspectPlaylist} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Queue All</button>
                           <button onClick={() => playInspectPlaylist(true)} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Shuffle Play</button>
-                          <button onClick={() => { setLibraryActionTarget({ type: 'queue', items: inspectPlaylistTracks }); setIsLibraryOverlayOpen(true); }} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Vault Copy</button>
+                          <button onClick={() => openLibraryOverlay({ type: 'queue', items: inspectPlaylistTracks })} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Vault Copy</button>
                           <button disabled={!inspectPlaylistSourceText} onClick={() => handleCopyDiagnosticsValue(inspectPlaylistSourceText, 'Playlist URLs copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Copy URLs</button>
                           <button disabled={!inspectPlaylistTracklistText} onClick={() => handleCopyDiagnosticsValue(inspectPlaylistTracklistText, 'Tracklist copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Copy List</button>
                         </>
@@ -11350,7 +12878,7 @@ function App() {
                         <>
                           <button onClick={() => { setQueue((prev) => [normalizeQueueTrack(inspectTrack) || inspectTrack, ...(Array.isArray(prev) ? prev.filter((track) => normalizeTrackIdentity(track) !== normalizeTrackIdentity(inspectTrack)) : [])]); setIsManualStop(false); setIsPlaying(true); setInspectTarget(null); }} className="rounded-xl border border-brand-accent/25 bg-brand-accent/12 px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black">Play Now</button>
                           <button onClick={() => handleAdd(inspectTrack)} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Queue</button>
-                          <button onClick={() => { setLibraryActionTarget({ type: 'track', items: [inspectTrack] }); setIsLibraryOverlayOpen(true); }} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Vault</button>
+                          <button onClick={() => openLibraryOverlay({ type: 'track', items: [inspectTrack] })} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Vault</button>
                           <button disabled={!inspectSourceUrl} onClick={() => { if (inspectSourceUrl) { if (isStandalone && window.aether?.openExternal) window.aether.openExternal(inspectSourceUrl); else window.open(inspectSourceUrl, '_blank', 'noopener,noreferrer'); } }} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Source</button>
                           <button disabled={!inspectSourceUrl} onClick={() => handleCopyDiagnosticsValue(inspectSourceUrl, 'Source copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Copy URL</button>
                           <button onClick={() => handleCopyDiagnosticsValue(`${inspectTrack.title || 'Unknown Track'}\n${inspectTrack.author || 'Unknown Artist'}${inspectSourceUrl ? `\n${inspectSourceUrl}` : ''}`, 'Track info copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Copy Info</button>
@@ -11620,6 +13148,12 @@ function App() {
                     </div>
                  </div>
 
+                 {!isLibraryOverlayContentReady ? (
+                   <div className="flex min-h-[56vh] flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+                     <Loader2 size={28} className="animate-spin text-brand-accent/70" />
+                     <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/32">Preparing Studio Library</div>
+                   </div>
+                 ) : (
                  <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[0.95fr_1.3fr] gap-4 p-4 md:p-6 overflow-hidden">
                     <div className="glass-card border border-white/8 bg-gradient-to-b from-white/[0.05] to-white/[0.02] rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 shadow-[0_12px_40px_rgba(0,0,0,0.22)]">
                       <div className="px-4 py-4 border-b border-white/8 flex items-center justify-between bg-black/20">
@@ -11711,7 +13245,7 @@ function App() {
                               const droppedName = e.dataTransfer.getData('text/plain');
                               reorderPlaylistByDrag(name, droppedName || draggedPlaylistName);
                             }}
-                            className={`group rounded-2xl border p-3 transition-all cursor-pointer ${draggedPlaylistName === name ? 'border-brand-accent/40 bg-brand-accent/12 shadow-[0_0_18px_rgba(0,255,191,0.08)]' : (viewingPlaylist === name ? 'border-brand-accent/35 bg-brand-accent/10 shadow-[0_0_18px_rgba(0,255,191,0.09)]' : 'border-white/8 bg-black/20 hover:border-brand-accent/30 hover:bg-white/[0.03]')}`}
+                            className={`performance-list-item group rounded-2xl border p-3 transition-all cursor-pointer ${draggedPlaylistName === name ? 'border-brand-accent/40 bg-brand-accent/12 shadow-[0_0_18px_rgba(0,255,191,0.08)]' : (viewingPlaylist === name ? 'border-brand-accent/35 bg-brand-accent/10 shadow-[0_0_18px_rgba(0,255,191,0.09)]' : 'border-white/8 bg-black/20 hover:border-brand-accent/30 hover:bg-white/[0.03]')}`}
                           >
                             <div className="flex items-center justify-between gap-3 mb-2">
                               <div className="min-w-0">
@@ -11762,7 +13296,7 @@ function App() {
                           </div>
                           <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 space-y-2 bg-gradient-to-b from-brand-accent/5 to-transparent">
                             {(playlists[viewingPlaylist] || []).map((track, tidx) => (
-                              <div key={`${viewingPlaylist}-${tidx}`} className="group rounded-2xl border border-white/8 bg-black/20 p-3 flex items-center gap-3 hover:border-brand-accent/30 hover:bg-white/[0.03] transition-all">
+                              <div key={`${viewingPlaylist}-${tidx}`} className="performance-list-item group rounded-2xl border border-white/8 bg-black/20 p-3 flex items-center gap-3 hover:border-brand-accent/30 hover:bg-white/[0.03] transition-all">
                                 <img src={getProxyUrl(track.thumbnail)} className="w-11 h-11 rounded-xl object-cover border border-white/10" alt="" />
                                 <div className="flex-1 min-w-0">
                                   <div className="text-[11px] font-black uppercase tracking-widest truncate group-hover:text-brand-accent transition-colors">{track.title}</div>
@@ -11794,6 +13328,7 @@ function App() {
                       )}
                     </div>
                  </div>
+                 )}
               </motion.div>
            </motion.div>
         )}
@@ -11809,7 +13344,7 @@ function App() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 16, scale: 0.95 }}
             transition={{ type: 'spring', stiffness: 420, damping: 30 }}
-            className="fixed bottom-24 left-1/2 z-[360] flex -translate-x-1/2 items-center gap-2.5 rounded-2xl border border-brand-accent/30 bg-[#06100d]/94 px-4 py-2.5 text-[10px] font-black uppercase tracking-[0.2em] text-brand-accent shadow-[0_0_28px_rgba(0,255,191,0.18),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl"
+            className="fixed bottom-24 left-1/2 z-[520] flex -translate-x-1/2 items-center gap-2.5 rounded-2xl border border-brand-accent/30 bg-[#06100d]/94 px-4 py-2.5 text-[10px] font-black uppercase tracking-[0.2em] text-brand-accent shadow-[0_0_28px_rgba(0,255,191,0.18),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl"
           >
             <span>{gestureNotice}</span>
           </motion.div>
@@ -11822,7 +13357,7 @@ function App() {
             initial={{ opacity: 0, y: 50, scale: 0.9 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 20, scale: 0.9 }}
-            className="fixed bottom-32 left-1/2 -translate-x-1/2 z-[100] bg-brand-dark/95 backdrop-blur-xl border border-brand-accent/30 px-6 py-3 rounded-2xl flex items-center gap-4 shadow-[0_0_30px_rgba(0,255,191,0.2)]"
+            className="fixed bottom-32 left-1/2 -translate-x-1/2 z-[520] bg-brand-dark/95 backdrop-blur-xl border border-brand-accent/30 px-6 py-3 rounded-2xl flex items-center gap-4 shadow-[0_0_30px_rgba(0,255,191,0.2)]"
           >
             <div className="text-brand-accent font-black text-[10px] tracking-widest uppercase">Volume</div>
             <div className="w-48 h-1 bg-white/10 rounded-full overflow-hidden">
@@ -11893,14 +13428,17 @@ function App() {
                     )}
                     <div className="text-[10px] uppercase tracking-[0.2em] text-white/35 truncate mt-1">{currentTrack?.author || 'No source'}</div>
                   </div>
-                  <div className="w-full space-y-2">
-                    <div className="h-2 rounded-full bg-white/10 overflow-hidden">
-                      <div className="h-full bg-brand-accent shadow-[0_0_10px_#00ffbf]" style={{ width: `${Math.min(100, Math.max(0, currentTrack?.totalDurationMs ? (currentTime / currentTrack.totalDurationMs) * 100 : 0))}%` }} />
-                    </div>
-                    <div className="flex items-center justify-between text-[10px] font-mono text-white/35">
-                      <span>{formatTime(currentTime)}</span>
-                      <span>{formatTime(currentTrack?.totalDurationMs || currentTrack?.duration || 0)}</span>
-                    </div>
+                  <div className="w-full">
+                    <PlaybackProgressIsland
+                      durationMs={currentTrack?.totalDurationMs || currentTrack?.duration || 0}
+                      getPositionMs={getActivePlaybackPositionMs}
+                      onSeek={handleSeek}
+                      accent={trackProgressAccent}
+                      glow={trackProgressGlow}
+                      barClassName="h-2 rounded-full bg-white/10 overflow-hidden cursor-pointer"
+                      fillClassName="h-full w-full bg-brand-accent shadow-[0_0_10px_#00ffbf]"
+                      timeRowClassName="mt-2 flex items-center justify-between text-[10px] font-mono text-white/35"
+                    />
                   </div>
                 </div>
               </div>
@@ -11992,7 +13530,7 @@ function App() {
                         <Globe size={20} className="text-brand-accent" />
                         <div>
                           <h2 className="text-lg font-black uppercase tracking-tighter text-white">Neural Discovery</h2>
-                          <p className="text-brand-accent text-xs font-bold tracking-widest uppercase opacity-60">{searchResults.length} RESULT{searchResults.length !== 1 ? 'S' : ''}</p>
+                          <p className="text-brand-accent text-xs font-bold tracking-widest uppercase opacity-60">{discoveryItems.length} {discoveryModeLabel}{discoveryItems.length !== 1 ? 'S' : ''}</p>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -12014,10 +13552,15 @@ function App() {
                     </div>
                     <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
                       <div className="flex flex-col gap-2">
-                        {searchResults.length > 0 ? searchResults.map((track, idx) => (
+                        {!isFullDiscoveryContentReady ? (
+                          <div className="h-40 flex flex-col items-center justify-center gap-3 text-center opacity-40">
+                            <Loader2 size={26} className="animate-spin text-brand-accent/60" />
+                            <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/28">Preparing Discovery</div>
+                          </div>
+                        ) : discoveryItems.length > 0 ? discoveryItems.map((track, idx) => (
                           <motion.div
                             key={`discovery-full-${track.id}-${idx}`}
-                            className="group glass-card p-4 flex items-center gap-4 rounded-xl transition-all bg-white/5 border border-white/10 hover:border-brand-accent/30 hover:bg-brand-accent/5"
+                            className="performance-list-item group glass-card p-4 flex items-center gap-4 rounded-xl transition-all bg-white/5 border border-white/10 hover:border-brand-accent/30 hover:bg-brand-accent/5"
                           >
                             <div className="text-brand-accent font-black text-sm w-6">{idx + 1}</div>
                             <img src={getProxyUrl(track.thumbnail)} className="w-10 h-10 rounded-lg object-cover" alt="" />
@@ -12026,6 +13569,13 @@ function App() {
                               <div className="text-[10px] font-bold text-white/40 truncate uppercase mt-1">{track.author}</div>
                             </div>
                             <button
+                              onClick={() => openTrackInspect(track, isSearchActive ? 'discovery' : 'recommendation')}
+                              className="opacity-0 group-hover:opacity-100 p-2 rounded-lg bg-white/5 hover:bg-brand-accent/20 hover:text-brand-accent text-white/45 transition-all"
+                              title="Inspect Track"
+                            >
+                              <Eye size={14} />
+                            </button>
+                            <button
                               onClick={() => handleAdd(track)}
                               className="opacity-0 group-hover:opacity-100 p-2 rounded-lg bg-brand-accent/20 hover:bg-brand-accent/40 text-brand-accent transition-all"
                               title="Add to Queue"
@@ -12033,10 +13583,7 @@ function App() {
                               <Plus size={14} />
                             </button>
                             <button
-                              onClick={() => {
-                                setLibraryActionTarget({ type: 'track', items: [track] });
-                                setIsLibraryOverlayOpen(true);
-                              }}
+                              onClick={() => openLibraryOverlay({ type: 'track', items: [track] })}
                               className="opacity-0 group-hover:opacity-100 p-2 rounded-lg bg-white/5 hover:bg-brand-accent/20 hover:text-brand-accent text-white/45 transition-all"
                               title="Save to Vault"
                             >
@@ -12097,7 +13644,12 @@ function App() {
                     </div>
                     <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
                       <div className="flex flex-col gap-2">
-                        {queue.map((track, idx) => {
+                        {!isFullQueueContentReady ? (
+                          <div className="h-40 flex flex-col items-center justify-center gap-3 text-center opacity-40">
+                            <Loader2 size={26} className="animate-spin text-brand-accent/60" />
+                            <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/28">Preparing Queue</div>
+                          </div>
+                        ) : queue.map((track, idx) => {
                           const warmupId = resolveWarmupTrackId(track);
                           const isDownloaded = warmupId ? downloadedTracks.includes(warmupId) : downloadedTracks.includes(track.id);
                           return (
@@ -12119,7 +13671,7 @@ function App() {
                               const droppedIndex = Number(e.dataTransfer.getData('text/plain'));
                               reorderQueueByDrag(idx, Number.isInteger(droppedIndex) ? droppedIndex : draggedQueueIndex);
                             }}
-                            className={`group glass-card p-4 flex items-center gap-4 rounded-xl transition-all cursor-move border ${draggedQueueIndex === idx ? 'bg-brand-accent/15 border-brand-accent/45' : idx === 0 ? 'bg-brand-accent/10 border-brand-accent/30 shadow-[0_0_20px_rgba(0,255,191,0.2)]' : 'bg-white/5 border-white/10 hover:border-brand-accent/20'}`}
+                            className={`performance-list-item group glass-card p-4 flex items-center gap-4 rounded-xl transition-all cursor-move border ${draggedQueueIndex === idx ? 'bg-brand-accent/15 border-brand-accent/45' : idx === 0 ? 'bg-brand-accent/10 border-brand-accent/30 shadow-[0_0_20px_rgba(0,255,191,0.2)]' : 'bg-white/5 border-white/10 hover:border-brand-accent/20'}`}
                           >
                             <div className="text-brand-accent font-black text-sm w-6">{idx + 1}</div>
                             <img src={getProxyUrl(track.thumbnail)} className="w-10 h-10 rounded-lg object-cover" alt="" />
@@ -12226,10 +13778,15 @@ function App() {
                     </div>
                     <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
                       <div className="flex flex-col gap-2">
-                        {(playlists[isViewingFullPlaylist] || []).map((track, idx) => (
+                        {!isFullPlaylistContentReady ? (
+                          <div className="h-40 flex flex-col items-center justify-center gap-3 text-center opacity-40">
+                            <Loader2 size={26} className="animate-spin text-brand-accent/60" />
+                            <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/28">Preparing Vault</div>
+                          </div>
+                        ) : (playlists[isViewingFullPlaylist] || []).map((track, idx) => (
                           <motion.div 
                             key={`${isViewingFullPlaylist}-${track.id}-${idx}`}
-                            className="group glass-card p-4 flex items-center gap-4 rounded-xl transition-all bg-white/5 border border-white/10 hover:border-brand-accent/30 hover:bg-brand-accent/5"
+                            className="performance-list-item group glass-card p-4 flex items-center gap-4 rounded-xl transition-all bg-white/5 border border-white/10 hover:border-brand-accent/30 hover:bg-brand-accent/5"
                           >
                             <div className="text-brand-accent font-black text-sm w-6">{idx + 1}</div>
                             <img src={getProxyUrl(track.thumbnail)} className="w-10 h-10 rounded-lg object-cover" alt="" />
@@ -12513,28 +14070,15 @@ function App() {
                             <span className="font-mono tracking-[0.16em]">{videoMode === 'cinema' ? (visualControlsPinned ? 'Overlay pinned' : 'Overlay unpinned') : (visualVideoFit === 'cover' ? 'Fill frame' : 'Split view active')}</span>
                           </div>
 
-                          <div
-                            className="h-1.5 w-full cursor-pointer overflow-hidden rounded-full bg-white/12"
-                            onClick={(e) => {
-                              const rect = e.currentTarget.getBoundingClientRect();
-                              const pos = (e.clientX - rect.left) / rect.width;
-                              handleSeek(pos * (currentTrack.totalDurationMs || currentTrack.duration || 0));
-                            }}
-                          >
-                            <div
-                              className="h-full rounded-full transition-all"
-                              style={{
-                                width: `${currentTrack ? (currentTime / (currentTrack.totalDurationMs || currentTrack.duration || 1)) * 100 : 0}%`,
-                                background: trackProgressAccent,
-                                boxShadow: `0 0 14px ${trackProgressGlow}`,
-                              }}
-                            />
-                          </div>
-
-                          <div className="mt-2 flex items-center justify-between text-[10px] font-mono text-white/42">
-                            <span>{formatTime(currentTime)}</span>
-                            <span>{formatTime(currentTrack.totalDurationMs || currentTrack.duration || 0)}</span>
-                          </div>
+                          <PlaybackProgressIsland
+                            durationMs={currentTrack.totalDurationMs || currentTrack.duration || 0}
+                            getPositionMs={getActivePlaybackPositionMs}
+                            onSeek={handleSeek}
+                            accent={trackProgressAccent}
+                            glow={trackProgressGlow}
+                            barClassName="h-1.5 w-full cursor-pointer overflow-hidden rounded-full bg-white/12"
+                            timeRowClassName="mt-2 flex items-center justify-between text-[10px] font-mono text-white/42"
+                          />
                         </div>
 
                         {videoMode === 'cinema' && (
