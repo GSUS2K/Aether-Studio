@@ -34,6 +34,34 @@ const getApiBase = () => {
   return 'http://localhost:3333';
 };
 const API_BASE = getApiBase();
+let youtubeIframeApiPromise = null;
+const loadYouTubeIframeApi = () => {
+  if (typeof window === 'undefined') return Promise.reject(new Error('YouTube player unavailable outside browser'));
+  if (window.YT?.Player) return Promise.resolve(window.YT);
+  if (youtubeIframeApiPromise) return youtubeIframeApiPromise;
+
+  youtubeIframeApiPromise = new Promise((resolve, reject) => {
+    const previousReady = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => {
+      if (typeof previousReady === 'function') previousReady();
+      resolve(window.YT);
+    };
+
+    if (!document.querySelector('script[src="https://www.youtube.com/iframe_api"]')) {
+      const script = document.createElement('script');
+      script.src = 'https://www.youtube.com/iframe_api';
+      script.async = true;
+      script.onerror = () => reject(new Error('Failed to load YouTube iframe API'));
+      document.head.appendChild(script);
+    }
+
+    setTimeout(() => {
+      if (!window.YT?.Player) reject(new Error('Timed out loading YouTube iframe API'));
+    }, 12000);
+  });
+
+  return youtubeIframeApiPromise;
+};
 const DEFAULT_GUILD_ID = 'local_studio';
 const LYRIC_PRESETS_STORAGE_KEY = 'aether.lyricOffsetPresets.v1';
 const SESSION_UI_STORAGE_KEY = 'aether.sessionUi.v1';
@@ -3012,6 +3040,9 @@ function App() {
 
   // MASTER SINGLETON: Lazy-initialized once to prevent memory leaks and ghost audio streams.
   const localAudioRef = useRef(null);
+  const youtubePlayerRef = useRef(null);
+  const youtubeProgressTimerRef = useRef(null);
+  const webTrackLoadKeyRef = useRef('');
 
   const getActivePlaybackPositionMs = useCallback(() => {
     if (videoModeRef.current && localVideoRef.current?.currentTime > 0) {
@@ -3067,6 +3098,9 @@ function App() {
     if (preservePosition && handoffMs !== null) {
       if (durationMs > 0 && handoffMs >= durationMs - 3000) {
         // If we exit video basically at the end, don't try to seek the raw audio pipe—just finish gracefully.
+        setIsAudioBuffering(false);
+        setIsVideoReady(false);
+        setVideoMode(null);
         advanceQueueRef.current('natural_end');
         return;
       }
@@ -3472,23 +3506,31 @@ function App() {
     }
   }, [volume, videoMode]);
 
-  // Cinema mode: auto-hide controls after 3s of inactivity
+  const shouldAutoHideVisualChrome = Boolean(
+    videoMode === 'cinema' || (videoMode === 'dual' && visualVideoFit === 'cover')
+  );
+
+  // Visual stage chrome auto-hides in cinema and in dual fill-frame mode.
   useEffect(() => {
-    if (videoMode !== 'cinema') return;
+    if (!shouldAutoHideVisualChrome) {
+      setCinemaControlsVisible(true);
+      clearTimeout(cinemaHideTimerRef.current);
+      return undefined;
+    }
     setCinemaControlsVisible(true);
     if (visualControlsPinned) return;
     clearTimeout(cinemaHideTimerRef.current);
     cinemaHideTimerRef.current = setTimeout(() => setCinemaControlsVisible(false), 3000);
     return () => clearTimeout(cinemaHideTimerRef.current);
-  }, [videoMode, visualControlsPinned]);
+  }, [shouldAutoHideVisualChrome, visualControlsPinned]);
 
-  const handleCinemaMouseMove = useCallback(() => {
-    if (videoMode !== 'cinema') return;
+  const handleVisualStagePointerActivity = useCallback(() => {
+    if (!shouldAutoHideVisualChrome) return;
     setCinemaControlsVisible(true);
     if (visualControlsPinned) return;
     clearTimeout(cinemaHideTimerRef.current);
     cinemaHideTimerRef.current = setTimeout(() => setCinemaControlsVisible(false), 3000);
-  }, [videoMode, visualControlsPinned]);
+  }, [shouldAutoHideVisualChrome, visualControlsPinned]);
 
   // --- AETHER STUDIO CORE: NEURAL ENGINE STATE (NOVA ---
 
@@ -4861,19 +4903,23 @@ function App() {
   }, [currentTrackPresetKey, lyricOffsetMs, lyricOffsetPresets]);
 
   useEffect(() => {
-    if (isStandalone || !currentTrack?.title) {
-      if (!isStandalone && localAudioRef.current) {
-        localAudioRef.current.pause();
-        localAudioRef.current.removeAttribute('src');
-        localAudioRef.current.load();
+    if (isStandalone) return undefined;
+
+    const player = youtubePlayerRef.current;
+    if (!currentTrack?.title) {
+      webTrackLoadKeyRef.current = '';
+      if (player?.stopVideo) {
+        try { player.stopVideo(); } catch {}
       }
+      setCurrentTime(0);
       return;
     }
     const streamStart = performance.now();
 
     const trackUrl = currentTrack.actualUrl || currentTrack.url;
-    if (!trackUrl) {
-      console.warn("[Aether/Audio] Web playback skipped: no track URL", {
+    const youtubeId = currentTrack.youtubeId || extractYouTubeId(trackUrl || currentTrack.id || currentTrack.thumbnail || '');
+    if (!youtubeId) {
+      console.warn("[Aether/Audio] Web playback skipped: no YouTube id", {
         title: currentTrack.title,
         author: currentTrack.author,
         id: currentTrack.id,
@@ -4881,107 +4927,150 @@ function App() {
       return;
     }
 
-    if (!localAudioRef.current) {
-      localAudioRef.current = new Audio();
-      localAudioRef.current.crossOrigin = "anonymous";
-    }
-
-    const audio = localAudioRef.current;
-    const streamUrl = `${API_BASE}/stream?url=${encodeURIComponent(trackUrl)}`;
-
-    console.log("[Aether/Audio] Web stream init", {
+    const trackLoadKey = `${youtubeId}|${currentTrack.queueNonce || currentTrack.id || ''}`;
+    console.log("[Aether/Audio] Web YouTube player init", {
       title: currentTrack.title,
       author: currentTrack.author,
-      trackUrl,
-      streamUrl,
+      youtubeId,
       isPlaying,
       volume,
-      readyState: audio.readyState,
-      networkState: audio.networkState,
     });
 
-    audio.volume = volume;
-    audio.onloadedmetadata = () => {
-      console.log("[Aether/Audio] Web loadedmetadata", {
-        currentTime: audio.currentTime,
-        duration: audio.duration,
-        readyState: audio.readyState,
-      });
+    let cancelled = false;
+    const ensureHost = () => {
+      let host = document.getElementById('aether-youtube-player-host');
+      if (!host) {
+        host = document.createElement('div');
+        host.id = 'aether-youtube-player-host';
+        host.style.position = 'fixed';
+        host.style.left = '12px';
+        host.style.bottom = '12px';
+        host.style.width = '240px';
+        host.style.height = '135px';
+        host.style.opacity = '0.02';
+        host.style.pointerEvents = 'none';
+        host.style.zIndex = '1';
+        host.setAttribute('aria-hidden', 'true');
+        document.body.appendChild(host);
+      }
+      return host;
     };
-    audio.oncanplay = () => {
-      console.log("[Aether/Audio] Web canplay", { readyState: audio.readyState });
+
+    const startProgressTimer = () => {
+      clearInterval(youtubeProgressTimerRef.current);
+      youtubeProgressTimerRef.current = window.setInterval(() => {
+        const ytPlayer = youtubePlayerRef.current;
+        if (!ytPlayer?.getCurrentTime) return;
+        try {
+          setCurrentTime(Math.max(0, Math.floor(ytPlayer.getCurrentTime() * 1000)));
+        } catch {}
+      }, 500);
     };
-    audio.onplaying = () => {
-      console.log("[Aether/Audio] Web playing", { currentTime: audio.currentTime });
-      setIsAudioBuffering(false);
-      setDiagnostics(prev => ({
-        ...prev,
-        lastSongFetchMs: Math.round(performance.now() - streamStart),
-        lastSongFetchAt: Date.now(),
-        lastSongSource: 'web-stream',
-      }));
+
+    const stopProgressTimer = () => {
+      clearInterval(youtubeProgressTimerRef.current);
+      youtubeProgressTimerRef.current = null;
     };
-    audio.ontimeupdate = () => {
-      setCurrentTime(Math.floor(audio.currentTime * 1000));
-    };
-    audio.onwaiting = () => {
-      console.log("[Aether/Audio] Web waiting", { currentTime: audio.currentTime, readyState: audio.readyState });
-      setIsAudioBuffering(true);
-    };
-    audio.onstalled = () => {
-      console.log("[Aether/Audio] Web stalled", { currentTime: audio.currentTime, readyState: audio.readyState });
-      setIsAudioBuffering(true);
-    };
-    audio.onended = () => {
-      // Pass the track ID so the backend skip guard can deduplicate concurrent
-      // skip calls from multiple web tabs finishing the same song simultaneously.
+
+    const skipCurrentWebTrack = () => {
       const skipTrackId = currentTrack?.id || currentTrack?.youtubeId || currentTrack?.actualUrl || currentTrack?.url || '';
       console.log("[Aether/Audio] Web ended", { title: currentTrack.title, skipTrackId });
       axios.post(`${API_BASE}/api/control/${DEFAULT_GUILD_ID}`, { action: 'skip', skipTrackId })
         .then(() => fetchQueue())
         .catch((err) => console.error("[Aether/Audio] Web skip failed", err));
     };
-    audio.onerror = (e) => {
-      console.error("[Aether/Audio] Web error", e, {
-        src: audio.src,
-        networkState: audio.networkState,
-        readyState: audio.readyState,
-        currentTime: audio.currentTime,
-        paused: audio.paused,
+
+    loadYouTubeIframeApi()
+      .then((YT) => {
+        if (cancelled) return;
+        ensureHost();
+
+        const existing = youtubePlayerRef.current;
+        if (existing?.loadVideoById && webTrackLoadKeyRef.current !== trackLoadKey) {
+          webTrackLoadKeyRef.current = trackLoadKey;
+          setIsAudioBuffering(true);
+          existing.loadVideoById({ videoId: youtubeId, startSeconds: Math.max(0, Math.floor(currentTimeRef.current / 1000)) });
+          existing.setVolume?.(Math.round(volume * 100));
+          if (!webAudioUnlocked || !isPlaying) existing.pauseVideo?.();
+          return;
+        }
+        if (existing) return;
+
+        webTrackLoadKeyRef.current = trackLoadKey;
+        setIsAudioBuffering(true);
+        youtubePlayerRef.current = new YT.Player('aether-youtube-player-host', {
+          width: '240',
+          height: '135',
+          videoId: youtubeId,
+          playerVars: {
+            autoplay: webAudioUnlocked && isPlaying ? 1 : 0,
+            controls: 0,
+            disablekb: 1,
+            modestbranding: 1,
+            playsinline: 1,
+            rel: 0,
+          },
+          events: {
+            onReady: (event) => {
+              if (cancelled) return;
+              event.target.setVolume(Math.round(volume * 100));
+              setIsAudioBuffering(false);
+              setDiagnostics(prev => ({
+                ...prev,
+                lastSongFetchMs: Math.round(performance.now() - streamStart),
+                lastSongFetchAt: Date.now(),
+                lastSongSource: 'youtube-iframe',
+              }));
+              if (webAudioUnlocked && isPlaying) event.target.playVideo();
+            },
+            onStateChange: (event) => {
+              if (cancelled) return;
+              if (event.data === YT.PlayerState.PLAYING) {
+                setIsAudioBuffering(false);
+                startProgressTimer();
+              } else if (event.data === YT.PlayerState.BUFFERING) {
+                setIsAudioBuffering(true);
+              } else if (event.data === YT.PlayerState.PAUSED) {
+                stopProgressTimer();
+              } else if (event.data === YT.PlayerState.ENDED) {
+                stopProgressTimer();
+                skipCurrentWebTrack();
+              }
+            },
+            onError: (event) => {
+              console.error('[Aether/Audio] YouTube player error', {
+                code: event?.data,
+                title: currentTrack.title,
+                youtubeId,
+              });
+              setIsAudioBuffering(false);
+            },
+          },
+        });
+      })
+      .catch((error) => {
+        console.error('[Aether/Audio] YouTube iframe player unavailable', error);
+        setIsAudioBuffering(false);
       });
-      setIsAudioBuffering(true);
+
+    return () => {
+      cancelled = true;
     };
+  }, [isStandalone, currentTrack?.title, currentTrack?.actualUrl, currentTrack?.url, currentTrack?.youtubeId, currentTrack?.id, currentTrack?.queueNonce, volume, webAudioUnlocked, isPlaying, API_BASE, setCurrentTime]);
 
-    if (audio.src !== streamUrl) {
-      audio.src = streamUrl;
-    }
-
-    if (isPlaying) {
-      if (!webAudioUnlocked) {
-        // Browser autoplay policy: don't attempt play() before a user gesture.
-        // The 'Tap to Listen' overlay will call play() once the user taps.
-        console.log("[Aether/Audio] Web play() deferred — waiting for user gesture (webAudioUnlocked=false)");
+  useEffect(() => {
+    if (isStandalone) return;
+    const player = youtubePlayerRef.current;
+    if (!player) return;
+    try {
+      player.setVolume?.(Math.round(volume * 100));
+      if (isPlaying && webAudioUnlocked) {
+        player.playVideo?.();
       } else {
-        console.log("[Aether/Audio] Web play() attempt", {
-          src: audio.src,
-          paused: audio.paused,
-          readyState: audio.readyState,
-          networkState: audio.networkState,
-        });
-        audio.play().catch(err => {
-          console.error("[Aether/Audio] Web play() failed", err, {
-            src: audio.src,
-            paused: audio.paused,
-            readyState: audio.readyState,
-            networkState: audio.networkState,
-          });
-        });
+        player.pauseVideo?.();
       }
-    } else {
-      console.log("[Aether/Audio] Web paused by state", { title: currentTrack.title });
-      audio.pause();
-    }
-  }, [isStandalone, currentTrack?.title, currentTrack?.actualUrl, currentTrack?.url, currentTrack?.id, isPlaying, volume, API_BASE, webAudioUnlocked]);
+    } catch {}
+  }, [isStandalone, isPlaying, volume, webAudioUnlocked]);
 
 
   useEffect(() => {
@@ -10579,8 +10668,8 @@ function App() {
   ];
   const visualStageLyric = compactLyric || activeLyric || null;
   const visualStageNextLyric = nextLyric && nextLyric !== visualStageLyric ? nextLyric : null;
-  const visualStageHeaderVisible = videoMode !== 'cinema' || cinemaControlsVisible || visualControlsPinned;
-  const visualStageFooterVisible = videoMode !== 'cinema' || cinemaControlsVisible || visualControlsPinned;
+  const visualStageHeaderVisible = !shouldAutoHideVisualChrome || cinemaControlsVisible || visualControlsPinned;
+  const visualStageFooterVisible = !shouldAutoHideVisualChrome || cinemaControlsVisible || visualControlsPinned;
   const dualVisualStageWidth = 'clamp(320px, 34vw, 560px)';
   const dualVisualStageZClass = videoMode === 'cinema' ? 'z-[260]' : 'z-[180]';
   const visualStageTitle = currentTrack?.title || '';
@@ -10753,9 +10842,11 @@ function App() {
                 whileHover={{ scale: 1.04 }}
                 whileTap={{ scale: 0.96 }}
                 onClick={() => {
-                  // This click IS the user gesture — now play() is allowed.
+                  // This click is the browser gesture that unlocks media playback.
+                  try {
+                    youtubePlayerRef.current?.playVideo?.();
+                  } catch {}
                   if (localAudioRef.current) {
-                    // If a track is already loaded and waiting, resume it now.
                     if (localAudioRef.current.src && localAudioRef.current.paused) {
                       localAudioRef.current.play().catch(() => {});
                     }
@@ -10786,7 +10877,7 @@ function App() {
                 className="font-mono uppercase tracking-widest text-center"
                 style={{ fontSize: 9, color: 'rgba(255,255,255,0.18)', letterSpacing: '0.25em' }}
               >
-                Browser Audio Policy · One-Time
+                Browser Playback Session · One-Time
               </div>
             </motion.div>
           </motion.div>
@@ -12860,7 +12951,7 @@ function App() {
 	                      const lyricLength = lyricText.trim().length;
 	                      const lyricLineLayoutClass = 'max-w-[min(84vw,1080px)]';
 	                      const lyricStateClass = isActive
-	                        ? 'scale-100 opacity-100 text-[#00ffbf] drop-shadow-[0_0_34px_rgba(0,255,191,0.64)]'
+	                        ? 'scale-100 opacity-100 text-white/42 drop-shadow-[0_0_34px_rgba(0,255,191,0.64)]'
 	                        : distance === 1
 	                          ? 'scale-100 opacity-60 text-white/58 blur-[0.1px]'
 	                          : distance === 2
@@ -12883,7 +12974,8 @@ function App() {
 	                          style={{
 	                            fontSize: lyricFontSize,
 	                            maxInlineSize: 'min(84vw, 1080px)',
-	                            transitionDelay: `${Math.min(distance, 3) * 18}ms`
+	                            transitionDelay: `${Math.min(distance, 3) * 18}ms`,
+	                            '--karaoke-fill': isActive ? '0%' : undefined,
 	                          }}
 	                        >
 	                          <span className={isActive ? 'immersive-karaoke-text immersive-karaoke-text-active' : 'immersive-karaoke-text'}>
@@ -13999,7 +14091,7 @@ function App() {
                <div className="absolute -top-20 left-1/3 w-80 h-80 rounded-full bg-brand-accent/10 blur-[110px]" />
                <div className="absolute bottom-0 right-0 w-[32rem] h-[32rem] rounded-full bg-fuchsia-500/10 blur-[140px]" />
               </div>
-              <motion.div initial={{ scale: 0.95, y: 18 }} animate={{ scale: 1, y: 0 }} className="w-full max-w-6xl max-h-[88vh] glass-card bg-[#090b0f]/96 border border-brand-accent/20 rounded-[2.2rem] relative z-10 overflow-hidden flex flex-col shadow-[0_28px_100px_rgba(0,0,0,0.55)]">
+              <motion.div initial={{ scale: 0.95, y: 18 }} animate={{ scale: 1, y: 0 }} className="w-full max-w-6xl h-[88vh] glass-card bg-[#090b0f]/96 border border-brand-accent/20 rounded-[2.2rem] relative z-10 overflow-hidden flex flex-col shadow-[0_28px_100px_rgba(0,0,0,0.55)]">
                 <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-brand-accent/70 to-transparent" />
                 <div className="flex items-center justify-between gap-4 p-5 md:p-6 border-b border-white/8 bg-black/25 backdrop-blur-md">
                     <div className="flex items-center gap-4 min-w-0">
@@ -14021,7 +14113,7 @@ function App() {
                     </div>
                  </div>
 
-                 <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[0.95fr_1.3fr] gap-4 p-4 md:p-6 overflow-hidden">
+                 <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[0.95fr_1.3fr] gap-4 p-3 md:p-5 overflow-y-auto lg:overflow-hidden custom-scrollbar overscroll-contain">
                     <div className="glass-card border border-white/8 bg-gradient-to-b from-white/[0.05] to-white/[0.02] rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 shadow-[0_12px_40px_rgba(0,0,0,0.22)]">
                       <div className="px-4 py-4 border-b border-white/8 flex items-center justify-between bg-black/20">
                         <div>
@@ -14165,7 +14257,7 @@ function App() {
                         </div>
                       </div>
 
-                      <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 space-y-3">
+                      <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 pb-24 space-y-3 overscroll-contain">
                         {libraryBrowseMode === 'songs' ? (
                           <>
                             {libraryVisibleSongEntries.map((entry) => {
@@ -14342,7 +14434,7 @@ function App() {
                               <button onClick={() => setViewingPlaylist(null)} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-red-400 transition-all" title="Back"><ChevronLeft size={12} /></button>
                             </div>
                           </div>
-                          <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 space-y-2 bg-gradient-to-b from-brand-accent/5 to-transparent">
+                          <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 pb-24 space-y-2 bg-gradient-to-b from-brand-accent/5 to-transparent overscroll-contain">
                             {focusedVaultVisibleTracks.map((track, tidx) => (
                               <div key={`${viewingPlaylist}-${tidx}`} className="performance-list-item group rounded-2xl border border-white/8 bg-black/20 p-3 flex items-center gap-3 hover:border-brand-accent/30 hover:bg-white/[0.03] transition-all">
                                 <img src={getProxyUrl(track.thumbnail)} className="w-11 h-11 rounded-xl object-cover border border-white/10" alt="" />
@@ -14364,7 +14456,7 @@ function App() {
                           </div>
                         </motion.div>
                       ) : (
-                        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 flex flex-col gap-3 bg-gradient-to-b from-brand-accent/5 to-transparent">
+                        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 pb-24 flex flex-col gap-3 bg-gradient-to-b from-brand-accent/5 to-transparent overscroll-contain">
                           <div className="rounded-2xl border border-white/8 bg-black/20 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
                             <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Library Stats</div>
                             <div className="mt-3 grid grid-cols-3 gap-3 text-center">
@@ -14914,8 +15006,8 @@ function App() {
               : isVerticalStack
                 ? { left: 16, right: 16, bottom: 16, height: '40vh' }
                 : { top: chromeTopOffset, right: 16, bottom: 16, width: dualVisualStageWidth }}
-            onMouseMove={videoMode === 'cinema' ? handleCinemaMouseMove : undefined}
-            onClick={videoMode === 'cinema' ? handleCinemaMouseMove : undefined}
+            onMouseMove={handleVisualStagePointerActivity}
+            onPointerDown={handleVisualStagePointerActivity}
           >
             <div className={`absolute inset-0 transition-all duration-700 delay-100 ${videoMode === 'cinema' ? (isVideoReady ? 'bg-black/96 backdrop-blur-md' : 'bg-transparent') : 'bg-transparent'}`} />
 
@@ -14962,9 +15054,9 @@ function App() {
                     className="absolute left-0 right-0 top-0 z-20 p-4 md:p-5"
                     style={{ pointerEvents: visualStageHeaderVisible ? 'auto' : 'none' }}
                   >
-                    <div className="mx-auto flex w-full flex-col gap-3 rounded-[1.4rem] border border-white/10 bg-black/38 px-4 py-3 backdrop-blur-2xl shadow-[0_18px_60px_rgba(0,0,0,0.25)]">
-                      <div className="flex w-full items-start justify-between gap-4">
-                        <div className="flex min-w-0 items-start gap-3">
+                    <div className="mx-auto flex w-full flex-col gap-3 rounded-[1.4rem] border border-white/10 bg-black/38 px-3 py-3 backdrop-blur-2xl shadow-[0_18px_60px_rgba(0,0,0,0.25)] md:px-4">
+                      <div className="flex w-full items-start justify-between gap-2 md:gap-4">
+                        <div className="flex min-w-0 flex-1 items-start gap-2 md:gap-3">
                           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/12 text-brand-accent shadow-[0_0_20px_rgba(0,255,191,0.15)]">
                             {videoMode === 'cinema' ? <Clapperboard size={15} /> : <Columns2 size={15} />}
                           </div>
@@ -14993,34 +15085,35 @@ function App() {
                               </div>
                             </div>
                           ) : (
-                            <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.24em] h-9">
-                              <span className="text-brand-accent/85">Dual Visual</span>
+                            <div className="flex min-w-0 flex-col justify-center text-[8px] font-black uppercase tracking-[0.14em] h-9 md:text-[9px] md:tracking-[0.18em]">
+                              <span className="text-brand-accent/85 leading-tight">Dual</span>
+                              <span className="text-brand-accent/55 leading-tight">Visual</span>
                             </div>
                           )}
                         </div>
 
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 max-w-[68%]">
                         <button
                           onClick={() => setShowVisualLyrics((prev) => !prev)}
-                          className={`flex h-10 w-10 items-center justify-center rounded-2xl border transition-all ${showVisualLyrics ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border transition-all ${showVisualLyrics ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
                           title={showVisualLyrics ? 'Hide visual lyrics' : 'Show visual lyrics'}
                         >
                           <BookOpen size={15} />
                         </button>
                         <button
                           onClick={() => setVisualVideoFit((prev) => (prev === 'contain' ? 'cover' : 'contain'))}
-                          className={`flex h-10 w-10 items-center justify-center rounded-2xl border transition-all ${visualVideoFit === 'cover' ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
-                          title={visualVideoFit === 'cover' ? 'Show full frame' : 'Fill frame'}
+                          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border transition-all ${visualVideoFit === 'contain' ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                          title={visualVideoFit === 'contain' ? 'Fill frame' : 'Show full frame'}
                         >
                           <Monitor size={15} />
                         </button>
                         <div className="relative" ref={qualityDropdownRef}>
                           <button
                             onClick={() => setIsQualityDropdownOpen((p) => !p)}
-                            className={`flex h-10 w-10 items-center justify-center rounded-2xl border transition-all ${isQualityDropdownOpen ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent shadow-[0_0_12px_rgba(0,255,191,0.1)]' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                            className={`flex h-10 min-w-16 shrink-0 items-center justify-center rounded-2xl border px-3 transition-all ${isQualityDropdownOpen ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent shadow-[0_0_12px_rgba(0,255,191,0.1)]' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
                             title="Video Quality"
                           >
-                            <span className="text-[9px] font-black uppercase tracking-tighter">{videoQuality}p</span>
+                            <span className="text-[9px] font-black uppercase tracking-[0.04em]">{videoQuality}p</span>
                           </button>
 
                           {isQualityDropdownOpen && (
@@ -15044,7 +15137,7 @@ function App() {
                         {videoMode === 'cinema' && (
                           <button
                             onClick={() => setVisualControlsPinned((prev) => !prev)}
-                            className={`flex h-10 w-10 items-center justify-center rounded-2xl border transition-all ${visualControlsPinned ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border transition-all ${visualControlsPinned ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
                             title={visualControlsPinned ? 'Unpin controls' : 'Pin controls'}
                           >
                             <Lock size={15} />
@@ -15052,21 +15145,21 @@ function App() {
                         )}
                         <button
                           onClick={() => switchVideoMode(videoMode === 'cinema' ? 'dual' : 'cinema')}
-                          className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/55 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
+                          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/55 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
                           title={videoMode === 'cinema' ? 'Back to Dual View' : 'Expand to Cinema'}
                         >
                           {videoMode === 'cinema' ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
                         </button>
                         <button
                           onClick={exitVideoMode}
-                          className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/55 transition-all hover:border-white/25 hover:text-white"
+                          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/55 transition-all hover:border-white/25 hover:text-white"
                           title={videoMode === 'cinema' ? 'Exit Cinema (Esc)' : 'Return to Audio'}
                         >
                           <X size={16} />
                         </button>
                       </div>
                     </div>
-                    {videoMode === 'dual' && (
+                    {videoMode === 'dual' && visualStageHeaderVisible && (
                       <div className="min-w-0 w-full pl-1">
                         {visualStageTitleMarquee ? (
                           <div className="overlay-marquee font-black uppercase tracking-tight text-white/95 text-sm md:text-base">
@@ -15132,7 +15225,7 @@ function App() {
                               <BookOpen size={12} className="text-brand-accent/70" />
                               <span>{showVisualLyricOverlay ? 'Lyric overlay' : (videoMode === 'dual' ? 'Lyrics on left panel' : 'Visual Stream')}</span>
                             </div>
-                            <span className="font-mono tracking-[0.16em]">{videoMode === 'cinema' ? (visualControlsPinned ? 'Overlay pinned' : 'Overlay unpinned') : (visualVideoFit === 'cover' ? 'Fill frame' : 'Split view active')}</span>
+                            <span className="font-mono tracking-[0.16em]">{videoMode === 'cinema' ? (visualControlsPinned ? 'Overlay pinned' : 'Controls fade on idle') : (visualVideoFit === 'cover' ? 'Fill frame' : 'Full frame')}</span>
                           </div>
 
                           <PlaybackProgressIsland
