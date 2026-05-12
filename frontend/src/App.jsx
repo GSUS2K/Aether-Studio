@@ -5371,7 +5371,11 @@ function App() {
   // --- AETHER: STANDALONE PLAYBACK LOOP (NOVA ---
   useEffect(() => {
     console.log("[Aether/Audio] Queue effect fired", { queueLength: queue?.length, currentTrack: queue?.[0]?.title, isPlaying, isStandalone });
-    if (!isStandalone || !queue || queue.length === 0) {
+    if (!isStandalone) {
+      return undefined;
+    }
+
+    if (!queue || queue.length === 0) {
       if (localAudioRef.current) {
         localAudioRef.current.pause();
         localAudioRef.current.removeAttribute('src');
