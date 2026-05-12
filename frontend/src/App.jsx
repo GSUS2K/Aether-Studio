@@ -8297,6 +8297,34 @@ function App() {
     setTimeout(() => setLastAdded(null), 2600);
   }, [favoriteTracksList, normalizeQueueTrack]);
 
+  const playLibraryTracks = useCallback((tracks, label = 'Vault', shuffle = false) => {
+    const normalized = (Array.isArray(tracks) ? tracks : []).map(normalizeQueueTrack).filter(Boolean);
+    if (!normalized.length) {
+      setLastAdded(`${label} is empty`);
+      setTimeout(() => setLastAdded(null), 2200);
+      return;
+    }
+    const nextQueue = shuffle ? [...normalized].sort(() => Math.random() - 0.5) : normalized;
+    setQueue(nextQueue);
+    setCurrentTime(0);
+    setIsManualStop(false);
+    setIsPlaying(true);
+    setLastAdded(`${shuffle ? 'Shuffling' : 'Playing'} ${label} (${nextQueue.length})`);
+    setTimeout(() => setLastAdded(null), 2600);
+  }, [normalizeQueueTrack]);
+
+  const handleFavoritePlayAll = useCallback((shuffle = false) => {
+    playLibraryTracks(favoriteTracksList, FAVORITES_PLAYLIST_NAME, shuffle);
+  }, [favoriteTracksList, playLibraryTracks]);
+
+  const handlePlaylistPlayAll = useCallback((name, shuffle = false) => {
+    if (name === FAVORITES_PLAYLIST_ID) {
+      handleFavoritePlayAll(shuffle);
+      return;
+    }
+    playLibraryTracks(playlists[name] || [], name || 'Vault', shuffle);
+  }, [handleFavoritePlayAll, playLibraryTracks, playlists]);
+
   const handleRemoveTrackFromPlaylist = useCallback((name, track, fallbackIndex = -1) => {
     if (name === FAVORITES_PLAYLIST_ID) {
       if (track) toggleFavoriteTrack(track);
@@ -14113,7 +14141,7 @@ function App() {
                     </div>
                  </div>
 
-                 <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[0.95fr_1.3fr] gap-4 p-3 md:p-5 overflow-y-auto lg:overflow-hidden custom-scrollbar overscroll-contain">
+                 <div className="flex-1 min-h-0 h-full grid grid-cols-1 lg:grid-cols-[0.92fr_1.38fr] gap-4 p-3 md:p-5 overflow-y-auto lg:overflow-hidden custom-scrollbar overscroll-contain">
                     <div className="glass-card border border-white/8 bg-gradient-to-b from-white/[0.05] to-white/[0.02] rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 h-full shadow-[0_12px_40px_rgba(0,0,0,0.22)]">
                       <div className="px-4 py-4 border-b border-white/8 flex items-center justify-between bg-black/20">
                         <div>
@@ -14312,7 +14340,9 @@ function App() {
                               {viewingPlaylist === FAVORITES_PLAYLIST_ID && (
                                 <span className="px-2 py-1 rounded-md bg-rose-400/12 border border-rose-300/25 text-rose-200 text-[8px] font-black uppercase tracking-[0.2em]">Focused</span>
                               )}
-                              <button onClick={(e) => { e.stopPropagation(); handleFavoriteAddAll(); }} className="p-2 rounded-lg bg-rose-400/10 text-rose-200/80 hover:text-rose-100 hover:bg-rose-400/20 transition-all" title="Queue Favorites"><Plus size={12} /></button>
+                              <button onClick={(e) => { e.stopPropagation(); handleFavoritePlayAll(false); }} className="p-2 rounded-lg bg-rose-400/10 text-rose-200/80 hover:text-rose-100 hover:bg-rose-400/20 transition-all" title="Play Favorites"><Play size={12} /></button>
+                              <button onClick={(e) => { e.stopPropagation(); handleFavoritePlayAll(true); }} className="p-2 rounded-lg bg-rose-400/10 text-rose-200/80 hover:text-rose-100 hover:bg-rose-400/20 transition-all" title="Shuffle Favorites"><Shuffle size={12} /></button>
+                              <button onClick={(e) => { e.stopPropagation(); handleFavoriteAddAll(); }} className="p-2 rounded-lg bg-white/5 text-rose-200/70 hover:text-rose-100 hover:bg-rose-400/20 transition-all" title="Add Favorites to Queue"><Plus size={12} /></button>
                               {isStandalone && <button onClick={(e) => { e.stopPropagation(); handleExportVault(FAVORITES_PLAYLIST_ID); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-rose-200 transition-all" title="Export Favorites"><Download size={12} /></button>}
                             </div>
                           </div>
@@ -14406,7 +14436,21 @@ function App() {
                           <div className="px-4 py-4 border-b border-white/8 flex items-center justify-between bg-black/20">
                             <div className="min-w-0">
                               <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Focused Vault</div>
-                              <div className={`text-lg font-black uppercase tracking-tight truncate ${isViewingFavorites ? 'text-rose-300' : 'text-brand-accent'}`}>{focusedVaultName}</div>
+                              {isRenamingPlaylist === viewingPlaylist && !isViewingFavorites ? (
+                                <input
+                                  autoFocus
+                                  className="no-drag mt-1 w-full max-w-sm rounded-xl border border-brand-accent/35 bg-black/35 px-3 py-2 text-lg font-black uppercase tracking-tight text-brand-accent outline-none"
+                                  value={renameValue}
+                                  onChange={(e) => setRenameValue(e.target.value)}
+                                  onBlur={() => handleRenamePlaylist(viewingPlaylist, renameValue)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') handleRenamePlaylist(viewingPlaylist, renameValue);
+                                    if (e.key === 'Escape') setIsRenamingPlaylist(null);
+                                  }}
+                                />
+                              ) : (
+                                <div className={`text-lg font-black uppercase tracking-tight truncate ${isViewingFavorites ? 'text-rose-300' : 'text-brand-accent'}`}>{focusedVaultName}</div>
+                              )}
                               <div className="mt-1 text-[9px] uppercase tracking-[0.22em] text-white/35">{focusedVaultVisibleTracks.length}/{focusedVaultTracks.length} tracks</div>
                             </div>
                             <div className="flex items-center gap-2 flex-wrap justify-end">
@@ -14425,6 +14469,8 @@ function App() {
                                 <option value="duration-desc">Longest</option>
                                 <option value="duration-asc">Shortest</option>
                               </select>
+                              <button onClick={() => handlePlaylistPlayAll(viewingPlaylist, false)} className={`p-2 rounded-lg transition-all ${isViewingFavorites ? 'bg-rose-400/10 text-rose-200/80 hover:bg-rose-400/20' : 'bg-brand-accent/10 text-brand-accent hover:bg-brand-accent hover:text-black'}`} title={`Play ${focusedVaultName}`}><Play size={12} /></button>
+                              <button onClick={() => handlePlaylistPlayAll(viewingPlaylist, true)} className="p-2 rounded-lg bg-white/5 text-white/40 hover:text-brand-accent transition-all" title={`Shuffle ${focusedVaultName}`}><Shuffle size={12} /></button>
                               {!isViewingFavorites && (
                                 <button onClick={() => { setIsRenamingPlaylist(viewingPlaylist); setRenameValue(viewingPlaylist); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title={`Rename ${viewingPlaylist}`}><Edit3 size={12} /></button>
                               )}
