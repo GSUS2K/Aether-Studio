@@ -4937,6 +4937,7 @@ function App() {
     });
 
     let cancelled = false;
+    const bufferingFallbackTimers = [];
     const ensureHost = () => {
       let host = document.getElementById('aether-youtube-player-host');
       if (!host) {
@@ -4956,13 +4957,37 @@ function App() {
       return host;
     };
 
+    const clearWebBufferingIfAudible = (ytPlayer = youtubePlayerRef.current) => {
+      if (!ytPlayer) return false;
+      try {
+        const state = ytPlayer.getPlayerState?.();
+        const position = Number(ytPlayer.getCurrentTime?.() || 0);
+        if (state === 1 || (isPlayingRef.current && position > 0)) {
+          setIsAudioBuffering(false);
+          return true;
+        }
+      } catch {}
+      return false;
+    };
+
+    const scheduleBufferingFallback = (ytPlayer) => {
+      [350, 900, 1600].forEach((delay) => {
+        const timer = window.setTimeout(() => {
+          if (!cancelled) clearWebBufferingIfAudible(ytPlayer);
+        }, delay);
+        bufferingFallbackTimers.push(timer);
+      });
+    };
+
     const startProgressTimer = () => {
       clearInterval(youtubeProgressTimerRef.current);
       youtubeProgressTimerRef.current = window.setInterval(() => {
         const ytPlayer = youtubePlayerRef.current;
         if (!ytPlayer?.getCurrentTime) return;
         try {
-          setCurrentTime(Math.max(0, Math.floor(ytPlayer.getCurrentTime() * 1000)));
+          const nextMs = Math.max(0, Math.floor(ytPlayer.getCurrentTime() * 1000));
+          setCurrentTime(nextMs);
+          if (nextMs > 0) clearWebBufferingIfAudible(ytPlayer);
         } catch {}
       }, 500);
     };
@@ -4991,7 +5016,14 @@ function App() {
           setIsAudioBuffering(true);
           existing.loadVideoById({ videoId: youtubeId, startSeconds: Math.max(0, Math.floor(currentTimeRef.current / 1000)) });
           existing.setVolume?.(Math.round(volume * 100));
-          if (!webAudioUnlocked || !isPlaying) existing.pauseVideo?.();
+          if (webAudioUnlocked && isPlaying) {
+            existing.playVideo?.();
+            startProgressTimer();
+            scheduleBufferingFallback(existing);
+          } else {
+            existing.pauseVideo?.();
+            setIsAudioBuffering(false);
+          }
           return;
         }
         if (existing) return;
@@ -5022,7 +5054,11 @@ function App() {
                 lastSongFetchAt: Date.now(),
                 lastSongSource: 'youtube-iframe',
               }));
-              if (webAudioUnlocked && isPlaying) event.target.playVideo();
+              if (webAudioUnlocked && isPlaying) {
+                event.target.playVideo();
+                startProgressTimer();
+                scheduleBufferingFallback(event.target);
+              }
             },
             onStateChange: (event) => {
               if (cancelled) return;
@@ -5030,7 +5066,10 @@ function App() {
                 setIsAudioBuffering(false);
                 startProgressTimer();
               } else if (event.data === YT.PlayerState.BUFFERING) {
-                setIsAudioBuffering(true);
+                if (!clearWebBufferingIfAudible(event.target)) setIsAudioBuffering(true);
+                startProgressTimer();
+              } else if (event.data === YT.PlayerState.CUED) {
+                if (webAudioUnlocked && isPlaying) event.target.playVideo?.();
               } else if (event.data === YT.PlayerState.PAUSED) {
                 stopProgressTimer();
               } else if (event.data === YT.PlayerState.ENDED) {
@@ -5056,6 +5095,7 @@ function App() {
 
     return () => {
       cancelled = true;
+      bufferingFallbackTimers.forEach((timer) => window.clearTimeout(timer));
     };
   }, [isStandalone, currentTrack?.title, currentTrack?.actualUrl, currentTrack?.url, currentTrack?.youtubeId, currentTrack?.id, currentTrack?.queueNonce, volume, webAudioUnlocked, isPlaying, API_BASE, setCurrentTime]);
 
@@ -7184,6 +7224,11 @@ function App() {
         setIsPlaying(false);
         setCurrentTime(0);
         setCurrentTrackTitle('');
+        setIsAudioBuffering(false);
+        webTrackLoadKeyRef.current = '';
+        if (youtubePlayerRef.current?.stopVideo) {
+          try { youtubePlayerRef.current.stopVideo(); } catch {}
+        }
         if (localAudioRef.current) {
           localAudioRef.current.pause();
           localAudioRef.current.removeAttribute('src');
@@ -9175,11 +9220,16 @@ function App() {
       }
       if (action === 'clear' || action === 'stop') {
         setQueue([]);
+        webTrackLoadKeyRef.current = '';
         setIsPlaying(false);
+        setIsAudioBuffering(false);
         pendingResumeTimeRef.current = null;
         setPendingResumeTime(null);
         currentTimeRef.current = 0;
         setCurrentTime(0);
+        if (youtubePlayerRef.current?.stopVideo) {
+          try { youtubePlayerRef.current.stopVideo(); } catch {}
+        }
         if (localAudioRef.current) {
           localAudioRef.current.pause();
           localAudioRef.current.removeAttribute('src');
