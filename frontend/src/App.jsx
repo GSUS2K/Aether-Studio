@@ -5000,9 +5000,7 @@ function App() {
     const skipCurrentWebTrack = () => {
       const skipTrackId = currentTrack?.id || currentTrack?.youtubeId || currentTrack?.actualUrl || currentTrack?.url || '';
       console.log("[Aether/Audio] Web ended", { title: currentTrack.title, skipTrackId });
-      axios.post(`${API_BASE}/api/control/${DEFAULT_GUILD_ID}`, { action: 'skip', skipTrackId })
-        .then(() => fetchQueue())
-        .catch((err) => console.error("[Aether/Audio] Web skip failed", err));
+      advanceQueueRef.current?.('natural_end');
     };
 
     loadYouTubeIframeApi()
@@ -6968,17 +6966,18 @@ function App() {
   useEffect(() => {
     if (isStandalone) return undefined;
     const interval = window.setInterval(() => {
-        fetchQueueRef.current?.();
-        if (isPlayingRef.current) {
-            // Heartbeat Sync (NOVA
-            axios.post(`${API_BASE}/api/heartbeat/${DEFAULT_GUILD_ID}`, {
+        const hasRemoteQueue = Boolean(discordSdkRef.current?.guildId);
+        if (hasRemoteQueue) fetchQueueRef.current?.();
+        if (hasRemoteQueue && isPlayingRef.current) {
+            // Heartbeat Sync (NOVA)
+            axios.post(`${API_BASE}/api/heartbeat/${getEffectiveGuildId()}`, {
                 currentTime: Math.max(0, Math.floor(currentTimeRef.current || 0)),
                 isPlaying: true
             }).catch(() => {});
         }
     }, 3000);
     return () => window.clearInterval(interval);
-  }, [isStandalone]);
+  }, [API_BASE, getEffectiveGuildId, isStandalone]);
 
   // Autoplay Trigger Logic
   useEffect(() => {
@@ -8422,11 +8421,13 @@ function App() {
 
   // -- NEURAL DISCOVERY (AUTO-FETCH) --
   useEffect(() => {
-    if (!currentTrack || !isStandalone || !window.aether?.search) return;
+    if (!currentTrack) return;
     const fetchNeural = async () => {
       try {
         const query = currentTrack.author || currentTrack.title?.split('-')?.[0] || 'music';
-        const res = await window.aether.search(query);
+        const res = isStandalone
+          ? await window.aether?.search?.(query)
+          : (await axios.get(`${API_BASE}/api/search?q=${encodeURIComponent(query)}`)).data;
         if (Array.isArray(res)) {
           const filtered = res.filter(t => t.id !== currentTrack.id && t.youtubeId !== currentTrack.youtubeId);
           setNeuralRecommendations(filtered.slice(0, 15));
@@ -8436,7 +8437,7 @@ function App() {
       }
     };
     fetchNeural();
-  }, [currentTrack?.title, currentTrack?.author, currentTrack?.id, currentTrack?.youtubeId, isStandalone]);
+  }, [API_BASE, currentTrack?.title, currentTrack?.author, currentTrack?.id, currentTrack?.youtubeId, isStandalone]);
 
   const warmupTrack = async (track) => {
     if (!window.aether?.download || !track || isWarmupUnavailable) return;
@@ -8628,24 +8629,27 @@ function App() {
         return;
     }
 
-    const effectiveGuildId = getEffectiveGuildId();
-    
+    const newTrack = normalizeQueueTrack(track);
+    if (!newTrack) {
+      console.warn('[Aether/Queue] Ignored web add: track has no playable URL', track);
+      return;
+    }
+
     setAddingIds(prev => new Set(prev).add(track.id));
     try {
-      console.log("[Aether/Add] Web add request", {
-        effectiveGuildId,
+      console.log("[Aether/Add] Web local add request", {
         trackId: track.id,
         title: track.title,
         author: track.author,
         actualUrl: track.actualUrl,
         url: track.url,
       });
-      await axios.post(`${API_BASE}/api/add/${effectiveGuildId}`, { track, userId: auth?.user?.id });
-      console.log("[Aether/Add] Track posted, sending resume", { effectiveGuildId });
-      await axios.post(`${API_BASE}/api/control/${effectiveGuildId}`, { action: 'resume' }).catch(() => {});
-      setIsPlaying(true);
+      setQueue(prev => {
+        const next = [...(Array.isArray(prev) ? prev : []), newTrack];
+        if (next.length === 1) setIsPlaying(true);
+        return next;
+      });
       setIsManualStop(false);
-      fetchQueue();
       setLastAdded(track.title);
       setTimeout(() => setLastAdded(null), 3000);
     } catch (err) {} finally {
@@ -9191,73 +9195,124 @@ function App() {
         return;
     }
 
-    try {
-      const effectiveGuildId = getEffectiveGuildId();
-
-      // Web-mode immediate transport sync so UI/audio do not drift while waiting for polling.
-      if (action === 'pause') {
-        setIsPlaying(false);
-        if (localAudioRef.current) localAudioRef.current.pause();
-      }
-      if (action === 'resume') {
-        setIsPlaying(true);
-        if (localAudioRef.current && !videoModeRef.current) localAudioRef.current.play().catch(() => {});
-      }
-      if (action === 'skip') {
-        setCurrentTime(0);
-        if (localAudioRef.current) {
-          localAudioRef.current.pause();
-        }
-      }
-      if (action === 'shuffle') {
-          console.log("[Aether/Control] Network Shuffle triggered");
-          setQueue(q => {
-             if (!Array.isArray(q) || q.length <= 1) return q;
-             const current = q[0];
-             const rest = [...q.slice(1)].sort(() => Math.random() - 0.5);
-             return [current, ...rest];
-          });
-      }
-      if (action === 'clear' || action === 'stop') {
-        setQueue([]);
-        webTrackLoadKeyRef.current = '';
-        setIsPlaying(false);
-        setIsAudioBuffering(false);
+    if (action === 'pause') {
+      setIsPlaying(false);
+      try { youtubePlayerRef.current?.pauseVideo?.(); } catch {}
+      if (localAudioRef.current) localAudioRef.current.pause();
+      return;
+    }
+    if (action === 'resume') {
+      setWebAudioUnlocked(true);
+      setIsManualStop(false);
+      setIsPlaying(true);
+      try { youtubePlayerRef.current?.playVideo?.(); } catch {}
+      if (localAudioRef.current && !videoModeRef.current) localAudioRef.current.play().catch(() => {});
+      return;
+    }
+    if (action === 'toggle') {
+      setWebAudioUnlocked(true);
+      setIsPlaying(prev => !prev);
+      return;
+    }
+    if (action === 'mute') {
+      setVolume(prev => {
+        const nextV = prev > 0 ? 0 : 0.5;
+        if (localAudioRef.current) localAudioRef.current.volume = nextV;
+        try {
+          if (nextV === 0) youtubePlayerRef.current?.mute?.();
+          else {
+            youtubePlayerRef.current?.unMute?.();
+            youtubePlayerRef.current?.setVolume?.(Math.round(nextV * 100));
+          }
+        } catch {}
+        return nextV;
+      });
+      return;
+    }
+    if (action === 'previous') {
+      if ((currentTimeRef.current || 0) > 3000) {
+        seekActivePlaybackTo(0);
+      } else if (history.length > 0) {
+        const prev = history[0];
+        manualTransportAdvanceRef.current = {
+          trackKey: getTrackActionKey(queue?.[0]),
+          at: Date.now(),
+          action: 'previous',
+        };
+        setHistory(h => h.slice(1));
+        setQueue((q) => {
+          const normalized = Array.isArray(q) ? q.filter(item => item && typeof item === 'object') : [];
+          const prevKey = getTrackActionKey(prev);
+          if (!prevKey) return normalized;
+          const currentHeadKey = getTrackActionKey(normalized[0]);
+          if (currentHeadKey && currentHeadKey === prevKey) return normalized;
+          return [prev, ...normalized.filter((item) => getTrackActionKey(item) !== prevKey)];
+        });
         pendingResumeTimeRef.current = null;
         setPendingResumeTime(null);
         currentTimeRef.current = 0;
         setCurrentTime(0);
-        if (youtubePlayerRef.current?.stopVideo) {
-          try { youtubePlayerRef.current.stopVideo(); } catch {}
-        }
-        if (localAudioRef.current) {
-          localAudioRef.current.pause();
-          localAudioRef.current.removeAttribute('src');
-          localAudioRef.current.load();
-        }
+        setWebAudioUnlocked(true);
+        setIsManualStop(false);
+        setIsPlaying(true);
+      } else {
+        seekActivePlaybackTo(0);
       }
-
-      await axios.post(`${API_BASE}/api/control/${effectiveGuildId}`, { action });
-      fetchQueue();
-    } catch (err) {
-      console.error("[Aether/Control] Web control failed", err, {
-        action,
-        guildId: getEffectiveGuildId(),
-      });
+      return;
     }
-  }, [isStandalone, API_BASE, history, isAutoplayEnabled, getEffectiveGuildId, noteSkipReason, queue, getTrackActionKey, seekActivePlaybackTo]);
+    if (action === 'skip') {
+      manualTransportAdvanceRef.current = {
+        trackKey: getTrackActionKey(queue?.[0]),
+        at: Date.now(),
+        action: 'skip',
+      };
+      advanceQueueRef.current('manual_skip');
+      return;
+    }
+    if (action === 'shuffle') {
+      setQueue(q => {
+        if (!Array.isArray(q) || q.length <= 1) return q;
+        const current = q[0];
+        const rest = [...q.slice(1)].sort(() => Math.random() - 0.5);
+        return [current, ...rest];
+      });
+      return;
+    }
+    if (action === 'clear' || action === 'stop') {
+      setQueue([]);
+      setHistory([]);
+      webTrackLoadKeyRef.current = '';
+      setIsPlaying(false);
+      setIsAudioBuffering(false);
+      pendingResumeTimeRef.current = null;
+      setPendingResumeTime(null);
+      currentTimeRef.current = 0;
+      setCurrentTime(0);
+      setIsManualStop(true);
+      try { youtubePlayerRef.current?.stopVideo?.(); } catch {}
+      if (localAudioRef.current) {
+        localAudioRef.current.pause();
+        localAudioRef.current.removeAttribute('src');
+        localAudioRef.current.load();
+      }
+    }
+  }, [isStandalone, history, queue, getTrackActionKey, seekActivePlaybackTo]);
 
   const [accentColor, setAccentColor] = useState('#00ffbf');
 
   const handleSeek = useCallback(async (time) => {
     // Neural Seek Link
     const guildId = getEffectiveGuildId();
+    if (isStandalone || !discordSdkRef.current?.guildId) {
+      seekActivePlaybackTo(time);
+      return;
+    }
     try {
         await axios.post(`${API_BASE}/api/control/${guildId}`, { action: 'seek', time });
     } catch (e) {}
 
     seekActivePlaybackTo(time);
-  }, [API_BASE, getEffectiveGuildId, seekActivePlaybackTo]);
+  }, [API_BASE, getEffectiveGuildId, isStandalone, seekActivePlaybackTo]);
 
   const handleLyricLineSeek = useCallback((lineTime) => {
     handleSeek(lineTime + (currentTrackRef.current?.introOffsetMs || 0) + (lyricOffsetMs || 0));
@@ -9281,7 +9336,7 @@ function App() {
   }), [lyrics, activeLyricIndex, isDualWorkspaceMode, handleLyricLineSeek]);
 
   const handleRemove = useCallback(async (index) => {
-    if (isStandalone) {
+    if (isStandalone || !discordSdkRef.current?.guildId) {
         setQueue(prev => {
             const next = [...prev];
             next.splice(index, 1);
@@ -9294,7 +9349,7 @@ function App() {
   }, [isStandalone, API_BASE, getEffectiveGuildId]);
 
   const handleSync = async (offset) => {
-      if (isStandalone) {
+      if (isStandalone || !discordSdkRef.current?.guildId) {
           setLyricOffsetMs(prev => prev + offset);
           return;
       }
@@ -12287,10 +12342,6 @@ function App() {
                   >
                     <RotateCcw size={10} /> Reset
                   </button>
-                  {!isStandalone && <button onClick={() => {
-                    const guildId = getEffectiveGuildId();
-                    axios.post(`${API_BASE}/api/source/${guildId}`).catch(e => console.error('Rotate error:', e));
-                  }} className="hidden md:flex px-5 py-2.5 glass-card text-[10px] font-black hover:border-brand-accent transition-all uppercase tracking-widest active:scale-95 border-white/10">Rotate</button>}
                   <button 
                     onClick={() => {
                       if (isImmersiveLyricsLocked) return;
@@ -12394,9 +12445,6 @@ function App() {
                                const rest = [...prev.slice(1)].sort(() => Math.random() - 0.5);
                                return [current, ...rest];
                             });
-                            if (!isStandalone) {
-                                axios.post(`${API_BASE}/api/control/${DEFAULT_GUILD_ID}`, { action: 'shuffle' }).catch(()=>{});
-                            }
                         }
                     }}
                     className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-white/10 hover:text-white"
@@ -12595,7 +12643,7 @@ function App() {
                <div className="absolute inset-0 overflow-y-auto p-4 flex flex-col gap-6 pb-12 studio-vault-container custom-scrollbar">
                   <div className="vault-project-grid">
                         <div className="vault-project-card group/vault border-rose-300/20 bg-rose-400/[0.035]">
-                           <div className="vault-project-art" onClick={() => setViewingPlaylist(FAVORITES_PLAYLIST_ID)}>
+                           <div className="vault-project-art" onClick={() => { setViewingPlaylist(FAVORITES_PLAYLIST_ID); openLibraryOverlay(null); }}>
                               {favoriteTracksList.length > 0 ? favoriteTracksList.slice(0, 4).map((track, tidx) => (
                                 <img
                                   key={`favorites-cover-${tidx}`}
@@ -12611,7 +12659,7 @@ function App() {
                               <div className="vault-project-count">{favoriteTracksList.length}</div>
                            </div>
                            <div className="min-w-0">
-                              <button onClick={() => setViewingPlaylist(FAVORITES_PLAYLIST_ID)} className="w-full text-left text-[12px] font-black text-white/88 uppercase tracking-tight truncate group-hover/vault:text-rose-300 transition-colors" title={FAVORITES_PLAYLIST_NAME}>
+                              <button onClick={() => { setViewingPlaylist(FAVORITES_PLAYLIST_ID); openLibraryOverlay(null); }} className="w-full text-left text-[12px] font-black text-white/88 uppercase tracking-tight truncate group-hover/vault:text-rose-300 transition-colors" title={FAVORITES_PLAYLIST_NAME}>
                                 {FAVORITES_PLAYLIST_NAME}
                               </button>
                               <div className="mt-1 text-[8px] font-black uppercase tracking-[0.22em] text-white/30 truncate">
@@ -12623,7 +12671,7 @@ function App() {
                               <button onClick={() => handleFavoritePlayAll(true)} className="vault-project-tool favorite-play" title="Shuffle Favorites"><Shuffle size={11} /></button>
                               <button onClick={handleFavoriteAddAll} className="vault-project-tool" title="Queue Favorites"><Plus size={11} /></button>
                               {isStandalone && <button onClick={() => handleExportVault(FAVORITES_PLAYLIST_ID)} className="vault-project-tool" title="Export Favorites"><Download size={11} /></button>}
-                              <button onClick={() => setViewingPlaylist(FAVORITES_PLAYLIST_ID)} className="vault-project-tool" title="View Favorites"><Maximize2 size={11} /></button>
+                              <button onClick={() => { setViewingPlaylist(FAVORITES_PLAYLIST_ID); openLibraryOverlay(null); }} className="vault-project-tool" title="View Favorites"><Maximize2 size={11} /></button>
                            </div>
                            {favoriteTracksList.length > 0 && (
                             <button onClick={() => openPlaylistInspect(FAVORITES_PLAYLIST_NAME, favoriteTracksList, 'vault:favorites')} className="vault-project-inspect">
