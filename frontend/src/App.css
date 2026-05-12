@@ -968,32 +968,6 @@ body.perf-low .active\:scale-\[0\.98\] {
   box-shadow: 0 0 20px rgba(var(--brand-accent-rgb), 0.7);
 }
 
-.mixtape-tonearm {
-  position: absolute;
-  right: 11%;
-  top: 14%;
-  width: 38%;
-  height: 3px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, rgba(var(--brand-accent-rgb), 0.15), rgba(var(--brand-accent-rgb), 0.75));
-  transform: rotate(42deg);
-  transform-origin: right center;
-  box-shadow: 0 0 18px rgba(var(--brand-accent-rgb), 0.18);
-}
-
-.mixtape-tonearm::after {
-  content: "";
-  position: absolute;
-  right: -8px;
-  top: 50%;
-  width: 16px;
-  height: 16px;
-  transform: translateY(-50%);
-  border-radius: 999px;
-  background: var(--brand-accent);
-  box-shadow: 0 0 18px rgba(var(--brand-accent-rgb), 0.5);
-}
-
 .mixtape-meter {
   padding: 10px;
   border-radius: 18px;
@@ -1001,14 +975,30 @@ body.perf-low .active\:scale-\[0\.98\] {
   border: 1px solid rgba(255,255,255,0.06);
 }
 
+.mixtape-meter-cell {
+  transform-origin: bottom;
+  animation: mixtape-meter-dance 1.08s ease-in-out infinite;
+  animation-delay: calc(var(--meter-index, 0) * -90ms);
+}
+
 body.perf-low .mixtape-record.is-playing,
-body.perf-low .mixtape-record {
+body.perf-low .mixtape-record,
+body.perf-low .mixtape-meter-cell {
   animation: none !important;
 }
 
 @keyframes mixtape-record-spin {
   to {
     transform: rotate(360deg) scale(calc(0.98 + (var(--vault-energy, 0) * 0.08)));
+  }
+}
+
+@keyframes mixtape-meter-dance {
+  0%, 100% {
+    transform: scaleY(0.86);
+  }
+  50% {
+    transform: scaleY(calc(1 + (var(--vault-energy, 0) * 0.32)));
   }
 }
 
@@ -1024,8 +1014,8 @@ body.perf-low .mixtape-record {
   background:
     linear-gradient(140deg, rgba(255, 255, 255, 0.076), rgba(255, 255, 255, 0.026) 36%, rgba(0, 0, 0, 0.20)),
     rgba(5, 8, 10, 0.88);
-  -webkit-backdrop-filter: blur(30px) saturate(1.15);
-  backdrop-filter: blur(30px) saturate(1.15);
+  -webkit-backdrop-filter: blur(18px) saturate(1.08);
+  backdrop-filter: blur(18px) saturate(1.08);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.07),
     0 32px 110px rgba(0, 0, 0, 0.62);
@@ -1057,8 +1047,8 @@ body.perf-low .mixtape-record {
   background:
     linear-gradient(145deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.024) 42%, rgba(0, 0, 0, 0.18)),
     rgba(8, 11, 14, 0.80);
-  -webkit-backdrop-filter: blur(24px) saturate(1.08);
-  backdrop-filter: blur(24px) saturate(1.08);
+  -webkit-backdrop-filter: blur(14px) saturate(1.04);
+  backdrop-filter: blur(14px) saturate(1.04);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.06),
     0 18px 58px rgba(0, 0, 0, 0.32);
@@ -1074,6 +1064,12 @@ body.perf-low .mixtape-record {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.035),
     0 18px 42px rgba(0, 0, 0, 0.16);
+}
+
+.studio-library-action-dock {
+  background:
+    linear-gradient(180deg, rgba(var(--brand-accent-rgb), 0.055), rgba(255, 255, 255, 0.012)),
+    rgba(0, 0, 0, 0.16);
 }
 
 .studio-library-list {

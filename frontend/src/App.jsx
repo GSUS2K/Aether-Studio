@@ -2830,9 +2830,11 @@ function App() {
 
   const isAuraMode = visualizerMode === 'pulse';
   
-  const immersiveBeatIntensity = useMemo(() => isAuraMode
-    ? clamp01((vaultPulse.energy * 0.9) + (vaultPulse.bass * 0.45) + (vaultPulse.highs * 0.12))
-    : 0, [isAuraMode, vaultPulse.energy, vaultPulse.bass, vaultPulse.highs]);
+  const liveBeatIntensity = useMemo(() => clamp01(
+    (vaultPulse.energy * 0.9) + (vaultPulse.bass * 0.45) + (vaultPulse.highs * 0.12)
+  ), [vaultPulse.energy, vaultPulse.bass, vaultPulse.highs]);
+  const immersiveBeatIntensity = useMemo(() => isAuraMode ? liveBeatIntensity : 0, [isAuraMode, liveBeatIntensity]);
+  const livePulseReadout = isPlaying ? Math.max(liveBeatIntensity, 0.08) : liveBeatIntensity;
 
   const auraCardShadow = useMemo(() => isAuraMode
     ? `0 24px 60px rgba(0,0,0,0.30), inset 0 0 ${10 + immersiveBeatIntensity * 30}px rgba(0,255,191,${0.06 + immersiveBeatIntensity * 0.24})`
@@ -3265,9 +3267,11 @@ function App() {
       themeColor,
       auraPreset,
       isMixtapeVaultOpen,
+      isAuraStageOpen,
+      isSharedSceneOpen,
       performanceMode,
     };
-  }, [visualizerMode, themeColor, auraPreset, isMixtapeVaultOpen, performanceMode]);
+  }, [visualizerMode, themeColor, auraPreset, isMixtapeVaultOpen, isAuraStageOpen, isSharedSceneOpen, performanceMode]);
 
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
@@ -4049,7 +4053,7 @@ function App() {
       s: isPlaying ? 1 : 0,
       m: visualizerMode === 'pulse' ? 1 : 0,
       p: [
-        Math.round(clamp01(vaultPulse.energy) * 100),
+        Math.round(clamp01(isPlaying ? Math.max(vaultPulse.energy, livePulseReadout) : vaultPulse.energy) * 100),
         Math.round(clamp01(vaultPulse.bass) * 100),
         Math.round(clamp01(vaultPulse.mids) * 100),
         Math.round(clamp01(vaultPulse.highs) * 100),
@@ -4088,7 +4092,7 @@ function App() {
       setLastAdded('Scene link unavailable');
       setTimeout(() => setLastAdded(null), 2200);
     }
-  }, [appendRecentEvent, currentTrack?.actualUrl, currentTrack?.author, currentTrack?.duration, currentTrack?.thumbnail, currentTrack?.title, currentTrack?.youtubeId, formatTime, getActivePlaybackPositionMs, isPlaying, lyrics, themeColor, visualizerMode, vaultPulse.bass, vaultPulse.energy, vaultPulse.highs, vaultPulse.mids]);
+  }, [appendRecentEvent, currentTrack?.actualUrl, currentTrack?.author, currentTrack?.duration, currentTrack?.thumbnail, currentTrack?.title, currentTrack?.youtubeId, formatTime, getActivePlaybackPositionMs, isPlaying, livePulseReadout, lyrics, themeColor, visualizerMode, vaultPulse.bass, vaultPulse.energy, vaultPulse.highs, vaultPulse.mids]);
 
   const refreshLockStatus = useCallback(async () => {
     if (!isStandalone || !window.aether?.getLockStatus) return;
@@ -6085,6 +6089,7 @@ function App() {
 	          const liveThemeColor = visualizerState.themeColor;
 	          const liveAuraPreset = visualizerState.auraPreset;
 	          const isVaultOpen = visualizerState.isMixtapeVaultOpen;
+          const needsPulseTelemetry = isVaultOpen || visualizerState.isAuraStageOpen || visualizerState.isSharedSceneOpen;
           const livePerformanceMode = visualizerState.performanceMode || 'high';
           const minFrameGap = livePerformanceMode === 'medium' ? 66 : 0;
           if (minFrameGap > 0 && frameNow - frameBudget.lastDrawAt < minFrameGap) return;
@@ -6092,7 +6097,7 @@ function App() {
 	          const auraModeActive = liveVisualizerMode === 'pulse';
           const canvas = liveVisualizerMode === 'bars' ? visualizerCanvasRef.current : null;
           const pulseCanvas = liveVisualizerMode === 'pulse' ? pulseCanvasRef.current : null;
-          if (!canvas && !pulseCanvas && !isVaultOpen) return;
+          if (!canvas && !pulseCanvas && !needsPulseTelemetry) return;
 
           if (canvas && frameBudget.canvas !== canvas) {
             frameBudget.canvas = canvas;
@@ -6227,7 +6232,7 @@ function App() {
         }
 
         const now = performance.now();
-        if (isVaultOpen && now - vaultTelemetryRef.current.lastStateAt > 120) {
+        if (needsPulseTelemetry && now - vaultTelemetryRef.current.lastStateAt > 120) {
           vaultTelemetryRef.current.lastStateAt = now;
           const liveTrack = currentTrackRef.current;
           const liveTime = currentTimeRef.current;
@@ -6262,7 +6267,7 @@ function App() {
           vaultPulseRef.current = pulseData;
 
           // High-frequency CSS variable updates for smooth Aura effects without React re-renders
-          if (isAuraMode) {
+          if (auraModeActive || isVaultOpen || visualizerState.isAuraStageOpen || visualizerState.isSharedSceneOpen) {
             const root = document.documentElement;
             root.style.setProperty('--vault-bass', String(bass));
             root.style.setProperty('--vault-mids', String(mids));
@@ -8381,6 +8386,36 @@ function App() {
     if (resolvedIndex < 0) return;
     handleRemoveFromPlaylist(name, resolvedIndex);
   }, [handleRemoveFromPlaylist, normalizeTrackIdentity, playlists, toggleFavoriteTrack]);
+
+  const handleRemoveTrackEverywhere = useCallback((track) => {
+    const key = normalizeTrackIdentity(track);
+    if (!key) return;
+
+    const nextPlaylists = {};
+    let removedCount = 0;
+    Object.entries(playlists || {}).forEach(([name, tracks]) => {
+      const filtered = (Array.isArray(tracks) ? tracks : []).filter((item) => {
+        const isMatch = normalizeTrackIdentity(item) === key;
+        if (isMatch) removedCount += 1;
+        return !isMatch;
+      });
+      nextPlaylists[name] = filtered;
+    });
+
+    if (removedCount > 0) {
+      setPlaylists(nextPlaylists);
+      window.aether?.store?.set?.('playlists', nextPlaylists);
+    }
+
+    if (favoriteTracks?.[key]) {
+      const nextFavorites = { ...(favoriteTracks || {}) };
+      delete nextFavorites[key];
+      persistFavoriteTracks(nextFavorites);
+    }
+
+    setLastAdded(removedCount > 0 ? `Deleted track from ${removedCount} vault${removedCount === 1 ? '' : 's'}` : 'Track not found in vaults');
+    setTimeout(() => setLastAdded(null), 2600);
+  }, [favoriteTracks, normalizeTrackIdentity, persistFavoriteTracks, playlists]);
 
   const handleSearch = async (eventOrQuery) => {
     if (eventOrQuery?.preventDefault) eventOrQuery.preventDefault();
@@ -10780,16 +10815,12 @@ function App() {
     { id: 'name', label: 'A-Z' },
     { id: 'listened-desc', label: 'Recent' },
     { id: 'added-desc', label: 'Added' },
-    { id: 'updated-desc', label: 'Updated' },
     { id: 'plays-desc', label: 'Played' },
-    { id: 'tracks-desc', label: 'Most Songs' },
-    { id: 'tracks-asc', label: 'Fewest' },
   ];
   const librarySongFilterOptions = [
     { id: 'all', label: 'All' },
     { id: 'favorites', label: 'Favorites' },
     { id: 'played', label: 'Played' },
-    { id: 'unplayed', label: 'Unplayed' },
   ];
   const librarySongSortOptions = [
     { id: 'title', label: 'Title' },
@@ -10797,8 +10828,6 @@ function App() {
     { id: 'listened-desc', label: 'Recent' },
     { id: 'added-desc', label: 'Added' },
     { id: 'plays-desc', label: 'Played' },
-    { id: 'duration-desc', label: 'Longest' },
-    { id: 'duration-asc', label: 'Shortest' },
   ];
   const visualStageLyric = compactLyric || activeLyric || null;
   const visualStageNextLyric = nextLyric && nextLyric !== visualStageLyric ? nextLyric : null;
@@ -10869,7 +10898,12 @@ function App() {
     setTimeout(() => setLastAdded(null), 2600);
   };
   const auraStageDurationMs = currentTrack?.totalDurationMs || currentTrack?.duration || 0;
-  const auraStagePulseScale = 1 + immersiveBeatIntensity * 0.12;
+  const auraStagePulseScale = 1 + livePulseReadout * 0.12;
+  const mixtapeDurationMs = Math.max(0, Number(currentTrack?.totalDurationMs || currentTrack?.duration || 0));
+  const mixtapePositionMs = getActivePlaybackPositionMs();
+  const mixtapeProgressPct = mixtapeDurationMs > 0 ? clamp01(mixtapePositionMs / mixtapeDurationMs) * 100 : 0;
+  const mixtapeLiveLyric = compactLyric || activeLyric || 'No live lyric locked yet';
+  const mixtapeEnergyPct = Math.round(livePulseReadout * 100);
   const rootModeClass = [
     isVerticalStack ? 'vertical-stack-mode' : '',
     isDoodleMode ? `doodle-mode-active doodle-preset-${doodleIntensity}` : '',
@@ -13519,7 +13553,7 @@ function App() {
                   <div className="flex items-center gap-3 shrink-0">
                     <div className="rounded-2xl border border-white/10 bg-black/25 px-3 py-2 text-right">
                       <div className="text-[8px] font-black uppercase tracking-[0.22em] text-white/35">Scene Time</div>
-                      <div className="mt-1 text-[11px] font-mono text-brand-accent">{formatTime(getActivePlaybackPositionMs())}</div>
+                      <div className="mt-1 text-[11px] font-mono text-brand-accent">{formatTime(mixtapePositionMs)}</div>
                     </div>
                     <button
                       onClick={() => setIsMixtapeVaultOpen(false)}
@@ -13550,27 +13584,26 @@ function App() {
                           />
                           <div className="mixtape-record-pin" />
                         </div>
-                        <div className="mixtape-tonearm" />
                       </div>
                       <div className="mt-4 grid w-full grid-cols-3 gap-2 text-center">
                         <div className="rounded-2xl border border-white/8 bg-black/24 px-3 py-2">
                           <div className="text-[8px] uppercase tracking-[0.2em] text-white/28">Bass</div>
-                          <div className="mt-1 font-mono text-[11px] text-brand-accent">{Math.round(vaultPulse.bass * 100)}</div>
+                          <div className="mt-1 font-mono text-[11px] text-brand-accent">{Math.round(Math.max(vaultPulse.bass, livePulseReadout * 0.35) * 100)}</div>
                         </div>
                         <div className="rounded-2xl border border-white/8 bg-black/24 px-3 py-2">
                           <div className="text-[8px] uppercase tracking-[0.2em] text-white/28">Mids</div>
-                          <div className="mt-1 font-mono text-[11px] text-brand-accent">{Math.round(vaultPulse.mids * 100)}</div>
+                          <div className="mt-1 font-mono text-[11px] text-brand-accent">{Math.round(Math.max(vaultPulse.mids, livePulseReadout * 0.28) * 100)}</div>
                         </div>
                         <div className="rounded-2xl border border-white/8 bg-black/24 px-3 py-2">
                           <div className="text-[8px] uppercase tracking-[0.2em] text-white/28">Highs</div>
-                          <div className="mt-1 font-mono text-[11px] text-brand-accent">{Math.round(vaultPulse.highs * 100)}</div>
+                          <div className="mt-1 font-mono text-[11px] text-brand-accent">{Math.round(Math.max(vaultPulse.highs, livePulseReadout * 0.22) * 100)}</div>
                         </div>
                       </div>
                     </div>
 
                     <div className="rounded-[1.5rem] border border-white/8 bg-black/24 p-4 flex flex-col justify-between min-w-0">
                       <div className="min-w-0">
-                        <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/28">Now Sealed In The Tape</div>
+                        <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/28">Now Playing</div>
                         <div className="mt-3 text-lg md:text-xl font-black uppercase tracking-tight text-white truncate">{currentTrack?.title || 'Aether Secret Session'}</div>
                         <div className="mt-1 text-[10px] font-black uppercase tracking-[0.22em] text-brand-accent/70 truncate">{currentTrack?.author || 'Unknown Artist'}</div>
                       </div>
@@ -13582,8 +13615,8 @@ function App() {
                             return (
                               <div
                                 key={idx}
-                                className="rounded-md bg-brand-accent/75 transition-[height,opacity] duration-200 ease-out"
-                                style={{ height: `${h}px`, opacity: 0.35 + (bin * 0.55) + (vaultPulse.energy * 0.1) }}
+                                className="mixtape-meter-cell rounded-md bg-brand-accent/75 transition-[height,opacity] duration-200 ease-out"
+                                style={{ height: `${h}px`, opacity: 0.35 + (bin * 0.55) + (livePulseReadout * 0.18), '--meter-index': idx }}
                               />
                             );
                           })}
@@ -13591,17 +13624,21 @@ function App() {
                         <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/[0.06]">
                           <div
                             className="h-full rounded-full bg-brand-accent shadow-[0_0_18px_rgba(0,255,191,0.28)] transition-[width] duration-200"
-                            style={{ width: `${Math.min(100, Math.max(4, vaultPulse.energy * 100))}%` }}
+                            style={{ width: `${Math.min(100, Math.max(isPlaying ? 3 : 0, mixtapeProgressPct))}%` }}
                           />
+                        </div>
+                        <div className="mt-2 flex items-center justify-between text-[9px] font-mono text-white/34">
+                          <span>{formatTime(mixtapePositionMs)}</span>
+                          <span>{mixtapeDurationMs ? formatTime(mixtapeDurationMs) : '--:--'}</span>
                         </div>
                       </div>
 
                       <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
                         <div className="rounded-2xl border border-white/8 bg-white/[0.025] px-4 py-3 min-w-0">
-                          <div className="text-[8px] font-black uppercase tracking-[0.22em] text-white/28">Summon Phrase</div>
-                          <div className="mt-1 text-[10px] text-white/48 uppercase tracking-[0.22em]">Type <span className="text-brand-accent font-black">mixtape</span> anywhere in the app</div>
+                          <div className="text-[8px] font-black uppercase tracking-[0.22em] text-white/28">Live Lyric</div>
+                          <div className="mt-1 line-clamp-2 text-sm font-black leading-snug text-brand-accent">{mixtapeLiveLyric}</div>
                           <div className="mt-2 truncate font-mono text-[9px] uppercase tracking-[0.18em] text-white/34">
-                            {currentTrack?.title ? `${currentTrack.title} // ${formatTime(getActivePlaybackPositionMs())} // ${vaultPulse.stamp}` : vaultPulse.stamp}
+                            Pulse {mixtapeEnergyPct}% / {vaultPulse.stamp}
                           </div>
                         </div>
                         <button
@@ -13734,7 +13771,7 @@ function App() {
                   <div className="grid min-h-[60vh] grid-cols-1 items-center gap-8 lg:grid-cols-[0.9fr_1.1fr]">
                     <div className="flex items-center justify-center">
                       <motion.div
-                        animate={{ scale: auraStagePulseScale, rotate: immersiveBeatIntensity * 1.8 }}
+                        animate={{ scale: auraStagePulseScale, rotate: livePulseReadout * 1.8 }}
                         transition={{ duration: 0.16, ease: 'easeOut' }}
                         className="aura-stage-art relative aspect-square w-[min(72vw,420px)] overflow-hidden rounded-[2.6rem] border border-white/12 bg-white/[0.03] shadow-[0_36px_110px_rgba(0,0,0,0.48)]"
                       >
@@ -13754,7 +13791,7 @@ function App() {
 
                     <div className="min-w-0 text-center lg:text-left">
                       <div className="mb-5 flex flex-wrap items-center justify-center gap-2 lg:justify-start">
-                        <span className="rounded-full border border-brand-accent/25 bg-brand-accent/10 px-3 py-1 text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent">Pulse {Math.round(immersiveBeatIntensity * 100)}%</span>
+                        <span className="rounded-full border border-brand-accent/25 bg-brand-accent/10 px-3 py-1 text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent">Pulse {Math.round(livePulseReadout * 100)}%</span>
                         <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[9px] font-black uppercase tracking-[0.22em] text-white/45">{auraPreset}</span>
                         {isGestureControlEnabled && <span className="rounded-full border border-brand-accent/20 bg-brand-accent/8 px-3 py-1 text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent/75">Gesture on</span>}
                         {isFaceControlEnabled && <span className="rounded-full border border-brand-accent/20 bg-brand-accent/8 px-3 py-1 text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent/75">Face on</span>}
@@ -14243,8 +14280,8 @@ function App() {
                     <div className="studio-library-column studio-library-left border border-white/8 rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 h-full">
                       <div className="px-4 py-4 border-b border-white/8 flex items-center justify-between bg-black/20">
                         <div>
-                          <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Quick Actions</div>
-                          <div className="text-[12px] font-black uppercase tracking-widest text-brand-accent">Add to Vault</div>
+                          <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Library Desk</div>
+                          <div className="text-[12px] font-black uppercase tracking-widest text-brand-accent">Vault Actions</div>
                         </div>
                         <div className="flex items-center gap-2">
                           <button onClick={() => setIsLibraryOverlayOpen(false)} className="p-2 rounded-xl bg-white/5 border border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/40 transition-all" title="Close Overlay">
@@ -14256,15 +14293,15 @@ function App() {
                         </div>
                       </div>
 
-                      <div className="shrink-0 min-h-0 p-4 space-y-3 bg-gradient-to-b from-brand-accent/5 to-transparent">
-                        <div className="flex items-center gap-3 rounded-2xl bg-black/20 border border-brand-accent/20 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                      <div className="studio-library-action-dock shrink-0 min-h-0 p-3 space-y-2">
+                        <div className="flex items-center gap-3 rounded-2xl bg-black/18 border border-brand-accent/18 p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
                           {libraryActionTarget?.type === 'queue' ? (
                             <div className="w-12 h-12 rounded-xl bg-brand-accent/10 border border-brand-accent/20 flex items-center justify-center text-brand-accent font-black text-[10px]">Q</div>
                           ) : (
                             <img src={getProxyUrl(libraryActionTarget?.items?.[0]?.thumbnail || currentTrack?.thumbnail)} className="w-12 h-12 rounded-xl object-cover border border-white/10" alt="" />
                           )}
                           <div className="min-w-0">
-                            <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/35">Pending Context</div>
+                            <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/35">Ready to Save</div>
                             <div className="font-black uppercase tracking-tight text-white truncate">
                               {libraryActionTarget?.type === 'queue'
                                 ? `Queue Buffer (${libraryActionTarget.items.length})`
@@ -14272,11 +14309,11 @@ function App() {
                             </div>
                           </div>
                         </div>
-                        <div className="flex items-center gap-2 p-2 rounded-2xl bg-black/30 border border-white/8 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                        <div className="flex items-center gap-2 p-1.5 rounded-2xl bg-black/28 border border-white/8 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
                           <input
                             ref={libraryOverlayCreateInputRef}
                             className="bg-transparent border-none outline-none text-[12px] font-black text-brand-accent uppercase tracking-widest placeholder:text-brand-accent/30 w-full px-2 py-2"
-                            placeholder="Create New Vault..."
+                            placeholder="New vault name..."
                             value={newPlaylistName}
                             onChange={(e) => setNewPlaylistName(e.target.value)}
                             onKeyDown={(e) => {
@@ -14302,10 +14339,7 @@ function App() {
                           </button>
                         </div>
                         {!libraryActionTarget && !currentTrack && (
-                          <div className="text-[10px] uppercase tracking-[0.2em] text-white/28 flex items-center gap-2">
-                            <span>No active track context; this will create an empty vault.</span>
-                            {isDoodleMode && <img src={catDoodlePeek} alt="doodle" className="h-5 w-auto opacity-70 select-none pointer-events-none" draggable={false} />}
-                          </div>
+                          <div className="text-[9px] uppercase tracking-[0.18em] text-white/28">No active track. Creates an empty vault.</div>
                         )}
                       </div>
 
@@ -14405,6 +14439,7 @@ function App() {
                                       <button onClick={(e) => { e.stopPropagation(); handleAdd(track); }} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent/70 hover:text-brand-accent hover:bg-brand-accent/20 transition-all" title="Add to queue"><Plus size={12} /></button>
                                       <button onClick={(e) => { e.stopPropagation(); toggleFavoriteTrack(track); }} className={`p-2 rounded-lg transition-all ${isTrackFavorite(track) ? 'bg-rose-400/12 text-rose-300' : 'bg-white/5 text-white/35 hover:text-rose-300'}`} title={isTrackFavorite(track) ? 'Remove from Favorites' : 'Add to Favorites'}><Heart size={12} fill={isTrackFavorite(track) ? 'currentColor' : 'none'} /></button>
                                       <button onClick={(e) => { e.stopPropagation(); openTrackInspect(track, 'studio-library'); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title="Inspect"><Eye size={12} /></button>
+                                      <button onClick={(e) => { e.stopPropagation(); handleRemoveTrackEverywhere(track); }} className="p-2 rounded-lg bg-white/5 text-red-400/50 hover:text-red-400 transition-all" title="Delete from every vault"><Trash2 size={12} /></button>
                                     </div>
                                   </div>
                                   <div className="mt-2 flex items-center justify-between text-[8px] uppercase tracking-[0.18em] text-white/25">
@@ -14524,13 +14559,7 @@ function App() {
 
                     <div className="studio-library-column studio-library-focus border border-white/8 rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 h-full">
                       {viewingPlaylist ? (
-                        <motion.div
-                          key={viewingPlaylist}
-                          initial={{ opacity: 0, y: 8, scale: 0.995 }}
-                          animate={{ opacity: 1, y: 0, scale: 1 }}
-                          transition={{ duration: 0.2, ease: 'easeOut' }}
-                          className="flex flex-col min-h-0 flex-1"
-                        >
+                        <div key={viewingPlaylist} className="flex flex-col min-h-0 flex-1">
                           <div className="px-4 py-4 border-b border-white/8 flex items-center justify-between bg-black/20">
                             <div className="min-w-0">
                               <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Focused Vault</div>
@@ -14598,7 +14627,7 @@ function App() {
                               </div>
                             )}
                           </div>
-                        </motion.div>
+                        </div>
                       ) : (
                         <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 pb-24 flex flex-col gap-3 bg-gradient-to-b from-brand-accent/5 to-transparent overscroll-contain">
                           <div className="rounded-2xl border border-white/8 bg-black/20 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
