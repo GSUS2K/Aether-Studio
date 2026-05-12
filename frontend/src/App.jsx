@@ -5007,6 +5007,7 @@ function App() {
             controls: 0,
             disablekb: 1,
             modestbranding: 1,
+            origin: window.location.origin,
             playsinline: 1,
             rel: 0,
           },
