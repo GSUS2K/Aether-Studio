@@ -14114,7 +14114,7 @@ function App() {
                  </div>
 
                  <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[0.95fr_1.3fr] gap-4 p-3 md:p-5 overflow-y-auto lg:overflow-hidden custom-scrollbar overscroll-contain">
-                    <div className="glass-card border border-white/8 bg-gradient-to-b from-white/[0.05] to-white/[0.02] rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 shadow-[0_12px_40px_rgba(0,0,0,0.22)]">
+                    <div className="glass-card border border-white/8 bg-gradient-to-b from-white/[0.05] to-white/[0.02] rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 h-full shadow-[0_12px_40px_rgba(0,0,0,0.22)]">
                       <div className="px-4 py-4 border-b border-white/8 flex items-center justify-between bg-black/20">
                         <div>
                           <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Quick Actions</div>
@@ -14130,7 +14130,7 @@ function App() {
                         </div>
                       </div>
 
-                      <div className="p-4 border-b border-white/8 space-y-3 bg-gradient-to-b from-brand-accent/5 to-transparent">
+                      <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar overscroll-contain p-4 space-y-3 bg-gradient-to-b from-brand-accent/5 to-transparent">
                         <div className="flex items-center gap-3 rounded-2xl bg-black/20 border border-brand-accent/20 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
                           {libraryActionTarget?.type === 'queue' ? (
                             <div className="w-12 h-12 rounded-xl bg-brand-accent/10 border border-brand-accent/20 flex items-center justify-center text-brand-accent font-black text-[10px]">Q</div>
@@ -14183,7 +14183,7 @@ function App() {
                         )}
                       </div>
 
-                      <div className="border-b border-white/8 bg-black/18 p-4 space-y-3">
+                      <div className="rounded-[1.35rem] border border-white/8 bg-black/18 p-4 space-y-3">
                         <div className="relative">
                           <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
                           <input
@@ -14257,7 +14257,7 @@ function App() {
                         </div>
                       </div>
 
-                      <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 pb-24 space-y-3 overscroll-contain">
+                      <div className="space-y-3 pb-24">
                         {libraryBrowseMode === 'songs' ? (
                           <>
                             {libraryVisibleSongEntries.map((entry) => {
@@ -14394,7 +14394,7 @@ function App() {
                       </div>
                     </div>
 
-                    <div className="glass-card border border-white/8 bg-gradient-to-b from-white/[0.05] to-white/[0.02] rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 shadow-[0_12px_40px_rgba(0,0,0,0.22)]">
+                    <div className="glass-card border border-white/8 bg-gradient-to-b from-white/[0.05] to-white/[0.02] rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 h-full shadow-[0_12px_40px_rgba(0,0,0,0.22)]">
                       {viewingPlaylist ? (
                         <motion.div
                           key={viewingPlaylist}
