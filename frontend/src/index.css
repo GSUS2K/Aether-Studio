@@ -76,6 +76,15 @@
 }
 
 /* Performance Modes */
+body.perf-low,
+body.perf-low *,
+body.perf-low *::before,
+body.perf-low *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+
 body.perf-low [class*="backdrop-blur"] {
   backdrop-filter: none !important;
   background-color: rgba(8, 12, 16, 0.96) !important;
@@ -83,7 +92,13 @@ body.perf-low [class*="backdrop-blur"] {
 body.perf-low [class*="shadow-"] {
   box-shadow: none !important;
 }
-body.perf-low .aura-field-particle {
+body.perf-low .aura-field-particle,
+body.perf-low .aura-field,
+body.perf-low .bg-mesh,
+body.perf-low .doodle-bg-layer,
+body.perf-low .lyric-pulse-line,
+body.perf-low .beat-ring,
+body.perf-low .aether-visualizer-canvas {
   display: none !important;
 }
 
@@ -101,9 +116,9 @@ body.perf-medium .aura-field-particle {
   opacity: 0.5 !important;
 }
 
-body.perf-low *,
 body.perf-medium .doodle-bg-layer *,
 body.perf-low .doodle-bg-layer * {
+  animation: none !important;
   animation-duration: 0.001ms !important;
   animation-iteration-count: 1 !important;
 }
@@ -222,4 +237,3 @@ body.perf-low .doodle-bg-layer * {
   50% { transform: rotate(180deg) scale(1.25); }
   100% { transform: rotate(360deg) scale(1.1); }
 }
-

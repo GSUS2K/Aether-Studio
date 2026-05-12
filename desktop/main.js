@@ -536,23 +536,34 @@ const fetchMusicPageHtml = async (url) => {
 
 const extractAppleMusicPlaylist = (html) => {
     const playlistName = decodeHtmlEntities(
-        html.match(/<meta property="og:title" content="([^"]+)"/i)?.[1]
+        html.match(/<meta\s+name=["']apple:title["']\s+content=["']([^"']+)["']/i)?.[1]
+        || html.match(/<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']/i)?.[1]
+        || html.match(/<meta property="og:title" content="([^"]+)"/i)?.[1]
         || html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]
         || 'Apple Music Playlist'
     ).replace(/\s+-\s+Playlist\s+-\s+Apple Music.*$/i, '').trim();
     const tracks = [];
     const seen = new Set();
-    const pushTrack = (title, artist) => {
+    const debug = {
+        jsonLdBlocks: 0,
+        jsonLdTracks: 0,
+        attributeBlocks: 0,
+        attributeTracks: 0,
+        metaSongTags: 0,
+        metaSongTracks: 0,
+    };
+    const pushTrack = (title, artist, source = 'unknown', id = '') => {
         const cleanTitle = decodeHtmlEntities(title || '').replace(/\s+/g, ' ').trim();
         const cleanArtist = decodeHtmlEntities(artist || '').replace(/\s+/g, ' ').trim();
         if (!cleanTitle) return;
         const key = `${cleanTitle.toLowerCase()}|${cleanArtist.toLowerCase()}`;
         if (seen.has(key)) return;
         seen.add(key);
-        tracks.push({ appleId: key, title: cleanTitle, artist: cleanArtist });
+        tracks.push({ appleId: id || key, title: cleanTitle, artist: cleanArtist, source });
     };
 
     for (const match of html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+        debug.jsonLdBlocks += 1;
         try {
             const parsed = JSON.parse(decodeHtmlEntities(match[1]).trim());
             const candidates = Array.isArray(parsed) ? parsed : [parsed];
@@ -564,22 +575,44 @@ const extractAppleMusicPlaylist = (html) => {
                     const artist = Array.isArray(item?.byArtist)
                         ? item.byArtist.map((entry) => entry?.name).filter(Boolean).join(', ')
                         : item?.byArtist?.name || item?.artist?.name || item?.artistName || '';
-                    pushTrack(item?.name || item?.title, artist);
+                    const before = tracks.length;
+                    pushTrack(item?.name || item?.title, artist, 'json-ld', item?.url || item?.['@id'] || '');
+                    if (tracks.length > before) debug.jsonLdTracks += 1;
                 }
             }
         } catch (e) {}
     }
 
     for (const match of html.matchAll(/"attributes"\s*:\s*\{([\s\S]*?)\}\s*(?:,\s*"relationships"|,\s*"href"|,\s*"id")/g)) {
+        debug.attributeBlocks += 1;
         const block = match[1];
         const title = block.match(/"name"\s*:\s*"((?:\\.|[^"\\])+)"/)?.[1];
         const artist = block.match(/"artistName"\s*:\s*"((?:\\.|[^"\\])+)"/)?.[1];
         if (title) {
-            pushTrack(title.replace(/\\"/g, '"'), String(artist || '').replace(/\\"/g, '"'));
+            const before = tracks.length;
+            pushTrack(title.replace(/\\"/g, '"'), String(artist || '').replace(/\\"/g, '"'), 'attributes');
+            if (tracks.length > before) debug.attributeTracks += 1;
         }
     }
 
-    return { playlistName, tracks: tracks.slice(0, 200) };
+    for (const match of html.matchAll(/<meta\b[^>]*property=["']music:song["'][^>]*content=["']([^"']+)["'][^>]*>/gi)) {
+        debug.metaSongTags += 1;
+        try {
+            const songUrl = decodeHtmlEntities(match[1]);
+            const url = new URL(songUrl);
+            const parts = url.pathname.split('/').filter(Boolean);
+            const id = parts.at(-1) || songUrl;
+            const slug = parts.at(-2) || '';
+            const title = slug
+                ? decodeURIComponent(slug).replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim()
+                : '';
+            const before = tracks.length;
+            pushTrack(title, '', 'music-song-meta', id);
+            if (tracks.length > before) debug.metaSongTracks += 1;
+        } catch (e) {}
+    }
+
+    return { playlistName, tracks: tracks.slice(0, 200), debug };
 };
 
 const resolveImportedTracks = async ({ provider, playlistId, playlistName, sourceTracks, sendProgress }) => {
@@ -2988,7 +3021,7 @@ app.whenReady().then(async () => {
                 filters: [{ name: 'Aether Vault', extensions: ['aether'] }]
             });
             if (filePath) {
-                fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+                await fs.promises.writeFile(filePath, JSON.stringify(Array.isArray(data) ? data : [], null, 2), 'utf-8');
                 return { success: true };
             }
             return { success: false, cancel: true };
@@ -3032,8 +3065,11 @@ app.whenReady().then(async () => {
                 filters: [{ name: 'Aether Vault', extensions: ['aether'] }]
             });
             if (filePaths && filePaths.length > 0) {
-                const content = fs.readFileSync(filePaths[0], 'utf-8');
+                const content = await fs.promises.readFile(filePaths[0], 'utf-8');
                 const parsed = JSON.parse(content);
+                if (!Array.isArray(parsed)) {
+                    return { success: false, error: 'Aether vault file must contain a track list.' };
+                }
                 const name = require('path').parse(filePaths[0]).name;
                 return { success: true, name, data: parsed };
             }
@@ -3266,22 +3302,40 @@ app.whenReady().then(async () => {
             const response = await fetchMusicPageHtml(playlistUrl);
             const html = response?.text || '';
             if (!response?.ok || !html) {
-                return { success: false, error: `Apple Music page fetch failed (${response?.status || 0})`, debug: { htmlStatus: response?.status || 0 } };
+                return { success: false, error: `Apple Music page fetch failed (${response?.status || 0})`, debug: { htmlStatus: response?.status || 0, htmlLength: html.length } };
             }
 
             sendProgress({ stage: 'parsing', progress: 18, message: 'Reading playlist tracks...' });
             const parsed = extractAppleMusicPlaylist(html);
+            sendProgress({
+                stage: 'parsing',
+                progress: 24,
+                message: `Found ${parsed.tracks.length} Apple Music track hints (${parsed.debug?.metaSongTracks || 0} page tags).`,
+            });
             if (!Array.isArray(parsed.tracks) || parsed.tracks.length === 0) {
-                return { success: false, error: 'No tracks found in Apple Music playlist.', debug: { htmlStatus: response.status, htmlLength: html.length } };
+                return {
+                    success: false,
+                    error: 'No tracks found in Apple Music playlist.',
+                    debug: { htmlStatus: response.status, htmlLength: html.length, ...(parsed.debug || {}) },
+                };
             }
 
-            return await resolveImportedTracks({
+            const resolved = await resolveImportedTracks({
                 provider: 'apple',
                 playlistId: playlistUrl.match(/\/playlist\/[^/]+\/([^/?#]+)/i)?.[1] || playlistUrl,
                 playlistName: parsed.playlistName || 'Apple Music Playlist',
                 sourceTracks: parsed.tracks,
                 sendProgress,
             });
+            return {
+                ...resolved,
+                debug: {
+                    ...(resolved.debug || {}),
+                    htmlStatus: response.status,
+                    htmlLength: html.length,
+                    parser: parsed.debug,
+                },
+            };
         } catch (e) {
             try { event.sender.send('aether:spotify-import-progress', { stage: 'error', progress: 0, message: e.message }); } catch (error) {}
             return { success: false, error: e.message };

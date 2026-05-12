@@ -225,6 +225,11 @@
 
 .immersive-lyric-line {
   background: transparent !important;
+  box-sizing: border-box;
+  max-inline-size: min(84vw, 1080px);
+  overflow-wrap: anywhere;
+  word-break: normal;
+  white-space: normal;
   -webkit-text-fill-color: currentColor !important;
   -webkit-background-clip: initial !important;
   background-clip: initial !important;
@@ -234,6 +239,8 @@
   display: inline;
   background: transparent;
   color: currentColor;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .immersive-karaoke-text-active {
@@ -837,12 +844,170 @@ body.perf-low [data-immersive-overlay='true'] {
 }
 
 body.perf-low .immersive-lyric-line {
-  transition-duration: 180ms !important;
+  transition: none !important;
 }
 
 body.perf-low .glass-card,
 body.perf-low .rounded-3xl,
 body.perf-low .rounded-2xl,
 body.perf-low .rounded-xl {
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28) !important;
+  box-shadow: none !important;
+}
+
+body.perf-low .shadow-neon,
+body.perf-low [class*="shadow-"],
+body.perf-low [style*="box-shadow"] {
+  box-shadow: none !important;
+}
+
+body.perf-low .group-hover\:scale-110,
+body.perf-low .hover\:scale-\[1\.01\],
+body.perf-low .hover\:scale-\[1\.02\],
+body.perf-low .hover\:scale-\[1\.03\],
+body.perf-low .hover\:scale-105,
+body.perf-low .active\:scale-95,
+body.perf-low .active\:scale-\[0\.98\] {
+  transform: none !important;
+}
+
+.mixtape-vault-shell {
+  --mixtape-glow: calc(0.12 + (var(--vault-glow, 0.2) * 0.28));
+}
+
+.mixtape-vault-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 22% 18%, rgba(var(--brand-accent-rgb), var(--mixtape-glow)), transparent 28%),
+    radial-gradient(circle at 78% 74%, rgba(255,255,255,0.04), transparent 32%),
+    linear-gradient(135deg, rgba(var(--brand-accent-rgb), 0.05), transparent 42%);
+}
+
+.mixtape-console {
+  position: relative;
+  overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), inset 0 0 80px rgba(var(--brand-accent-rgb), 0.035);
+}
+
+.mixtape-deck {
+  min-height: 320px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+.mixtape-record-stage {
+  position: relative;
+  width: min(260px, 58vw);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+}
+
+.mixtape-record-stage::before {
+  content: "";
+  position: absolute;
+  inset: 8%;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(var(--brand-accent-rgb), 0.18), transparent 58%);
+  filter: blur(18px);
+  opacity: calc(0.35 + (var(--vault-energy, 0) * 0.55));
+}
+
+.mixtape-record {
+  position: relative;
+  width: 78%;
+  aspect-ratio: 1;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--brand-accent-rgb), 0.28);
+  background:
+    radial-gradient(circle at center, rgba(255,255,255,0.08) 0 8%, transparent 9%),
+    repeating-radial-gradient(circle at center, rgba(255,255,255,0.08) 0 1px, transparent 1px 10px),
+    radial-gradient(circle at center, #111 0 20%, #050607 55%, rgba(var(--brand-accent-rgb), 0.16) 100%);
+  box-shadow: 0 22px 70px rgba(0,0,0,0.38), 0 0 calc(22px + (var(--vault-energy, 0) * 34px)) rgba(var(--brand-accent-rgb), 0.18);
+  transform: scale(calc(0.98 + (var(--vault-energy, 0) * 0.08)));
+  will-change: transform;
+}
+
+.mixtape-record.is-playing {
+  animation: mixtape-record-spin 7s linear infinite;
+}
+
+.mixtape-record-grooves {
+  position: absolute;
+  inset: 10%;
+  border-radius: inherit;
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow:
+    inset 0 0 0 12px rgba(255,255,255,0.015),
+    inset 0 0 0 24px rgba(255,255,255,0.018),
+    inset 0 0 0 42px rgba(255,255,255,0.012);
+}
+
+.mixtape-record-art {
+  position: absolute;
+  inset: 50%;
+  width: 34%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  object-fit: cover;
+  border: 2px solid rgba(var(--brand-accent-rgb), 0.45);
+  background: rgba(255,255,255,0.04);
+}
+
+.mixtape-record-pin {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 8%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: var(--brand-accent);
+  box-shadow: 0 0 20px rgba(var(--brand-accent-rgb), 0.7);
+}
+
+.mixtape-tonearm {
+  position: absolute;
+  right: 11%;
+  top: 14%;
+  width: 38%;
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(var(--brand-accent-rgb), 0.15), rgba(var(--brand-accent-rgb), 0.75));
+  transform: rotate(42deg);
+  transform-origin: right center;
+  box-shadow: 0 0 18px rgba(var(--brand-accent-rgb), 0.18);
+}
+
+.mixtape-tonearm::after {
+  content: "";
+  position: absolute;
+  right: -8px;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: var(--brand-accent);
+  box-shadow: 0 0 18px rgba(var(--brand-accent-rgb), 0.5);
+}
+
+.mixtape-meter {
+  padding: 10px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.015));
+  border: 1px solid rgba(255,255,255,0.06);
+}
+
+body.perf-low .mixtape-record.is-playing,
+body.perf-low .mixtape-record {
+  animation: none !important;
+}
+
+@keyframes mixtape-record-spin {
+  to {
+    transform: rotate(360deg) scale(calc(0.98 + (var(--vault-energy, 0) * 0.08)));
+  }
 }

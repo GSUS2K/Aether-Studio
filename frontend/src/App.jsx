@@ -2,9 +2,9 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, Com
 import { createPortal } from 'react-dom';
 // NOTE: Many async operations and state changes below may be subject to race conditions if triggered rapidly.
 // Consider debouncing or locking for critical flows (e.g., downloads, updates, queue changes).
-import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, VolumeX, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles, Clapperboard, Columns2, Repeat, MessageSquare, Send, Layers, Eye, Hand, MousePointer2, Camera, Copy, Check } from 'lucide-react';
+import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, VolumeX, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles, Clapperboard, Columns2, Repeat, MessageSquare, Send, Layers, Eye, Hand, MousePointer2, Camera, Copy, Check, Heart } from 'lucide-react';
 
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, MotionConfig } from 'framer-motion';
 import { setupDiscordSdk } from './discord';
 import axios from 'axios';
 import { APP_VERSION, BUILD_VERSION, UX_VERSION } from './buildVersion';
@@ -22,6 +22,10 @@ const getApiBase = () => {
 
   if (typeof window !== 'undefined' && window.location?.origin) {
     const origin = window.location.origin.replace(/\/$/, '');
+    const host = window.location.hostname || '';
+    if (/^(www\.)?aetherstudio\.me$/i.test(host)) {
+      return 'https://aether-backend-website.onrender.com';
+    }
     if (!/^https?:\/\/localhost(?::\d+)?$/i.test(origin) && !/^https?:\/\/127\.0\.0\.1(?::\d+)?$/i.test(origin)) {
       return origin;
     }
@@ -35,6 +39,9 @@ const LYRIC_PRESETS_STORAGE_KEY = 'aether.lyricOffsetPresets.v1';
 const SESSION_UI_STORAGE_KEY = 'aether.sessionUi.v1';
 const SESSION_PLAYBACK_STORAGE_KEY = 'aether.sessionPlayback.v1';
 const PLAYLIST_ORDER_STORAGE_KEY = 'aether.playlistOrder.v1';
+const FAVORITES_STORAGE_KEY = 'aether.favoriteTracks.v1';
+const FAVORITES_PLAYLIST_ID = '__aether_favorites__';
+const FAVORITES_PLAYLIST_NAME = 'Favorite Songs';
 const SKIP_EVENTS_STORAGE_KEY = 'aether.skipEvents.v1';
 const MANUAL_LYRICS_STORAGE_KEY = 'aether.manualLyrics.v1';
 const LOCK_PREFS_STORAGE_KEY = 'aether.lockPrefs.v1';
@@ -77,6 +84,23 @@ const AUTOPLAY_MOOD_MODES = Object.freeze([
   { id: 'safe', label: 'Safe' },
   { id: 'explore', label: 'Explore' },
 ]);
+
+const ToastPortal = ({ children }) => {
+  if (typeof document === 'undefined') return children;
+  return createPortal(children, document.body);
+};
+
+const buildUniquePlaylistName = (baseName, playlists = {}, ignoreName = '') => {
+  const cleanBase = String(baseName || 'Playlist').trim() || 'Playlist';
+  if (!playlists?.[cleanBase] || cleanBase === ignoreName) return cleanBase;
+  let index = 2;
+  let candidate = `${cleanBase} ${index}`;
+  while (playlists?.[candidate] && candidate !== ignoreName) {
+    index += 1;
+    candidate = `${cleanBase} ${index}`;
+  }
+  return candidate;
+};
 const AURA_PRESETS = Object.freeze([
   { id: 'calm', label: 'Calm', fieldBoost: 0.72, fieldFlare: 0.62, hueShift: 0.65, kickGlow: 0.62, ringCooldownMs: 380, ringThreshold: 0.82, ringScale: 0.72, ringDurationMs: 460 },
   { id: 'balanced', label: 'Balanced', fieldBoost: 1, fieldFlare: 1, hueShift: 1, kickGlow: 1, ringCooldownMs: 300, ringThreshold: 0.78, ringScale: 0.6, ringDurationMs: 420 },
@@ -92,6 +116,11 @@ const DOODLE_PRESETS = Object.freeze([
   { id: 'subtle', label: 'Cozy', badge: 'CZ' },
   { id: 'medium', label: 'Floaty', badge: 'FL' },
   { id: 'dreamy', label: 'Playful', badge: 'PL' },
+]);
+const PERFORMANCE_MODES = Object.freeze([
+  { id: 'low', label: 'Low', detail: 'Playback first, no motion' },
+  { id: 'medium', label: 'Medium', detail: 'Soft motion, capped visuals' },
+  { id: 'high', label: 'High', detail: 'Full visuals and effects' },
 ]);
 const IDLE_PHRASES = [
   "Exploring the Neural Vault",
@@ -674,6 +703,8 @@ const HeaderVisualControls = memo(forwardRef(function HeaderVisualControls({
   isStandalone,
   globalMediaShortcutsEnabled,
   setGlobalMediaShortcutsEnabled,
+  performanceMode,
+  setPerformanceMode,
   onSurfaceOpen,
 }, ref) {
   const [isLooksPanelOpen, setIsLooksPanelOpen] = useState(false);
@@ -799,6 +830,23 @@ const HeaderVisualControls = memo(forwardRef(function HeaderVisualControls({
                 {['bars', 'pulse'].map((mode) => (
                   <button key={mode} onClick={() => setVisualizerMode(mode)} className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${visualizerMode === mode ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}>
                     {mode === 'pulse' ? 'Aura' : 'Bars'}
+                  </button>
+                ))}
+              </div>
+
+              <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Performance</div>
+              <div className="grid grid-cols-3 gap-1.5 mb-3">
+                {PERFORMANCE_MODES.map((mode) => (
+                  <button
+                    key={mode.id}
+                    onClick={() => {
+                      setPerformanceMode(mode.id);
+                      flashLastAdded(`Performance - ${mode.label}`, 1500);
+                    }}
+                    className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${performanceMode === mode.id ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                    title={mode.detail}
+                  >
+                    {mode.label}
                   </button>
                 ))}
               </div>
@@ -1243,6 +1291,7 @@ const PlayerActionButtons = memo(function PlayerActionButtons({
   cycleRepeatMode,
   handleControl,
   handleDownloadCurrentTrack,
+  isCurrentTrackFavorite,
   isDownloadingTrack,
   isFocusedMode,
   openLibraryOverlay,
@@ -1253,6 +1302,7 @@ const PlayerActionButtons = memo(function PlayerActionButtons({
   repeatModeLabel,
   setIsFocusedMode,
   setIsPlayerOverlayOpen,
+  toggleFavoriteTrack,
 }) {
   return (
     <div className="flex items-center gap-1 no-drag ml-auto">
@@ -1266,6 +1316,7 @@ const PlayerActionButtons = memo(function PlayerActionButtons({
         window.aether?.openExternal(currentTrackSourceUrl);
       }} disabled={!canOpenCurrentSource} className="p-2 text-white/20 hover:text-brand-accent transition-colors disabled:opacity-25 disabled:cursor-not-allowed" title="Open Source"><ExternalLink size={14} /></button>
       <button onClick={handleDownloadCurrentTrack} disabled={!canDownloadCurrentTrack || isDownloadingTrack} className="p-2 text-white/20 hover:text-brand-accent transition-colors disabled:opacity-25 disabled:cursor-not-allowed" title={isDownloadingTrack ? 'Exporting...' : 'Export Audio to File'}><Download size={14} className={isDownloadingTrack ? 'animate-pulse' : ''} /></button>
+      <button onClick={() => toggleFavoriteTrack(currentTrack)} disabled={!currentTrack} className={`p-2 transition-colors disabled:opacity-25 disabled:cursor-not-allowed ${isCurrentTrackFavorite ? 'text-rose-300' : 'text-white/20 hover:text-rose-300'}`} title={isCurrentTrackFavorite ? 'Remove from Favorites' : 'Add to Favorites'}><Heart size={14} fill={isCurrentTrackFavorite ? 'currentColor' : 'none'} /></button>
       <button onClick={() => openLibraryOverlay({ type: 'track', items: [currentTrack] })} className="p-2 text-white/20 hover:text-brand-accent transition-colors" title="Save to Library Overlay"><Plus size={14} /></button>
       <button onClick={() => openTrackInspect(currentTrack, 'now-playing')} className="p-2 text-white/20 hover:text-brand-accent transition-colors" title="Inspect Track"><Eye size={14} /></button>
       <div className="w-px h-3 bg-white/10 mx-1" />
@@ -1325,13 +1376,17 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
   currentTrack,
   isPlaying,
   getActivePlaybackPositionMs,
+  setLastAdded,
 }, ref) {
   const [isOpen, setIsOpen] = useState(false);
   const [soundCapsuleData, setSoundCapsuleData] = useState(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState(0);
   const [ledgerError, setLedgerError] = useState('');
   const [liveTick, setLiveTick] = useState(0);
-  const sectionStyle = { contentVisibility: 'auto', containIntrinsicSize: '220px', contain: 'layout paint' };
+  const [isClearLedgerOpen, setIsClearLedgerOpen] = useState(false);
+  const [ledgerClearPassword, setLedgerClearPassword] = useState('');
+  const [ledgerClearError, setLedgerClearError] = useState('');
+  const [isClearingLedger, setIsClearingLedger] = useState(false);
 
   const loadLedger = useCallback(async () => {
     try {
@@ -1343,11 +1398,15 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
         const raw = localStorage.getItem(PLAYBACK_LEDGER_STORAGE_KEY);
         data = raw ? JSON.parse(raw) : null;
       }
-      setSoundCapsuleData(normalizePlaybackLedgerData(data));
+      const normalized = normalizePlaybackLedgerData(data);
+      setSoundCapsuleData(normalized);
       setLastUpdatedAt(Date.now());
+      return normalized;
     } catch (error) {
       setLedgerError(error?.message || 'Ledger refresh failed');
-      setSoundCapsuleData(normalizePlaybackLedgerData(null));
+      const fallback = normalizePlaybackLedgerData(null);
+      setSoundCapsuleData(fallback);
+      return fallback;
     }
   }, []);
 
@@ -1404,6 +1463,42 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
       if (recentWeek[i].minutesMs <= 0 && recentWeek[i].plays <= 0) break;
       streakDays += 1;
     }
+    const sumRange = (startDate, endDate) => {
+      let minutesMs = 0;
+      let plays = 0;
+      const cursor = new Date(startDate);
+      cursor.setHours(0, 0, 0, 0);
+      const end = new Date(endDate);
+      end.setHours(0, 0, 0, 0);
+      while (cursor <= end) {
+        const key = getLocalDateKey(cursor);
+        minutesMs += Math.max(0, Math.floor(Number(data.dailyMinutes?.[key]) || 0));
+        plays += Math.max(0, Math.floor(Number(data.dailyPlays?.[key]) || 0));
+        cursor.setDate(cursor.getDate() + 1);
+      }
+      return { minutesMs, plays };
+    };
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const daysAgo = (days) => {
+      const date = new Date(today);
+      date.setDate(date.getDate() - days);
+      return date;
+    };
+    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+    const previousMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    const previousMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0);
+    const yearStart = new Date(today.getFullYear(), 0, 1);
+    const previousYearStart = new Date(today.getFullYear() - 1, 0, 1);
+    const previousYearEnd = new Date(today.getFullYear() - 1, 11, 31);
+    const periodSummary = [
+      ['This Week', sumRange(daysAgo(6), today)],
+      ['Previous Week', sumRange(daysAgo(13), daysAgo(7))],
+      ['This Month', sumRange(monthStart, today)],
+      ['Previous Month', sumRange(previousMonthStart, previousMonthEnd)],
+      ['This Year', sumRange(yearStart, today)],
+      ['Previous Year', sumRange(previousYearStart, previousYearEnd)],
+    ];
 
     return {
       ...data,
@@ -1425,6 +1520,7 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
       averageSessionMs,
       completionRate,
       streakDays,
+      periodSummary,
     };
   }, [soundCapsuleData]);
 
@@ -1433,7 +1529,71 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
     loadLedger();
   }, [loadLedger]);
 
-  const close = useCallback(() => setIsOpen(false), []);
+  const close = useCallback(() => {
+    setIsClearLedgerOpen(false);
+    setIsOpen(false);
+  }, []);
+
+  const syncLedger = useCallback(async () => {
+    await loadLedger();
+    setLastAdded?.('Signal Ledger synced');
+    window.setTimeout(() => setLastAdded?.(null), 2200);
+  }, [loadLedger, setLastAdded]);
+
+  const requestClearLedger = useCallback(async () => {
+    setLedgerClearPassword('');
+    setLedgerClearError('');
+    try {
+      const status = await window.aether?.getLockStatus?.();
+      if (!status?.enabled) {
+        setLedgerClearError('Set up App Lock first, then Signal Ledger can be cleared safely.');
+        setIsClearLedgerOpen(true);
+        return;
+      }
+      setIsClearLedgerOpen(true);
+    } catch (error) {
+      setLedgerClearError(error?.message || 'Could not check App Lock.');
+      setIsClearLedgerOpen(true);
+    }
+  }, []);
+
+  const clearLedgerAfterAuth = useCallback(async (method = 'password') => {
+    if (isClearingLedger) return;
+    setIsClearingLedger(true);
+    setLedgerClearError('');
+    try {
+      const status = await window.aether?.getLockStatus?.();
+      if (!status?.enabled) {
+        throw new Error('Set up App Lock first, then Signal Ledger can be cleared safely.');
+      }
+      let verified = false;
+      if (method === 'biometric') {
+        const res = await window.aether?.verifyAppLockBiometric?.();
+        verified = !!res?.success;
+      } else {
+        if (!ledgerClearPassword.trim()) throw new Error('Enter your App Lock password.');
+        const res = await window.aether?.verifyAppLockPassword?.(ledgerClearPassword);
+        verified = !!res?.success;
+      }
+      if (!verified) throw new Error('Verification failed.');
+      const emptyLedger = createPlaybackLedgerData();
+      if (window.aether?.store?.set) {
+        await window.aether.store.set(PLAYBACK_LEDGER_STORAGE_KEY, emptyLedger);
+      } else if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(PLAYBACK_LEDGER_STORAGE_KEY, JSON.stringify(emptyLedger));
+      }
+      setSoundCapsuleData(emptyLedger);
+      setLastUpdatedAt(Date.now());
+      setLedgerClearPassword('');
+      setIsClearLedgerOpen(false);
+      setLastAdded?.('Signal Ledger cleared');
+      window.setTimeout(() => setLastAdded?.(null), 2600);
+    } catch (error) {
+      setLedgerClearError(error?.message || 'Could not clear Signal Ledger.');
+    } finally {
+      setIsClearingLedger(false);
+    }
+  }, [isClearingLedger, ledgerClearPassword, setLastAdded]);
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -1493,7 +1653,10 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <button onClick={loadLedger} className="flex h-10 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/55 transition-colors hover:border-brand-accent/35 hover:text-brand-accent" title="Refresh ledger">
+              <button onClick={requestClearLedger} className="flex h-10 items-center gap-2 rounded-xl border border-red-500/18 bg-red-500/[0.06] px-3 text-[10px] font-black uppercase tracking-[0.18em] text-red-200/70 transition-colors hover:border-red-400/40 hover:text-red-200" title="Clear Signal Ledger">
+                <Trash2 size={13} /> Clear
+              </button>
+              <button onClick={syncLedger} className="flex h-10 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/55 transition-colors hover:border-brand-accent/35 hover:text-brand-accent" title="Refresh ledger">
                 <RefreshCw size={13} /> Sync
               </button>
               <button onClick={close} className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/12 bg-white/[0.04] text-white/45 transition-colors hover:border-red-500/40 hover:text-red-400" title="Close">
@@ -1504,7 +1667,7 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
 
           <div className="custom-scrollbar-heavy flex-1 overflow-y-auto overscroll-contain px-5 py-5 md:px-6" style={{ scrollBehavior: 'auto' }}>
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-              <section className="rounded-[1.5rem] border border-brand-accent/22 bg-brand-accent/[0.075] p-5 xl:col-span-5" style={sectionStyle}>
+              <section className="rounded-[1.5rem] border border-brand-accent/22 bg-brand-accent/[0.075] p-5 xl:col-span-5">
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
                     <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Live Now</div>
@@ -1526,7 +1689,7 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
                 </div>
               </section>
 
-              <section className="grid grid-cols-2 gap-3 xl:col-span-7 md:grid-cols-4" style={sectionStyle}>
+              <section className="grid grid-cols-2 gap-3 xl:col-span-7 md:grid-cols-4">
                 {statCards.map(([label, value, detail]) => (
                   <div key={label} className="rounded-[1.35rem] border border-white/10 bg-white/[0.035] p-4">
                     <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/34">{label}</div>
@@ -1536,7 +1699,25 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
                 ))}
               </section>
 
-              <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.035] p-5 xl:col-span-5" style={sectionStyle}>
+              <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.035] p-5 xl:col-span-12">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">History Window</div>
+                    <div className="mt-1 text-[11px] uppercase tracking-[0.14em] text-white/34">Recent, previous, monthly, and yearly listening totals</div>
+                  </div>
+                </div>
+                <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+                  {soundLedgerView.periodSummary.map(([label, entry]) => (
+                    <div key={label} className="rounded-[1.15rem] border border-white/10 bg-black/20 p-3">
+                      <div className="text-[9px] font-black uppercase tracking-[0.18em] text-white/35">{label}</div>
+                      <div className="mt-2 text-lg font-black text-white">{formatPlaybackDuration(entry.minutesMs)}</div>
+                      <div className="mt-1 text-[9px] font-mono text-brand-accent">{entry.plays} plays</div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.035] p-5 xl:col-span-5">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Recent Week</div>
@@ -1557,7 +1738,7 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
                 </div>
               </section>
 
-              <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.035] p-5 xl:col-span-7" style={sectionStyle}>
+              <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.035] p-5 xl:col-span-7">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Hourly Pulse</div>
@@ -1581,7 +1762,7 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
                 </div>
               </section>
 
-              <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.035] p-5 xl:col-span-8" style={sectionStyle}>
+              <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.035] p-5 xl:col-span-8">
                 <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Recent Sessions</div>
                 <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
                   {soundLedgerView.recentSessions.length > 0 ? soundLedgerView.recentSessions.map((session) => (
@@ -1597,7 +1778,7 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
                 </div>
               </section>
 
-              <section className="flex flex-col gap-4 xl:col-span-4" style={sectionStyle}>
+              <section className="flex flex-col gap-4 xl:col-span-4">
                 {[
                   ['Top Artists', soundLedgerView.topArtists.map(([name, entry], idx) => ({ key: name, title: name, meta: `#${idx + 1} - ${entry.count} plays`, detail: formatPlaybackDuration(entry.totalMs) }))],
                   ['Most Replayed', soundLedgerView.topTracks.map(([id, entry], idx) => ({ key: id, title: entry.title, meta: `#${idx + 1} - ${entry.count} plays`, detail: entry.author, thumbnail: entry.thumbnail }))],
@@ -1629,6 +1810,67 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
               </section>
             </div>
           </div>
+          <AnimatePresence>
+            {isClearLedgerOpen && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="absolute inset-0 z-20 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+              >
+                <motion.div
+                  initial={{ y: 12, scale: 0.98 }}
+                  animate={{ y: 0, scale: 1 }}
+                  exit={{ y: 8, scale: 0.98 }}
+                  className="w-full max-w-md rounded-[1.6rem] border border-red-500/20 bg-[#0b0d10] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.5)]"
+                >
+                  <div className="text-[10px] font-black uppercase tracking-[0.24em] text-red-300">Protected Clear</div>
+                  <div className="mt-2 text-xl font-black text-white">Clear Signal Ledger?</div>
+                  <div className="mt-2 text-sm leading-6 text-white/52">
+                    This removes listening sessions, play counts, history windows, and genre signals from this device. App Lock verification is required.
+                  </div>
+                  <input
+                    value={ledgerClearPassword}
+                    onChange={(event) => setLedgerClearPassword(event.target.value)}
+                    type="password"
+                    placeholder="App Lock password"
+                    className="mt-4 w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white outline-none transition-colors focus:border-red-300/45"
+                    disabled={isClearingLedger}
+                  />
+                  {ledgerClearError && <div className="mt-3 rounded-2xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-100/80">{ledgerClearError}</div>}
+                  <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+                    <button
+                      onClick={() => {
+                        setIsClearLedgerOpen(false);
+                        setLedgerClearError('');
+                        setLedgerClearPassword('');
+                      }}
+                      className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-bold text-white/60 transition-colors hover:text-white"
+                      disabled={isClearingLedger}
+                    >
+                      Keep Data
+                    </button>
+                    {window.aether?.verifyAppLockBiometric && (
+                      <button
+                        onClick={() => clearLedgerAfterAuth('biometric')}
+                        className="rounded-xl border border-brand-accent/20 bg-brand-accent/10 px-4 py-2 text-sm font-black text-brand-accent transition-colors hover:bg-brand-accent/15"
+                        disabled={isClearingLedger}
+                      >
+                        Use Touch ID
+                      </button>
+                    )}
+                    <button
+                      onClick={() => clearLedgerAfterAuth('password')}
+                      className="rounded-xl bg-red-400 px-4 py-2 text-sm font-black text-black transition-transform active:scale-95 disabled:opacity-50"
+                      disabled={isClearingLedger}
+                    >
+                      {isClearingLedger ? 'Clearing...' : 'Clear Ledger'}
+                    </button>
+                  </div>
+                </motion.div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </motion.div>
       </motion.div>
     </AnimatePresence>,
@@ -2377,6 +2619,7 @@ function App() {
   const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
   const [isDoodleMode, setIsDoodleMode] = useState(true);
   const [doodleIntensity, setDoodleIntensity] = useState('medium');
+  const [performanceMode, setPerformanceMode] = useState('high');
   const [auraPreset, setAuraPreset] = useState('balanced');
   const [isLooksPanelOpen, setIsLooksPanelOpen] = useState(false);
   const [isAuraStageOpen, setIsAuraStageOpen] = useState(false);
@@ -2410,6 +2653,7 @@ function App() {
   const [vaultSpectrum, setVaultSpectrum] = useState(() => Array(8).fill(0.12));
   const [playlists, setPlaylists] = useState({});
   const [playlistOrder, setPlaylistOrder] = useState([]);
+  const [favoriteTracks, setFavoriteTracks] = useState({});
   const playlistOrderHydratedRef = useRef(false);
   const [viewingPlaylist, setViewingPlaylist] = useState(null);
   const [newPlaylistName, setNewPlaylistName] = useState('');
@@ -2419,12 +2663,18 @@ function App() {
     const [isFullQueueContentReady, setIsFullQueueContentReady] = useState(false);
     const [isFullDiscoveryContentReady, setIsFullDiscoveryContentReady] = useState(false);
     const [isFullPlaylistContentReady, setIsFullPlaylistContentReady] = useState(false);
-    const [isLibraryOverlayContentReady, setIsLibraryOverlayContentReady] = useState(false);
     const [isMixtapeVaultContentReady, setIsMixtapeVaultContentReady] = useState(false);
   const [isLibraryOverlayOpen, setIsLibraryOverlayOpen] = useState(false);
   const [isSoundCapsuleOpen, setIsSoundCapsuleOpen] = useState(false);
   const [soundCapsuleData, setSoundCapsuleData] = useState(null);
   const [libraryActionTarget, setLibraryActionTarget] = useState(null);
+  const [librarySearchTerm, setLibrarySearchTerm] = useState('');
+  const [libraryBrowseMode, setLibraryBrowseMode] = useState('playlists');
+  const [libraryFilter, setLibraryFilter] = useState('all');
+  const [librarySort, setLibrarySort] = useState('manual');
+  const [librarySongFilter, setLibrarySongFilter] = useState('all');
+  const [librarySongSort, setLibrarySongSort] = useState('title');
+  const [libraryTrackSort, setLibraryTrackSort] = useState('title');
   const [isPlayerOverlayOpen, setIsPlayerOverlayOpen] = useState(false);
   const [isShortcutSettingsOpen, setIsShortcutSettingsOpen] = useState(false);
   const [shortcutSettingsError, setShortcutSettingsError] = useState('');
@@ -2472,6 +2722,7 @@ function App() {
   const [isSpotifyImportOpen, setIsSpotifyImportOpen] = useState(false);
   const [musicImportProvider, setMusicImportProvider] = useState('');
   const [spotifyImportUrl, setSpotifyImportUrl] = useState('');
+  const [spotifyImportPlaylistName, setSpotifyImportPlaylistName] = useState('');
   const [spotifyImportProgress, setSpotifyImportProgress] = useState({ stage: 'idle', progress: 0, message: '' });
   const [isSpotifyImporting, setIsSpotifyImporting] = useState(false);
   const [spotifyImportLogs, setSpotifyImportLogs] = useState([]);
@@ -2539,9 +2790,10 @@ function App() {
     themeColor: '#00ffbf',
     auraPreset: 'balanced',
     isMixtapeVaultOpen: false,
+    performanceMode: 'high',
   });
   const visualizerErrorCountRef = useRef(0);
-  const visualizerFrameBudgetRef = useRef({ lastStyleAt: 0, brandAccent: '#00ffbf', brandContrast: '#ff00ff', canvas: null, ctx: null, pulseCanvas: null, pulseCtx: null });
+  const visualizerFrameBudgetRef = useRef({ lastDrawAt: 0, lastStyleAt: 0, lastMixtapeCssAt: 0, brandAccent: '#00ffbf', brandContrast: '#ff00ff', canvas: null, ctx: null, pulseCanvas: null, pulseCtx: null });
   const visualizerBarsRef = useRef(null);
   const playButtonRef = useRef(null);
   const beatRingsRef = useRef(null);
@@ -2965,16 +3217,6 @@ function App() {
   }, [isViewingFullPlaylist]);
   useEffect(() => {
     let raf = 0;
-    if (isLibraryOverlayOpen) {
-      setIsLibraryOverlayContentReady(false);
-      raf = requestAnimationFrame(() => setIsLibraryOverlayContentReady(true));
-      return () => cancelAnimationFrame(raf);
-    }
-    setIsLibraryOverlayContentReady(false);
-    return undefined;
-  }, [isLibraryOverlayOpen]);
-  useEffect(() => {
-    let raf = 0;
     if (isMixtapeVaultOpen) {
       setIsMixtapeVaultContentReady(false);
       raf = requestAnimationFrame(() => setIsMixtapeVaultContentReady(true));
@@ -2989,8 +3231,18 @@ function App() {
       themeColor,
       auraPreset,
       isMixtapeVaultOpen,
+      performanceMode,
     };
-  }, [visualizerMode, themeColor, auraPreset, isMixtapeVaultOpen]);
+  }, [visualizerMode, themeColor, auraPreset, isMixtapeVaultOpen, performanceMode]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    document.body.classList.remove('perf-low', 'perf-medium', 'perf-high');
+    document.body.classList.add(`perf-${performanceMode}`);
+    return () => {
+      document.body.classList.remove('perf-low', 'perf-medium', 'perf-high');
+    };
+  }, [performanceMode]);
 
   // Auto-exit video mode when queue empties (no current track)
   useEffect(() => {
@@ -3389,6 +3641,20 @@ function App() {
     setSpotifyImportLogs(prev => [...prev.slice(-19), msg]);
   }, []);
 
+  const copySpotifyImportDebugLog = useCallback(async () => {
+    const text = spotifyImportLogs.length > 0
+      ? spotifyImportLogs.join('\n')
+      : `Aether playlist import\nprovider=${musicImportProvider || 'none'}\nname=${spotifyImportPlaylistName || 'auto'}\nurl=${spotifyImportUrl || 'empty'}\nstatus=${spotifyImportProgress.stage || 'idle'}\nmessage=${spotifyImportProgress.message || 'No logs yet.'}`;
+    try {
+      await navigator.clipboard?.writeText(text);
+      setLastAdded('Import debug log copied');
+      setTimeout(() => setLastAdded(null), 2200);
+    } catch {
+      setLastAdded('Could not copy import debug log');
+      setTimeout(() => setLastAdded(null), 2200);
+    }
+  }, [musicImportProvider, spotifyImportLogs, spotifyImportPlaylistName, spotifyImportProgress.message, spotifyImportProgress.stage, spotifyImportUrl]);
+
   const appendRecentEvent = useCallback((label, detail = '', meta = {}) => {
     const event = {
       at: Date.now(),
@@ -3577,10 +3843,17 @@ function App() {
 
   const openLibraryOverlay = useCallback((target = null) => {
     runAfterInputPaint(() => {
+      const favoriteCount = Object.keys(favoriteTracks || {}).length;
+      const fallbackPlaylist = viewingPlaylist === FAVORITES_PLAYLIST_ID && favoriteCount > 0
+        ? FAVORITES_PLAYLIST_ID
+        : (viewingPlaylist && playlists[viewingPlaylist])
+        ? viewingPlaylist
+        : (favoriteCount > 0 ? FAVORITES_PLAYLIST_ID : (playlistOrder.find((name) => Array.isArray(playlists[name])) || Object.keys(playlists)[0] || null));
+      if (fallbackPlaylist) setViewingPlaylist(fallbackPlaylist);
       setLibraryActionTarget(target);
       setIsLibraryOverlayOpen(true);
     });
-  }, [runAfterInputPaint]);
+  }, [favoriteTracks, playlistOrder, playlists, runAfterInputPaint, viewingPlaylist]);
 
   const openFeedbackPanel = useCallback(() => {
     runAfterInputPaint(() => {
@@ -4723,6 +4996,7 @@ function App() {
       autoplayMoodMode,
       isDoodleMode,
       doodleIntensity,
+      performanceMode,
       isDepthMotionEnabled,
       isGestureControlEnabled,
       hideFirstRunTips,
@@ -4738,7 +5012,7 @@ function App() {
     } catch (e) {
       console.warn('[Aether/Session] Failed to persist UI prefs', e);
     }
-  }, [isStandalone, visualizerMode, auraPreset, isVerticalStack, isFocusedMode, miniPlayerInfoMode, isAutoplayEnabled, autoplayMoodMode, isDoodleMode, doodleIntensity, isDepthMotionEnabled, isGestureControlEnabled, hideFirstRunTips]);
+  }, [isStandalone, visualizerMode, auraPreset, isVerticalStack, isFocusedMode, miniPlayerInfoMode, isAutoplayEnabled, autoplayMoodMode, isDoodleMode, doodleIntensity, performanceMode, isDepthMotionEnabled, isGestureControlEnabled, hideFirstRunTips]);
 
   useEffect(() => {
     if (!sessionReadyRef.current) return;
@@ -4808,6 +5082,9 @@ function App() {
           if (typeof savedUiPrefs.doodleIntensity === 'string' && ['subtle', 'medium', 'dreamy'].includes(savedUiPrefs.doodleIntensity)) {
             setDoodleIntensity(savedUiPrefs.doodleIntensity);
           }
+          if (typeof savedUiPrefs.performanceMode === 'string' && PERFORMANCE_MODES.some((mode) => mode.id === savedUiPrefs.performanceMode)) {
+            setPerformanceMode(savedUiPrefs.performanceMode);
+          }
           if (typeof savedUiPrefs.isDepthMotionEnabled === 'boolean') setIsDepthMotionEnabled(savedUiPrefs.isDepthMotionEnabled);
           if (typeof savedUiPrefs.isGestureControlEnabled === 'boolean') setIsGestureControlEnabled(savedUiPrefs.isGestureControlEnabled);
           if (typeof savedUiPrefs.hideFirstRunTips === 'boolean') {
@@ -4859,6 +5136,16 @@ function App() {
            } else {
              setPlaylistOrder(Object.keys(normalizedPlaylists));
            }
+        }
+        const savedFavorites = await window.aether?.store?.get(FAVORITES_STORAGE_KEY);
+        if (savedFavorites && typeof savedFavorites === 'object' && !Array.isArray(savedFavorites)) {
+          const normalizedFavorites = Object.fromEntries(
+            Object.entries(savedFavorites)
+              .map(([key, track]) => [key, normalizeQueueTrack(track)])
+              .filter(([, track]) => Boolean(track))
+          );
+          setFavoriteTracks(normalizedFavorites);
+          window.aether?.store?.set(FAVORITES_STORAGE_KEY, normalizedFavorites);
         }
         playlistOrderHydratedRef.current = true;
         const savedVolume = await window.aether?.store?.get('volume');
@@ -4943,6 +5230,9 @@ function App() {
           if (typeof savedUiPrefs.doodleIntensity === 'string' && ['subtle', 'medium', 'dreamy'].includes(savedUiPrefs.doodleIntensity)) {
             setDoodleIntensity(savedUiPrefs.doodleIntensity);
           }
+          if (typeof savedUiPrefs.performanceMode === 'string' && PERFORMANCE_MODES.some((mode) => mode.id === savedUiPrefs.performanceMode)) {
+            setPerformanceMode(savedUiPrefs.performanceMode);
+          }
           if (typeof savedUiPrefs.isDepthMotionEnabled === 'boolean') setIsDepthMotionEnabled(savedUiPrefs.isDepthMotionEnabled);
           if (typeof savedUiPrefs.isGestureControlEnabled === 'boolean') setIsGestureControlEnabled(savedUiPrefs.isGestureControlEnabled);
           if (typeof savedUiPrefs.hideFirstRunTips === 'boolean') {
@@ -4967,6 +5257,18 @@ function App() {
           setGlobalMediaShortcutsEnabled(defaultGlobalMediaShortcutsEnabled);
         } else {
           setGlobalMediaShortcutsEnabled(Boolean(JSON.parse(rawGlobalEnabled)));
+        }
+
+        const rawFavorites = localStorage.getItem(FAVORITES_STORAGE_KEY);
+        const savedFavorites = rawFavorites ? JSON.parse(rawFavorites) : null;
+        if (savedFavorites && typeof savedFavorites === 'object' && !Array.isArray(savedFavorites)) {
+          const normalizedFavorites = Object.fromEntries(
+            Object.entries(savedFavorites)
+              .map(([key, track]) => [key, normalizeQueueTrack(track)])
+              .filter(([, track]) => Boolean(track))
+          );
+          setFavoriteTracks(normalizedFavorites);
+          localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(normalizedFavorites));
         }
       } catch (e) {
         console.warn('[Aether/Session] Failed to load web UI prefs', e);
@@ -5590,6 +5892,23 @@ function App() {
   // Audio Visualizer Loop (NOVA
   useEffect(() => {
     if (!isStandalone || !localAudioRef.current) return;
+    if (performanceMode === 'low') {
+      if (visualizerCanvasRef.current) {
+        const canvas = visualizerCanvasRef.current;
+        canvas.getContext('2d', { alpha: true })?.clearRect(0, 0, canvas.width || 0, canvas.height || 0);
+      }
+      if (pulseCanvasRef.current) {
+        const canvas = pulseCanvasRef.current;
+        canvas.getContext('2d', { alpha: true })?.clearRect(0, 0, canvas.width || 0, canvas.height || 0);
+      }
+      if (document.documentElement) {
+        document.documentElement.style.setProperty('--aura-beat-pulse', '0');
+        document.documentElement.style.setProperty('--aura-edge-glow', '0');
+        document.documentElement.style.setProperty('--aura-kick-shift', '0deg');
+        document.documentElement.style.setProperty('--aura-kick-glow', '0');
+      }
+      return undefined;
+    }
     let cancelled = false;
     let startTimer = null;
 
@@ -5629,12 +5948,16 @@ function App() {
           const frameNow = performance.now();
           const frameBudget = visualizerFrameBudgetRef.current;
 
-          const visualizerState = visualizerStateRef.current;
-          const liveVisualizerMode = visualizerState.visualizerMode;
-          const liveThemeColor = visualizerState.themeColor;
-          const liveAuraPreset = visualizerState.auraPreset;
-          const isVaultOpen = visualizerState.isMixtapeVaultOpen;
-          const auraModeActive = liveVisualizerMode === 'pulse';
+	          const visualizerState = visualizerStateRef.current;
+	          const liveVisualizerMode = visualizerState.visualizerMode;
+	          const liveThemeColor = visualizerState.themeColor;
+	          const liveAuraPreset = visualizerState.auraPreset;
+	          const isVaultOpen = visualizerState.isMixtapeVaultOpen;
+          const livePerformanceMode = visualizerState.performanceMode || 'high';
+          const minFrameGap = livePerformanceMode === 'medium' ? 66 : 0;
+          if (minFrameGap > 0 && frameNow - frameBudget.lastDrawAt < minFrameGap) return;
+          frameBudget.lastDrawAt = frameNow;
+	          const auraModeActive = liveVisualizerMode === 'pulse';
           const canvas = liveVisualizerMode === 'bars' ? visualizerCanvasRef.current : null;
           const pulseCanvas = liveVisualizerMode === 'pulse' ? pulseCanvasRef.current : null;
           if (!canvas && !pulseCanvas && !isVaultOpen) return;
@@ -5698,7 +6021,7 @@ function App() {
 
         uiPulseRef.current = auraModeActive ? auraScale : 1;
 
-        if (mixtapeVaultRef.current) {
+        if (mixtapeVaultRef.current && frameNow - frameBudget.lastMixtapeCssAt > (livePerformanceMode === 'high' ? 33 : 80)) {
           mixtapeVaultRef.current.style.setProperty('--vault-bass', String(bass));
           mixtapeVaultRef.current.style.setProperty('--vault-mids', String(mids));
           mixtapeVaultRef.current.style.setProperty('--vault-highs', String(highs));
@@ -5706,6 +6029,7 @@ function App() {
           mixtapeVaultRef.current.style.setProperty('--vault-scale', String(auraScale));
           mixtapeVaultRef.current.style.setProperty('--vault-spin', `${spinDeg}deg`);
           mixtapeVaultRef.current.style.setProperty('--vault-glow', String(clamp01(0.18 + bass * 0.42 + highs * 0.22)));
+          frameBudget.lastMixtapeCssAt = frameNow;
         }
 
         // AURA MODE: Propagate beat energy to transport & lyric underline
@@ -5816,9 +6140,10 @@ function App() {
             root.style.setProperty('--vault-spin', `${spinDeg}deg`);
           }
 
-          // Throttle React state updates to 10 FPS to keep labels/secondary UI updated without killing the main thread
+          // Throttle React state updates; CSS variables carry the smoother beat response.
           const now = Date.now();
-          if (now - lastVaultStateUpdateRef.current > 100) {
+          const vaultUiGap = livePerformanceMode === 'high' ? 180 : 360;
+          if (now - lastVaultStateUpdateRef.current > vaultUiGap) {
             setVaultPulse(pulseData);
             setVaultSpectrum((prev) => sampledBars.map((v, idx) => lerp(prev[idx] ?? 0, v, 0.45)));
             lastVaultStateUpdateRef.current = now;
@@ -5932,7 +6257,7 @@ function App() {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       visualizerErrorCountRef.current = 0;
     };
-  }, [isStandalone, currentTrack?.id, currentTrack?.queueNonce, playbackResetNonce]);
+  }, [isStandalone, currentTrack?.id, currentTrack?.queueNonce, playbackResetNonce, performanceMode]);
 
   const handleVolumeChange = (val) => {
     const v = parseFloat(val);
@@ -6037,6 +6362,8 @@ function App() {
   const handleAddToPlaylist = (name, data) => {
     if (!data) return;
     const newPlaylists = { ...playlists };
+    const addedAt = new Date().toISOString();
+    const markAdded = (track) => track ? { ...track, addedAt: track.addedAt || addedAt } : track;
     if (!newPlaylists[name]) newPlaylists[name] = [];
     if (!playlistOrder.includes(name)) {
       persistPlaylistOrder([...playlistOrder, name]);
@@ -6045,7 +6372,7 @@ function App() {
     if (Array.isArray(data)) {
         let addedCount = 0;
         data.forEach(t => {
-          const normalizedTrack = normalizeQueueTrack(t) || t;
+          const normalizedTrack = markAdded(normalizeQueueTrack(t) || t);
           if (!hasTrackInList(newPlaylists[name], normalizedTrack)) {
                 newPlaylists[name].push(normalizedTrack);
                 addedCount++;
@@ -6056,7 +6383,7 @@ function App() {
         setLastAdded(`Vaulted ${addedCount} Node(s)`);
         setTimeout(() => setLastAdded(null), 3000);
     } else {
-        const normalizedTrack = normalizeQueueTrack(data) || data;
+        const normalizedTrack = markAdded(normalizeQueueTrack(data) || data);
         if (!hasTrackInList(newPlaylists[name], normalizedTrack)) {
           newPlaylists[name].push(normalizedTrack);
           setPlaylists(newPlaylists);
@@ -6253,6 +6580,11 @@ function App() {
   }, [isStandalone, isVaultCleaning, normalizeTrackIdentity, playlists]);
 
   const handleRemoveFromPlaylist = (name, index) => {
+    if (name === FAVORITES_PLAYLIST_ID) {
+      const track = favoriteTracksList[index];
+      if (track) toggleFavoriteTrack(track);
+      return;
+    }
     const newPlaylists = { ...playlists };
     newPlaylists[name] = [...(newPlaylists[name] || [])]; 
     newPlaylists[name].splice(index, 1);
@@ -6263,6 +6595,10 @@ function App() {
   };
 
   const handlePlaylistAddAll = (name) => {
+    if (name === FAVORITES_PLAYLIST_ID) {
+      handleFavoriteAddAll();
+      return;
+    }
     const tracks = playlists[name];
     if (tracks && tracks.length > 0) {
       const normalized = (tracks || []).map(normalizeQueueTrack).filter(Boolean);
@@ -6300,24 +6636,48 @@ function App() {
   }, [lyrics, activeLyricIndex, compactLyric]);
 
   const handleRenamePlaylist = (oldName, newName) => {
-    if (!newName || oldName === newName) { setIsRenamingPlaylist(null); return; }
+    if (oldName === FAVORITES_PLAYLIST_ID) {
+      setIsRenamingPlaylist(null);
+      setLastAdded('Favorites is a built-in library');
+      setTimeout(() => setLastAdded(null), 2200);
+      return;
+    }
+    const cleanName = String(newName || '').trim();
+    if (!cleanName || oldName === cleanName) { setIsRenamingPlaylist(null); return; }
+    if (playlists[cleanName] && cleanName !== oldName) {
+      setLastAdded('Vault name already exists');
+      setTimeout(() => setLastAdded(null), 2200);
+      return;
+    }
     const newPlaylists = { ...playlists };
-    newPlaylists[newName] = newPlaylists[oldName];
+    newPlaylists[cleanName] = newPlaylists[oldName];
     delete newPlaylists[oldName];
     setPlaylists(newPlaylists);
     window.aether?.store?.set('playlists', newPlaylists);
-    persistPlaylistOrder(playlistOrder.map((name) => (name === oldName ? newName : name)));
+    persistPlaylistOrder(playlistOrder.map((name) => (name === oldName ? cleanName : name)));
     setIsRenamingPlaylist(null);
-    if (viewingPlaylist === oldName) setViewingPlaylist(newName);
+    if (viewingPlaylist === oldName) setViewingPlaylist(cleanName);
+    setLastAdded(`Renamed vault: ${cleanName}`);
+    setTimeout(() => setLastAdded(null), 2200);
   };
 
   const handleDeletePlaylist = (name) => {
+    if (name === FAVORITES_PLAYLIST_ID) {
+      persistFavoriteTracks({});
+      setViewingPlaylist(Object.keys(playlists)[0] || null);
+      setLastAdded('Cleared favorites');
+      setTimeout(() => setLastAdded(null), 2200);
+      return;
+    }
     const newPlaylists = { ...playlists };
     delete newPlaylists[name];
     setPlaylists(newPlaylists);
     window.aether?.store?.set('playlists', newPlaylists);
-    persistPlaylistOrder(playlistOrder.filter((playlistName) => playlistName !== name));
-    if (viewingPlaylist === name) setViewingPlaylist(null);
+    const nextOrder = playlistOrder.filter((playlistName) => playlistName !== name);
+    persistPlaylistOrder(nextOrder);
+    if (viewingPlaylist === name) {
+      setViewingPlaylist(nextOrder.find((playlistName) => Array.isArray(newPlaylists[playlistName])) || Object.keys(newPlaylists)[0] || null);
+    }
   };
 
   const triggerAutoplay = async (seedTrack = null) => {
@@ -6859,6 +7219,35 @@ function App() {
         lastSystemError: err?.message || 'system fetch failed',
       }));
     }
+  }, [isStandalone]);
+
+  useEffect(() => {
+    if (isStandalone) return undefined;
+    const controller = new AbortController();
+    const wakeBackend = async () => {
+      const startedAt = performance.now();
+      try {
+        await fetch(`${API_BASE}/api/system`, {
+          signal: controller.signal,
+          cache: 'no-store',
+        });
+        setDiagnostics(prev => ({
+          ...prev,
+          lastSystemFetchMs: Math.round(performance.now() - startedAt),
+          lastSystemFetchAt: Date.now(),
+          lastSystemError: null,
+        }));
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        setDiagnostics(prev => ({
+          ...prev,
+          lastSystemFetchAt: Date.now(),
+          lastSystemError: err?.message || 'backend wake failed',
+        }));
+      }
+    };
+    wakeBackend();
+    return () => controller.abort();
   }, [isStandalone]);
 
   useEffect(() => {
@@ -7562,6 +7951,271 @@ function App() {
     };
   }, []);
 
+  const favoriteTracksList = useMemo(() => Object.values(favoriteTracks || {}).filter(Boolean), [favoriteTracks]);
+  const isViewingFavorites = viewingPlaylist === FAVORITES_PLAYLIST_ID;
+  const focusedVaultName = isViewingFavorites ? FAVORITES_PLAYLIST_NAME : viewingPlaylist;
+  const focusedVaultTracks = isViewingFavorites ? favoriteTracksList : (viewingPlaylist ? (playlists[viewingPlaylist] || []) : []);
+  const librarySearchNeedle = useMemo(() => librarySearchTerm.trim().toLowerCase(), [librarySearchTerm]);
+  const soundLedgerTracks = soundCapsuleData?.tracks || {};
+  const parseLibraryTime = useCallback((value) => {
+    if (!value) return 0;
+    const parsed = typeof value === 'number' ? value : Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }, []);
+  const getTrackLedgerEntry = useCallback((track) => {
+    if (!track) return null;
+    const candidates = [
+      track.id,
+      track.youtubeId,
+      normalizeTrackIdentity(track),
+      track.youtubeId ? `yt:${track.youtubeId}` : '',
+      track.id ? `id:${track.id}` : '',
+    ].filter(Boolean);
+    for (const key of candidates) {
+      if (soundLedgerTracks[key]) return soundLedgerTracks[key];
+    }
+    return null;
+  }, [normalizeTrackIdentity, soundLedgerTracks]);
+  const getTrackAddedMs = useCallback((track) => Math.max(
+    parseLibraryTime(track?.addedAt),
+    parseLibraryTime(track?.createdAt),
+    parseLibraryTime(track?.importedAt),
+    parseLibraryTime(track?.savedAt),
+  ), [parseLibraryTime]);
+  const getTrackLastListenedMs = useCallback((track) => {
+    const ledgerEntry = getTrackLedgerEntry(track);
+    return Math.max(
+      parseLibraryTime(track?.lastListenedAt),
+      parseLibraryTime(track?.lastListened),
+      parseLibraryTime(track?.lastPlayedAt),
+      parseLibraryTime(track?.playedAt),
+      parseLibraryTime(ledgerEntry?.lastListened),
+      parseLibraryTime(ledgerEntry?.lastCompletedAt),
+    );
+  }, [getTrackLedgerEntry, parseLibraryTime]);
+  const getTrackPlayCount = useCallback((track) => {
+    const ledgerEntry = getTrackLedgerEntry(track);
+    return Math.max(
+      0,
+      Math.floor(Number(track?.playCount) || 0),
+      Math.floor(Number(track?.plays) || 0),
+      Math.floor(Number(ledgerEntry?.count) || 0),
+    );
+  }, [getTrackLedgerEntry]);
+  const getPlaylistLibraryStats = useCallback((name) => {
+    const tracks = playlists[name] || [];
+    let recentlyAddedMs = 0;
+    let recentlyListenedMs = 0;
+    let lastUpdatedMs = 0;
+    let playCount = 0;
+    tracks.forEach((track) => {
+      const addedMs = getTrackAddedMs(track);
+      const listenedMs = getTrackLastListenedMs(track);
+      recentlyAddedMs = Math.max(recentlyAddedMs, addedMs);
+      recentlyListenedMs = Math.max(recentlyListenedMs, listenedMs);
+      lastUpdatedMs = Math.max(
+        lastUpdatedMs,
+        addedMs,
+        listenedMs,
+        parseLibraryTime(track?.updatedAt),
+        parseLibraryTime(track?.modifiedAt),
+      );
+      playCount += getTrackPlayCount(track);
+    });
+    return { recentlyAddedMs, recentlyListenedMs, lastUpdatedMs, playCount };
+  }, [getTrackAddedMs, getTrackLastListenedMs, getTrackPlayCount, parseLibraryTime, playlists]);
+  const getLibrarySongSortValue = useCallback((entry, sortKey) => {
+    const track = entry?.track || entry;
+    if (sortKey === 'title') return String(track?.title || '');
+    if (sortKey === 'artist') return String(track?.author || '');
+    if (sortKey === 'listened-desc') return getTrackLastListenedMs(track);
+    if (sortKey === 'added-desc') return getTrackAddedMs(track);
+    if (sortKey === 'plays-desc') return getTrackPlayCount(track);
+    if (sortKey === 'duration-desc' || sortKey === 'duration-asc') return Number(track?.totalDurationMs || track?.duration || 0);
+    return '';
+  }, [getTrackAddedMs, getTrackLastListenedMs, getTrackPlayCount]);
+  const librarySongEntries = useMemo(() => {
+    const entries = [];
+    const seen = new Set();
+    Object.entries(playlists || {}).forEach(([playlistName, tracks]) => {
+      (Array.isArray(tracks) ? tracks : []).forEach((track, index) => {
+        const key = normalizeTrackIdentity(track) || `${playlistName}-${index}`;
+        const existing = entries.find((entry) => entry.key === key);
+        if (existing) {
+          if (!existing.playlists.includes(playlistName)) existing.playlists.push(playlistName);
+          return;
+        }
+        seen.add(key);
+        entries.push({ key, track, playlists: [playlistName], playlistName, index });
+      });
+    });
+    favoriteTracksList.forEach((track, index) => {
+      const key = normalizeTrackIdentity(track) || `${FAVORITES_PLAYLIST_ID}-${index}`;
+      const existing = entries.find((entry) => entry.key === key);
+      if (existing) {
+        existing.isFavorite = true;
+        if (!existing.playlists.includes(FAVORITES_PLAYLIST_NAME)) existing.playlists.push(FAVORITES_PLAYLIST_NAME);
+        return;
+      }
+      if (!seen.has(key)) entries.push({ key, track, playlists: [FAVORITES_PLAYLIST_NAME], playlistName: FAVORITES_PLAYLIST_ID, index, isFavorite: true });
+    });
+    return entries;
+  }, [favoriteTracksList, normalizeTrackIdentity, playlists]);
+  const libraryVisibleSongEntries = useMemo(() => {
+    const matchesSearch = (entry) => {
+      if (!librarySearchNeedle) return true;
+      const track = entry.track || {};
+      const haystack = `${track.title || ''} ${track.author || ''} ${entry.playlists.join(' ')}`.toLowerCase();
+      return haystack.includes(librarySearchNeedle);
+    };
+    const filtered = librarySongEntries.filter((entry) => {
+      if (!matchesSearch(entry)) return false;
+      if (librarySongFilter === 'favorites') return Boolean(entry.isFavorite);
+      if (librarySongFilter === 'played') return getTrackPlayCount(entry.track) > 0 || getTrackLastListenedMs(entry.track) > 0;
+      if (librarySongFilter === 'unplayed') return getTrackPlayCount(entry.track) === 0 && getTrackLastListenedMs(entry.track) === 0;
+      return true;
+    });
+    const sorted = [...filtered];
+    const byTitle = (a, b) => String(a.track?.title || '').localeCompare(String(b.track?.title || ''));
+    if (librarySongSort === 'title') {
+      sorted.sort(byTitle);
+    } else if (librarySongSort === 'artist') {
+      sorted.sort((a, b) => String(a.track?.author || '').localeCompare(String(b.track?.author || '')) || byTitle(a, b));
+    } else if (librarySongSort === 'duration-asc') {
+      sorted.sort((a, b) => getLibrarySongSortValue(a, librarySongSort) - getLibrarySongSortValue(b, librarySongSort) || byTitle(a, b));
+    } else if (['listened-desc', 'added-desc', 'plays-desc', 'duration-desc'].includes(librarySongSort)) {
+      sorted.sort((a, b) => getLibrarySongSortValue(b, librarySongSort) - getLibrarySongSortValue(a, librarySongSort) || byTitle(a, b));
+    }
+    return sorted;
+  }, [getLibrarySongSortValue, getTrackLastListenedMs, getTrackPlayCount, librarySearchNeedle, librarySongEntries, librarySongFilter, librarySongSort]);
+  const libraryVisiblePlaylistNames = useMemo(() => {
+    const matchesSearch = (name) => {
+      if (!librarySearchNeedle) return true;
+      if (String(name || '').toLowerCase().includes(librarySearchNeedle)) return true;
+      return (playlists[name] || []).some((track) => (
+        `${track?.title || ''} ${track?.author || ''}`.toLowerCase().includes(librarySearchNeedle)
+      ));
+    };
+
+    const matchesFilter = (name) => {
+      const count = (playlists[name] || []).length;
+      if (libraryFilter === 'filled') return count > 0;
+      if (libraryFilter === 'empty') return count === 0;
+      return true;
+    };
+
+    const list = orderedPlaylistNames.filter((name) => matchesSearch(name) && matchesFilter(name));
+    const sorted = [...list];
+    const byName = (a, b) => a.localeCompare(b);
+    if (librarySort === 'name') {
+      sorted.sort(byName);
+    } else if (librarySort === 'tracks-desc') {
+      sorted.sort((a, b) => (playlists[b] || []).length - (playlists[a] || []).length || byName(a, b));
+    } else if (librarySort === 'tracks-asc') {
+      sorted.sort((a, b) => (playlists[a] || []).length - (playlists[b] || []).length || byName(a, b));
+    } else if (librarySort === 'listened-desc') {
+      sorted.sort((a, b) => getPlaylistLibraryStats(b).recentlyListenedMs - getPlaylistLibraryStats(a).recentlyListenedMs || byName(a, b));
+    } else if (librarySort === 'added-desc') {
+      sorted.sort((a, b) => getPlaylistLibraryStats(b).recentlyAddedMs - getPlaylistLibraryStats(a).recentlyAddedMs || byName(a, b));
+    } else if (librarySort === 'updated-desc') {
+      sorted.sort((a, b) => getPlaylistLibraryStats(b).lastUpdatedMs - getPlaylistLibraryStats(a).lastUpdatedMs || byName(a, b));
+    } else if (librarySort === 'plays-desc') {
+      sorted.sort((a, b) => getPlaylistLibraryStats(b).playCount - getPlaylistLibraryStats(a).playCount || byName(a, b));
+    }
+    return sorted;
+  }, [getPlaylistLibraryStats, libraryFilter, librarySearchNeedle, librarySort, orderedPlaylistNames, playlists]);
+  const showFavoriteLibraryCard = useMemo(() => {
+    if (libraryFilter === 'empty') return false;
+    if (!librarySearchNeedle) return true;
+    if (FAVORITES_PLAYLIST_NAME.toLowerCase().includes(librarySearchNeedle)) return true;
+    return favoriteTracksList.some((track) => (
+      `${track?.title || ''} ${track?.author || ''}`.toLowerCase().includes(librarySearchNeedle)
+    ));
+  }, [favoriteTracksList, libraryFilter, librarySearchNeedle]);
+  const focusedVaultVisibleTracks = useMemo(() => {
+    const focusedNameMatches = String(focusedVaultName || '').toLowerCase().includes(librarySearchNeedle);
+    const base = !librarySearchNeedle || focusedNameMatches
+      ? focusedVaultTracks
+      : focusedVaultTracks.filter((track) => (
+        `${track?.title || ''} ${track?.author || ''}`.toLowerCase().includes(librarySearchNeedle)
+      ));
+    const sorted = [...base];
+    if (libraryTrackSort === 'title') {
+      sorted.sort((a, b) => String(a?.title || '').localeCompare(String(b?.title || '')));
+    } else if (libraryTrackSort === 'artist') {
+      sorted.sort((a, b) => String(a?.author || '').localeCompare(String(b?.author || '')) || String(a?.title || '').localeCompare(String(b?.title || '')));
+    } else if (libraryTrackSort === 'duration-desc') {
+      sorted.sort((a, b) => Number(b?.totalDurationMs || b?.duration || 0) - Number(a?.totalDurationMs || a?.duration || 0));
+    } else if (libraryTrackSort === 'duration-asc') {
+      sorted.sort((a, b) => Number(a?.totalDurationMs || a?.duration || 0) - Number(b?.totalDurationMs || b?.duration || 0));
+    } else if (libraryTrackSort === 'listened-desc') {
+      sorted.sort((a, b) => getTrackLastListenedMs(b) - getTrackLastListenedMs(a) || String(a?.title || '').localeCompare(String(b?.title || '')));
+    } else if (libraryTrackSort === 'added-desc') {
+      sorted.sort((a, b) => getTrackAddedMs(b) - getTrackAddedMs(a) || String(a?.title || '').localeCompare(String(b?.title || '')));
+    } else if (libraryTrackSort === 'plays-desc') {
+      sorted.sort((a, b) => getTrackPlayCount(b) - getTrackPlayCount(a) || String(a?.title || '').localeCompare(String(b?.title || '')));
+    }
+    return sorted;
+  }, [focusedVaultName, focusedVaultTracks, getTrackAddedMs, getTrackLastListenedMs, getTrackPlayCount, librarySearchNeedle, libraryTrackSort]);
+
+  const persistFavoriteTracks = useCallback((nextFavorites) => {
+    setFavoriteTracks(nextFavorites);
+    if (isStandalone) {
+      window.aether?.store?.set?.(FAVORITES_STORAGE_KEY, nextFavorites);
+    } else if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(nextFavorites));
+    }
+  }, [isStandalone]);
+
+  const isTrackFavorite = useCallback((track) => {
+    const key = normalizeTrackIdentity(track);
+    return Boolean(key && favoriteTracks?.[key]);
+  }, [favoriteTracks, normalizeTrackIdentity]);
+
+  const toggleFavoriteTrack = useCallback((track) => {
+    const normalizedTrack = normalizeQueueTrack(track);
+    const key = normalizeTrackIdentity(normalizedTrack || track);
+    if (!key) return;
+
+    const next = { ...(favoriteTracks || {}) };
+    const wasFavorite = Boolean(next[key]);
+    if (wasFavorite) delete next[key];
+    else next[key] = normalizedTrack || track;
+
+    persistFavoriteTracks(next);
+    setLastAdded(wasFavorite ? 'Removed from favorites' : `Favorited: ${(normalizedTrack || track)?.title || 'Track'}`);
+    setTimeout(() => setLastAdded(null), 2200);
+  }, [favoriteTracks, normalizeQueueTrack, normalizeTrackIdentity, persistFavoriteTracks]);
+
+  const handleFavoriteAddAll = useCallback(() => {
+    if (!favoriteTracksList.length) {
+      setLastAdded('No favorite tracks yet');
+      setTimeout(() => setLastAdded(null), 2200);
+      return;
+    }
+    const normalized = favoriteTracksList.map(normalizeQueueTrack).filter(Boolean);
+    setQueue((prev) => {
+      const next = [...prev, ...normalized];
+      if (prev.length === 0 && normalized.length > 0) setIsPlaying(true);
+      return next;
+    });
+    setIsManualStop(false);
+    setLastAdded(`Queued Favorites (${normalized.length})`);
+    setTimeout(() => setLastAdded(null), 2600);
+  }, [favoriteTracksList, normalizeQueueTrack]);
+
+  const handleRemoveTrackFromPlaylist = useCallback((name, track, fallbackIndex = -1) => {
+    if (name === FAVORITES_PLAYLIST_ID) {
+      if (track) toggleFavoriteTrack(track);
+      return;
+    }
+    const tracks = playlists[name] || [];
+    const key = normalizeTrackIdentity(track);
+    const resolvedIndex = key ? tracks.findIndex((item) => normalizeTrackIdentity(item) === key) : fallbackIndex;
+    if (resolvedIndex < 0) return;
+    handleRemoveFromPlaylist(name, resolvedIndex);
+  }, [handleRemoveFromPlaylist, normalizeTrackIdentity, playlists, toggleFavoriteTrack]);
+
   const handleSearch = async (eventOrQuery) => {
     if (eventOrQuery?.preventDefault) eventOrQuery.preventDefault();
     const submittedQuery = typeof eventOrQuery === 'string' ? eventOrQuery : searchQuery;
@@ -7874,25 +8528,55 @@ function App() {
       return () => clearInterval(int);
   }, [sleepDeadline, volume, sleepFadeEnabled]);
 
-  const handleExportVault = async (playlistName) => {
-      if (!isStandalone || !window.aether?.exportVault) return;
-      const data = playlists[playlistName] || [];
-      const res = await window.aether.exportVault(playlistName, data);
-      if (res.success) alert(`Vault Node [${playlistName}] successfully exported.`);
+  const handleExportVault = async (playlistName, overrideTracks = null) => {
+      if (!isStandalone || !window.aether?.exportVault) {
+        setLastAdded('Vault export unavailable');
+        setTimeout(() => setLastAdded(null), 2200);
+        return;
+      }
+      const exportName = playlistName === FAVORITES_PLAYLIST_ID ? FAVORITES_PLAYLIST_NAME : playlistName;
+      const data = Array.isArray(overrideTracks)
+        ? overrideTracks
+        : (playlistName === FAVORITES_PLAYLIST_ID ? favoriteTracksList : (playlists[playlistName] || []));
+      const res = await window.aether.exportVault(exportName, data);
+      if (res?.success) {
+        setLastAdded(`Exported vault: ${exportName}`);
+        setTimeout(() => setLastAdded(null), 2600);
+      } else if (res?.cancel) {
+        setLastAdded('Vault export cancelled');
+        setTimeout(() => setLastAdded(null), 1800);
+      } else {
+        setLastAdded(`Export failed${res?.error ? `: ${String(res.error).slice(0, 36)}` : ''}`);
+        setTimeout(() => setLastAdded(null), 3000);
+      }
   };
 
   const handleImportVault = async () => {
-      if (!isStandalone || !window.aether?.importVault) return;
+      if (!isStandalone || !window.aether?.importVault) {
+        setLastAdded('Vault import unavailable');
+        setTimeout(() => setLastAdded(null), 2200);
+        return;
+      }
       const res = await window.aether.importVault();
-      if (res.success && res.data && Array.isArray(res.data)) {
+      if (res?.success && res.data && Array.isArray(res.data)) {
+          const normalized = res.data.map(normalizeQueueTrack).filter(Boolean);
+          const importName = buildUniquePlaylistName(res.name || 'Imported Vault', playlists);
           const p = { ...playlists };
-          p[res.name] = res.data;
+          p[importName] = normalized;
           setPlaylists(p);
           window.aether?.store?.set('playlists', p);
-          if (!playlistOrder.includes(res.name)) {
-            persistPlaylistOrder([...playlistOrder, res.name]);
+          if (!playlistOrder.includes(importName)) {
+            persistPlaylistOrder([...playlistOrder, importName]);
           }
-          alert(`Vault Node [${res.name}] successfully injected.`);
+          setViewingPlaylist(importName);
+          setLastAdded(`Imported vault: ${importName} (${normalized.length})`);
+          setTimeout(() => setLastAdded(null), 2800);
+      } else if (res?.cancel) {
+          setLastAdded('Vault import cancelled');
+          setTimeout(() => setLastAdded(null), 1800);
+      } else {
+          setLastAdded(`Import failed${res?.error ? `: ${String(res.error).slice(0, 36)}` : ''}`);
+          setTimeout(() => setLastAdded(null), 3000);
       }
   };
 
@@ -7912,15 +8596,25 @@ function App() {
 
       setIsSpotifyImporting(true);
       setSpotifyImportLogs([]);
-      appendSpotifyImportLog(`start provider=${provider} url=${url}`);
+      appendSpotifyImportLog(`start provider=${provider} name=${spotifyImportPlaylistName.trim() || 'auto'} url=${url}`);
       setSpotifyImportProgress({ stage: 'starting', progress: 1, message: `Preparing ${provider === 'apple' ? 'Apple Music' : 'Spotify'} import...` });
       try {
         const res = await importer(url.trim());
         appendSpotifyImportLog(`result success=${!!res?.success} matched=${res?.matchedTracks ?? 0} total=${res?.totalTracks ?? 0}`);
+        if (res?.debug) {
+          appendSpotifyImportLog(`debug ${JSON.stringify(res.debug).slice(0, 900)}`);
+        }
         if (!res?.success) {
-          const debug = res?.debug
-            ? ` [id=${res.debug.playlistId || '-'} htmlIds=${res.debug.htmlTrackIdCount ?? '-'} htmlLabels=${res.debug.htmlLabelCount ?? '-'}]`
-            : '';
+          const parserDebug = res?.debug?.parser || res?.debug || {};
+          const debugParts = [
+            res?.debug?.playlistId ? `id=${res.debug.playlistId}` : '',
+            Number.isFinite(res?.debug?.htmlStatus) ? `status=${res.debug.htmlStatus}` : '',
+            Number.isFinite(res?.debug?.htmlLength) ? `bytes=${res.debug.htmlLength}` : '',
+            Number.isFinite(parserDebug.metaSongTags) ? `songTags=${parserDebug.metaSongTags}` : '',
+            Number.isFinite(parserDebug.jsonLdBlocks) ? `jsonLd=${parserDebug.jsonLdBlocks}` : '',
+            Number.isFinite(parserDebug.attributeBlocks) ? `attr=${parserDebug.attributeBlocks}` : '',
+          ].filter(Boolean).join(' ');
+          const debug = debugParts ? ` [${debugParts}]` : '';
           setSpotifyImportProgress({ stage: 'error', progress: 0, message: `${res?.error || 'Playlist import failed.'}${debug}` });
           appendSpotifyImportLog(`error ${res?.error || 'Playlist import failed.'}${debug}`);
           return;
@@ -7935,18 +8629,21 @@ function App() {
         }
 
         const providerLabel = provider === 'apple' ? 'Apple Music' : 'Spotify';
-        const playlistName = res.playlistName || `${providerLabel} Playlist`;
-        const uniquePlaylistName = playlists[playlistName] ? `${playlistName} (${providerLabel})` : playlistName;
-        const nextPlaylists = { ...playlists, [uniquePlaylistName]: res.tracks };
+        const playlistName = spotifyImportPlaylistName.trim() || res.playlistName || `${providerLabel} Playlist`;
+        const uniquePlaylistName = buildUniquePlaylistName(playlistName, playlists);
+        const importedTracks = res.tracks.map(normalizeQueueTrack).filter(Boolean);
+        const nextPlaylists = { ...playlists, [uniquePlaylistName]: importedTracks };
         setPlaylists(nextPlaylists);
         persistPlaylistOrder([...playlistOrder.filter((name) => name !== uniquePlaylistName), uniquePlaylistName]);
         window.aether?.store?.set('playlists', nextPlaylists);
-        setLastAdded(`Imported ${res.matchedTracks}/${res.totalTracks} ${providerLabel} tracks`);
+        setViewingPlaylist(uniquePlaylistName);
+        setLastAdded(`Imported ${importedTracks.length}/${res.totalTracks} ${providerLabel} tracks`);
         setTimeout(() => setLastAdded(null), 3500);
         setIsSpotifyImportOpen(false);
         setSpotifyImportUrl('');
+        setSpotifyImportPlaylistName('');
         setMusicImportProvider('');
-        setSpotifyImportProgress({ stage: 'complete', progress: 100, message: `Imported ${res.matchedTracks}/${res.totalTracks} tracks` });
+        setSpotifyImportProgress({ stage: 'complete', progress: 100, message: `Imported ${importedTracks.length}/${res.totalTracks} tracks` });
       } catch (err) {
         const message = err?.message || 'Playlist import failed.';
         appendSpotifyImportLog(`exception ${message}`);
@@ -8074,9 +8771,14 @@ function App() {
 
       const titleLower = track.title?.toLowerCase() || '';
       const authorLower = track.author?.toLowerCase() || '';
+      const explicitGenre = String(track.genre || track.category || track.mood || '').toLowerCase().trim();
       if (shouldCountSession) {
+        if (explicitGenre) {
+          const genreKey = explicitGenre.replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, ' ').trim().slice(0, 28);
+          if (genreKey) data.genres[genreKey] = (data.genres[genreKey] || 0) + 1;
+        }
         PLAYBACK_GENRE_SIGNALS.forEach((signal) => {
-          if (titleLower.includes(signal) || authorLower.includes(signal)) {
+          if (titleLower.includes(signal) || authorLower.includes(signal) || explicitGenre.includes(signal)) {
             data.genres[signal] = (data.genres[signal] || 0) + 1;
           }
         });
@@ -9295,6 +9997,42 @@ function App() {
     return () => window.removeEventListener('keydown', onShortcut);
   }, [handleControl, inspectTarget, isAuraStageOpen, isFeedbackOpen, isGestureLabOpen, isLibraryOverlayOpen, isLockModalOpen, isManualLyricsEditorOpen, isManualLyricsRawEditorOpen, isMixtapeVaultOpen, isPlayerOverlayOpen, isPlaying, isShortcutSettingsOpen, isSharedSceneOpen, isSpotifyImportOpen, isStandalone, isTipsOverlayOpen, isViewingFullDiscovery, isViewingFullPlaylist, isViewingFullQueue, oauthPrompt, parsedShortcuts, toggleDiagnostics, toggleFocusMode, toggleMiniPlayer]);
 
+  const musicImportTheme = musicImportProvider === 'apple'
+    ? {
+      accent: '#ff5a7d',
+      accentSoft: 'rgba(255, 90, 125, 0.13)',
+      accentBorder: 'rgba(255, 90, 125, 0.42)',
+      accentText: '#ff9aad',
+      accentShadow: 'rgba(255, 90, 125, 0.18)',
+      ctaText: '#19070c',
+      label: 'Apple Music',
+      sourceLine: 'Public music.apple.com playlist links',
+      placeholder: 'https://music.apple.com/.../playlist/...',
+    }
+    : musicImportProvider === 'spotify'
+      ? {
+        accent: '#1ed760',
+        accentSoft: 'rgba(30, 215, 96, 0.12)',
+        accentBorder: 'rgba(30, 215, 96, 0.42)',
+        accentText: '#83f3ad',
+        accentShadow: 'rgba(30, 215, 96, 0.16)',
+        ctaText: '#031108',
+        label: 'Spotify',
+        sourceLine: 'Public open.spotify.com playlist links',
+        placeholder: 'https://open.spotify.com/playlist/...',
+      }
+      : {
+        accent: 'rgb(0, 255, 191)',
+        accentSoft: 'rgba(0, 255, 191, 0.1)',
+        accentBorder: 'rgba(0, 255, 191, 0.32)',
+        accentText: 'rgb(125, 255, 218)',
+        accentShadow: 'rgba(0, 255, 191, 0.12)',
+        ctaText: '#00140f',
+        label: 'Playlist',
+        sourceLine: 'Choose Spotify or Apple Music first',
+        placeholder: 'Choose Spotify or Apple Music first',
+      };
+
   if (loading) return (
     <div className="h-screen w-full bg-[#0a0a0a] flex flex-col items-center justify-center gap-6 p-6 text-center">
       <div className="relative">
@@ -9801,6 +10539,40 @@ function App() {
   const lyricPresetActionLabel = isLyricPresetSaved ? 'Saved' : hasLyricPreset ? 'Update' : 'Save';
   const chromeTopOffset = isWindowsPlatform ? (showWindowsTitleStrip ? 114 : 84) : isMacPlatform ? 96 : 86;
   const diagnosticsTopOffset = isWindowsPlatform ? (showWindowsTitleStrip ? 120 : 88) : isMacPlatform ? 102 : 92;
+  const libraryModeOptions = [
+    { id: 'playlists', label: 'Vaults' },
+    { id: 'songs', label: 'Songs' },
+  ];
+  const libraryPlaylistFilterOptions = [
+    { id: 'all', label: 'All' },
+    { id: 'filled', label: 'With Songs' },
+    { id: 'empty', label: 'Empty' },
+  ];
+  const libraryPlaylistSortOptions = [
+    { id: 'manual', label: 'Manual' },
+    { id: 'name', label: 'A-Z' },
+    { id: 'listened-desc', label: 'Recent' },
+    { id: 'added-desc', label: 'Added' },
+    { id: 'updated-desc', label: 'Updated' },
+    { id: 'plays-desc', label: 'Played' },
+    { id: 'tracks-desc', label: 'Most Songs' },
+    { id: 'tracks-asc', label: 'Fewest' },
+  ];
+  const librarySongFilterOptions = [
+    { id: 'all', label: 'All' },
+    { id: 'favorites', label: 'Favorites' },
+    { id: 'played', label: 'Played' },
+    { id: 'unplayed', label: 'Unplayed' },
+  ];
+  const librarySongSortOptions = [
+    { id: 'title', label: 'Title' },
+    { id: 'artist', label: 'Artist' },
+    { id: 'listened-desc', label: 'Recent' },
+    { id: 'added-desc', label: 'Added' },
+    { id: 'plays-desc', label: 'Played' },
+    { id: 'duration-desc', label: 'Longest' },
+    { id: 'duration-asc', label: 'Shortest' },
+  ];
   const visualStageLyric = compactLyric || activeLyric || null;
   const visualStageNextLyric = nextLyric && nextLyric !== visualStageLyric ? nextLyric : null;
   const visualStageHeaderVisible = videoMode !== 'cinema' || cinemaControlsVisible || visualControlsPinned;
@@ -9880,6 +10652,7 @@ function App() {
   ].filter(Boolean).join(' ');
 
   return (
+    <MotionConfig reducedMotion={performanceMode === 'low' ? 'always' : 'never'} transition={performanceMode === 'low' ? { duration: 0 } : undefined}>
     <div className={`fixed inset-0 bg-transparent selection:bg-brand-accent selection:text-brand-dark flex flex-col h-screen overflow-hidden relative isolate ${desktopTopInsetClass} ${rootModeClass}`} style={auraFieldStyle}>
       <div className="fixed inset-0 bg-[#050505] z-[-2]" />
       {/* Background Mesh (Absolute to avoid flex interference) */}
@@ -10178,6 +10951,8 @@ function App() {
           isStandalone={isStandalone}
           globalMediaShortcutsEnabled={globalMediaShortcutsEnabled}
           setGlobalMediaShortcutsEnabled={setGlobalMediaShortcutsEnabled}
+          performanceMode={performanceMode}
+          setPerformanceMode={setPerformanceMode}
           onSurfaceOpen={(surface) => closeHeaderSurfaces(surface)}
         />
         <div className="order-3 flex w-full justify-center ultra-compact-hide no-drag md:order-2 md:flex-1 md:max-w-[900px] md:px-4 lg:px-6" data-no-maximize="true">
@@ -10278,6 +11053,7 @@ function App() {
         currentTrack={currentTrack}
         isPlaying={isPlaying}
         getActivePlaybackPositionMs={getActivePlaybackPositionMs}
+        setLastAdded={setLastAdded}
       />
       <GestureLabIsland
         ref={gestureLabRef}
@@ -10712,8 +11488,8 @@ function App() {
             initial={{ opacity: 0, y: -8, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -6, scale: 0.98 }}
-            className="fixed right-4 md:right-6 z-[240] w-[min(92vw,420px)] max-h-[78vh] overflow-y-auto glass-card bg-[#07090c]/90 border border-white/10 backdrop-blur-2xl rounded-3xl p-4 md:p-5 shadow-[0_20px_60px_rgba(0,0,0,0.45)]"
-            style={{ top: diagnosticsTopOffset }}
+            className="fixed right-4 md:right-6 z-[240] w-[min(92vw,420px)] overflow-y-auto custom-scrollbar glass-card bg-[#07090c]/90 border border-white/10 backdrop-blur-2xl rounded-3xl p-4 md:p-5 shadow-[0_20px_60px_rgba(0,0,0,0.45)]"
+            style={{ top: diagnosticsTopOffset, maxHeight: `calc(100vh - ${diagnosticsTopOffset + 16}px)` }}
           >
             <div className="flex items-center justify-between mb-3">
               <div className="text-[10px] tracking-[0.24em] uppercase font-black text-brand-accent">Diagnostics</div>
@@ -11163,7 +11939,7 @@ function App() {
                ref={visualizerCanvasRef} 
                width={800} 
                height={40} 
-               className={`absolute bottom-0 left-0 right-0 w-full h-[32px] pointer-events-none z-20 transition-opacity duration-500 ${visualizerMode === 'bars' ? 'opacity-50' : 'opacity-0'}`}
+	               className={`aether-visualizer-canvas absolute bottom-0 left-0 right-0 w-full h-[32px] pointer-events-none z-20 transition-opacity duration-500 ${visualizerMode === 'bars' ? 'opacity-50' : 'opacity-0'}`}
             />
 
             {currentTrack ? (
@@ -11220,6 +11996,7 @@ function App() {
 	                             cycleRepeatMode={cycleRepeatMode}
 	                             handleControl={handleControl}
 	                             handleDownloadCurrentTrack={handleDownloadCurrentTrack}
+	                             isCurrentTrackFavorite={isTrackFavorite(currentTrack)}
 	                             isDownloadingTrack={isDownloadingTrack}
 	                             isFocusedMode={isFocusedMode}
 	                             openLibraryOverlay={openLibraryOverlay}
@@ -11230,6 +12007,7 @@ function App() {
 	                             repeatModeLabel={repeatModeLabel}
 	                             setIsFocusedMode={setIsFocusedMode}
 	                             setIsPlayerOverlayOpen={setIsPlayerOverlayOpen}
+	                             toggleFavoriteTrack={toggleFavoriteTrack}
 	                           />
                         </div>
                         <h1 className={`${playerTitleClass} font-black text-white/95 leading-none uppercase tracking-tighter mb-2 line-clamp-2 transition-all duration-700`} style={{ textShadow: visualizerMode === 'pulse' ? `0 0 20px ${themeColor}44` : 'none' }}>{currentTrack.title}</h1>
@@ -11568,6 +12346,9 @@ function App() {
                         <button onClick={() => handleAdd(t)} className="w-10 h-10 rounded-xl bg-brand-accent/10 text-brand-accent flex items-center justify-center hover:bg-brand-accent hover:text-brand-dark transition-all border border-brand-accent/20">
                           <Plus size={22} />
                         </button>
+                        <button onClick={() => toggleFavoriteTrack(t)} className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all border ${isTrackFavorite(t) ? 'bg-rose-400/15 text-rose-300 border-rose-300/30' : 'bg-white/5 text-white/30 hover:bg-rose-400/15 hover:text-rose-300 border-white/10 hover:border-rose-300/30'}`} title={isTrackFavorite(t) ? 'Remove from Favorites' : 'Add to Favorites'}>
+                          <Heart size={17} fill={isTrackFavorite(t) ? 'currentColor' : 'none'} />
+                        </button>
                         <button onClick={() => openLibraryOverlay({ type: 'track', items: [t] })} className="w-10 h-10 rounded-xl bg-white/5 text-white/30 flex items-center justify-center hover:bg-brand-accent/20 hover:text-brand-accent transition-all border border-white/10">
                           <HardDrive size={18} />
                         </button>
@@ -11616,8 +12397,12 @@ function App() {
                 <button onClick={handleGenerateSmartMix} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Generate Smart Mix"><Zap size={10} /></button>
                 <button onClick={handleCleanVault} disabled={isVaultCleaning} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors disabled:opacity-40 flex items-center justify-center" title="Clean Vault (dedupe + remove unavailable + normalize metadata)"><RefreshCw size={10} className={isVaultCleaning ? 'animate-spin' : ''} /></button>
                 <button onClick={() => openLibraryOverlay(null)} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Open Vault Overlay"><ListMusic size={10} /></button>
-                <button onClick={() => { closeHeaderSurfaces(); setMusicImportProvider(''); setSpotifyImportUrl(''); setSpotifyImportProgress({ stage: 'idle', progress: 0, message: '' }); setSpotifyImportLogs([]); setIsSpotifyImportOpen(true); }} className="w-7 h-7 rounded-lg bg-white/5 text-white/45 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center no-drag" title="Import Music Playlist"><Music size={11} /></button>
-                <button onClick={handleImportVault} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Import Vault (.aether)"><Upload size={10} /></button>
+                {isStandalone && (
+                  <>
+                    <button onClick={() => { closeHeaderSurfaces(); setMusicImportProvider(''); setSpotifyImportUrl(''); setSpotifyImportPlaylistName(''); setSpotifyImportProgress({ stage: 'idle', progress: 0, message: '' }); setSpotifyImportLogs([]); setIsSpotifyImportOpen(true); }} className="w-7 h-7 rounded-lg bg-white/5 text-white/45 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center no-drag" title="Import Music Playlist"><Music size={11} /></button>
+                    <button onClick={handleImportVault} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Import Vault (.aether)"><Upload size={10} /></button>
+                  </>
+                )}
               </div>
             </div>
             <div className="px-4 py-2 border-b border-white/5 bg-white/[0.02] flex flex-col items-center">
@@ -11635,6 +12420,41 @@ function App() {
             <div className={`flex-1 min-h-0 relative ${isVerticalStack ? 'h-[500px]' : ''}`}>
                <div className="absolute inset-0 overflow-y-auto p-4 flex flex-col gap-6 pb-12 studio-vault-container custom-scrollbar">
                   <div className="vault-project-grid">
+                        <div className="vault-project-card group/vault border-rose-300/20 bg-rose-400/[0.035]">
+                           <div className="vault-project-art" onClick={() => setViewingPlaylist(FAVORITES_PLAYLIST_ID)}>
+                              {favoriteTracksList.length > 0 ? favoriteTracksList.slice(0, 4).map((track, tidx) => (
+                                <img
+                                  key={`favorites-cover-${tidx}`}
+                                  src={getProxyUrl(track.thumbnail)}
+                                  className="vault-project-cover"
+                                  alt=""
+                                  style={{ '--cover-index': tidx }}
+                                />
+                              )) : (
+                                <div className="vault-project-empty text-rose-300"><Heart size={20} /></div>
+                              )}
+                              <div className="vault-project-sheen" />
+                              <div className="vault-project-count">{favoriteTracksList.length}</div>
+                           </div>
+                           <div className="min-w-0">
+                              <button onClick={() => setViewingPlaylist(FAVORITES_PLAYLIST_ID)} className="w-full text-left text-[12px] font-black text-white/88 uppercase tracking-tight truncate group-hover/vault:text-rose-300 transition-colors" title={FAVORITES_PLAYLIST_NAME}>
+                                {FAVORITES_PLAYLIST_NAME}
+                              </button>
+                              <div className="mt-1 text-[8px] font-black uppercase tracking-[0.22em] text-white/30 truncate">
+                                Built-in favorites
+                              </div>
+                           </div>
+                           <div className="grid grid-cols-3 gap-1.5">
+                              <button onClick={handleFavoriteAddAll} className="vault-project-tool" title="Queue Favorites"><Plus size={11} /></button>
+                              {isStandalone && <button onClick={() => handleExportVault(FAVORITES_PLAYLIST_ID)} className="vault-project-tool" title="Export Favorites"><Download size={11} /></button>}
+                              <button onClick={() => setViewingPlaylist(FAVORITES_PLAYLIST_ID)} className="vault-project-tool" title="View Favorites"><Maximize2 size={11} /></button>
+                           </div>
+                           {favoriteTracksList.length > 0 && (
+                            <button onClick={() => openPlaylistInspect(FAVORITES_PLAYLIST_NAME, favoriteTracksList, 'vault:favorites')} className="vault-project-inspect">
+                              <Eye size={11} /> Inspect favorites
+                            </button>
+                           )}
+                        </div>
                         {orderedPlaylistNames.map(name => {
                           const vaultTracks = playlists[name] || [];
                           const previewTracks = vaultTracks.slice(0, 4);
@@ -11915,13 +12735,14 @@ function App() {
       </AnimatePresence>
 
       {/* Global Toast Overlay */}
+      <ToastPortal>
       <AnimatePresence>
         {sessionRestoreNotice && (
           <motion.div
             initial={{ opacity: 0, y: -20, scale: 0.96 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -16, scale: 0.96 }}
-            className="fixed top-20 left-1/2 -translate-x-1/2 px-6 py-3 bg-white/10 text-white font-black rounded-2xl border border-brand-accent/30 backdrop-blur-xl z-[520] flex items-center gap-3"
+            className="fixed top-20 left-1/2 -translate-x-1/2 px-6 py-3 bg-white/10 text-white font-black rounded-2xl border border-brand-accent/30 backdrop-blur-xl z-[700] flex items-center gap-3"
           >
             <Clock size={14} className="text-brand-accent" />
             <span className="text-[10px] uppercase tracking-[0.2em]">{sessionRestoreNotice}</span>
@@ -11933,7 +12754,7 @@ function App() {
             initial={{ opacity: 0, y: -18, scale: 0.96 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -12, scale: 0.96 }}
-            className="fixed top-32 left-1/2 -translate-x-1/2 px-5 py-2.5 bg-[#06090d]/90 text-brand-accent font-black rounded-2xl border border-brand-accent/30 backdrop-blur-xl z-[520] flex items-center gap-3"
+            className="fixed top-32 left-1/2 -translate-x-1/2 px-5 py-2.5 bg-[#06090d]/90 text-brand-accent font-black rounded-2xl border border-brand-accent/30 backdrop-blur-xl z-[700] flex items-center gap-3"
           >
             <RefreshCw size={12} className={`${updateInfo?.status === 'downloading' || updateInfo?.status === 'checking' ? 'animate-spin' : ''}`} />
             <span className="text-[9px] uppercase tracking-[0.18em]">{updateToast}</span>
@@ -11945,14 +12766,14 @@ function App() {
             initial={{ opacity: 0, y: 20, scale: 0.96 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 12, scale: 0.96 }}
-            className="fixed right-5 bottom-24 px-4 py-2 bg-black/70 text-brand-accent font-mono rounded-xl border border-brand-accent/30 backdrop-blur-xl z-[520]"
+            className="fixed right-5 bottom-24 px-4 py-2 bg-black/70 text-brand-accent font-mono rounded-xl border border-brand-accent/30 backdrop-blur-xl z-[700]"
           >
             <span className="text-[10px] uppercase tracking-[0.16em]">skip: {skipReasonToast}</span>
           </motion.div>
         )}
 
         {lastAdded && (
-          <motion.div initial={{ opacity: 0, y: 100 }} animate={{ opacity: 1, y: -40 }} exit={{ opacity: 0, y: 100 }} className="fixed bottom-0 left-1/2 -translate-x-1/2 px-10 py-5 bg-brand-accent text-brand-dark font-black rounded-[2rem] shadow-neon-strong z-[520] flex items-center gap-6 whitespace-nowrap border-t-2 border-white/20">
+          <motion.div initial={{ opacity: 0, y: 100 }} animate={{ opacity: 1, y: -40 }} exit={{ opacity: 0, y: 100 }} className="fixed bottom-0 left-1/2 -translate-x-1/2 px-10 py-5 bg-brand-accent text-brand-dark font-black rounded-[2rem] shadow-neon-strong z-[700] flex items-center gap-6 whitespace-nowrap border-t-2 border-white/20">
             <Zap size={24} fill="currentColor" />
             <div className="flex flex-col leading-none">
                <span className="text-[10px] uppercase tracking-[0.2em] opacity-80 mb-1 font-bold">Node Initialized</span>
@@ -11961,6 +12782,7 @@ function App() {
            </motion.div>
         )}
       </AnimatePresence>
+      </ToastPortal>
       <AnimatePresence>
         {showImmersiveLyricsOverlay && (
           <motion.div 
@@ -12026,37 +12848,43 @@ function App() {
                     }}
                   />
 
-                  <div className="flex flex-col gap-16 lg:gap-24 py-[36vh] items-center justify-center text-center w-full max-w-full mx-auto cursor-default px-2 sm:px-4" style={{ transformStyle: 'preserve-3d', transform: 'rotateX(5deg)' }}>
-                    {lyrics.map((line, idx) => {
-                      const isActive = idx === activeLyricIndex;
-                      const distance = Math.abs(idx - activeLyricIndex);
-                      const lyricLineLayoutClass = 'max-w-[92vw] xl:max-w-[1180px]';
-                      const lyricStateClass = isActive
-                        ? 'scale-[1.045] opacity-100 text-[#00ffbf] drop-shadow-[0_0_34px_rgba(0,255,191,0.64)]'
-                        : distance === 1
-                          ? 'scale-[1.015] opacity-60 text-white/58 blur-[0.1px]'
-                          : distance === 2
-                            ? 'scale-[0.995] opacity-30 text-white/28 blur-[0.75px]'
-                            : 'scale-[0.97] opacity-12 text-white/12 blur-[1.4px]';
-                      const lyricFontSize = isActive
-                        ? 'clamp(2.25rem, min(5.2vw, 8.4vh), 5.8rem)'
-                        : distance === 1
-                          ? 'clamp(1.8rem, min(4.1vw, 6.2vh), 4.35rem)'
-                          : 'clamp(1.35rem, min(3vw, 4.6vh), 3.2rem)';
-                      return (
-                        <div
-                          key={idx} 
-                          ref={isActive ? expandedActiveRef : null} 
-                          onClick={() => handleLyricLineSeek(line.time)}
-                          className={`${lyricLineLayoutClass} immersive-lyric-line px-3 md:px-5 font-black cursor-pointer transition-[transform,opacity,filter,text-shadow] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] transform-gpu origin-center leading-[1.04] w-full min-w-0 break-words whitespace-pre-wrap [overflow-wrap:anywhere] z-20 will-change-[transform,opacity,filter] ${lyricStateClass} hover:scale-[1.055]`}
-                          style={{
-                            fontSize: lyricFontSize,
-                            transitionDelay: `${Math.min(distance, 3) * 18}ms`
-                          }}
-                        >
-                          <span className={isActive ? 'immersive-karaoke-text immersive-karaoke-text-active' : 'immersive-karaoke-text'}>
-                            {line.text}
-                          </span>
+	                  <div className="flex flex-col gap-16 lg:gap-24 py-[36vh] items-center justify-center text-center w-full max-w-full mx-auto cursor-default px-3 sm:px-5" style={{ transformStyle: 'preserve-3d', transform: 'rotateX(5deg)' }}>
+	                    {lyrics.map((line, idx) => {
+	                      const isActive = idx === activeLyricIndex;
+	                      const distance = Math.abs(idx - activeLyricIndex);
+	                      const lyricText = String(line.text || '');
+	                      const lyricLength = lyricText.trim().length;
+	                      const lyricLineLayoutClass = 'max-w-[min(84vw,1080px)]';
+	                      const lyricStateClass = isActive
+	                        ? 'scale-100 opacity-100 text-[#00ffbf] drop-shadow-[0_0_34px_rgba(0,255,191,0.64)]'
+	                        : distance === 1
+	                          ? 'scale-100 opacity-60 text-white/58 blur-[0.1px]'
+	                          : distance === 2
+	                            ? 'scale-[0.995] opacity-30 text-white/28 blur-[0.75px]'
+	                            : 'scale-[0.97] opacity-12 text-white/12 blur-[1.4px]';
+	                      const activeLyricMax = lyricLength > 84 ? '3.35rem' : lyricLength > 64 ? '4.05rem' : lyricLength > 46 ? '4.8rem' : '5.8rem';
+	                      const nearLyricMax = lyricLength > 84 ? '2.45rem' : lyricLength > 64 ? '3rem' : lyricLength > 46 ? '3.65rem' : '4.35rem';
+	                      const farLyricMax = lyricLength > 84 ? '1.9rem' : lyricLength > 64 ? '2.25rem' : '3.2rem';
+	                      const lyricFontSize = isActive
+	                        ? `clamp(1.95rem, min(${lyricLength > 64 ? '3.8vw' : '4.8vw'}, 7.4vh), ${activeLyricMax})`
+	                        : distance === 1
+	                          ? `clamp(1.55rem, min(${lyricLength > 64 ? '3vw' : '3.8vw'}, 5.6vh), ${nearLyricMax})`
+	                          : `clamp(1.2rem, min(${lyricLength > 64 ? '2.25vw' : '2.8vw'}, 4.2vh), ${farLyricMax})`;
+	                      return (
+	                        <div
+	                          key={idx}
+	                          ref={isActive ? expandedActiveRef : null}
+	                          onClick={() => handleLyricLineSeek(line.time)}
+	                          className={`${lyricLineLayoutClass} immersive-lyric-line px-2 md:px-4 font-black cursor-pointer transition-[transform,opacity,filter,text-shadow] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] transform-gpu origin-center leading-[1.06] w-full min-w-0 break-words whitespace-normal [overflow-wrap:anywhere] z-20 will-change-[transform,opacity,filter] ${lyricStateClass} hover:scale-[1.015]`}
+	                          style={{
+	                            fontSize: lyricFontSize,
+	                            maxInlineSize: 'min(84vw, 1080px)',
+	                            transitionDelay: `${Math.min(distance, 3) * 18}ms`
+	                          }}
+	                        >
+	                          <span className={isActive ? 'immersive-karaoke-text immersive-karaoke-text-active' : 'immersive-karaoke-text'}>
+	                            {lyricText}
+	                          </span>
                         </div>
                       );
                     })}
@@ -12294,11 +13122,19 @@ function App() {
               animate={{ y: 0, scale: 1, opacity: 1 }}
               exit={{ y: 10, scale: 0.98, opacity: 0 }}
               className="relative z-10 flex w-full max-w-xl max-h-[min(88vh,760px)] flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-[#0a0a0a]/95 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
+              style={{
+                '--music-import-accent': musicImportTheme.accent,
+                '--music-import-accent-soft': musicImportTheme.accentSoft,
+                '--music-import-accent-border': musicImportTheme.accentBorder,
+                '--music-import-accent-text': musicImportTheme.accentText,
+                '--music-import-accent-shadow': musicImportTheme.accentShadow,
+                '--music-import-cta-text': musicImportTheme.ctaText,
+              }}
             >
               <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
                 <div>
-                  <div className="text-[10px] font-black uppercase tracking-[0.28em] text-brand-accent">Music Import</div>
-                  <div className="text-[11px] text-white/45 mt-1">Choose a source, paste a public playlist URL, then match it into Aether.</div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.28em]" style={{ color: 'var(--music-import-accent-text)' }}>Import a Playlist</div>
+                  <div className="text-[11px] text-white/45 mt-1">Pick a source, paste a public playlist link, and Aether will match songs into your library.</div>
                 </div>
                 <button
                   onClick={() => !isSpotifyImporting && setIsSpotifyImportOpen(false)}
@@ -12312,8 +13148,8 @@ function App() {
               <div className="flex-1 overflow-y-auto p-5 space-y-4">
                 <div className="grid grid-cols-2 gap-3">
                   {[
-                    ['spotify', 'Spotify', 'Open Spotify playlist links'],
-                    ['apple', 'Apple Music', 'music.apple.com playlist links'],
+                    ['spotify', 'Spotify', 'Public open.spotify.com playlist'],
+                    ['apple', 'Apple Music', 'Public music.apple.com playlist'],
                   ].map(([provider, label, detail]) => (
                     <button
                       key={provider}
@@ -12322,10 +13158,12 @@ function App() {
                       onClick={() => {
                         setMusicImportProvider(provider);
                         setSpotifyImportUrl('');
+                        setSpotifyImportPlaylistName('');
                         setSpotifyImportProgress({ stage: 'idle', progress: 0, message: `${label} selected. Paste a public playlist URL.` });
                         setSpotifyImportLogs([]);
                       }}
-                      className={`no-drag rounded-2xl border px-4 py-4 text-left transition-all ${musicImportProvider === provider ? 'border-brand-accent/45 bg-brand-accent/12 text-brand-accent shadow-[0_0_22px_rgba(0,255,191,0.08)]' : 'border-white/10 bg-white/[0.035] text-white/60 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                      className={`no-drag rounded-2xl border px-4 py-4 text-left transition-all ${musicImportProvider === provider ? 'text-white shadow-[0_0_22px_var(--music-import-accent-shadow)]' : 'border-white/10 bg-white/[0.035] text-white/60 hover:text-white'}`}
+                      style={musicImportProvider === provider ? { borderColor: 'var(--music-import-accent-border)', background: 'var(--music-import-accent-soft)' } : undefined}
                     >
                       <div className="flex items-center gap-2 text-[12px] font-black uppercase tracking-[0.18em]">
                         <Music size={14} />
@@ -12337,25 +13175,39 @@ function App() {
                 </div>
 
                 <div>
-                  <label className="block text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Playlist URL</label>
+                  <label className="block text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">{musicImportProvider ? `${musicImportTheme.label} Playlist Link` : 'Playlist Link'}</label>
                   <input
                     value={spotifyImportUrl}
                     onChange={(e) => setSpotifyImportUrl(e.target.value)}
                     disabled={isSpotifyImporting || !musicImportProvider}
-                    placeholder={musicImportProvider === 'apple' ? 'https://music.apple.com/.../playlist/...' : musicImportProvider === 'spotify' ? 'https://open.spotify.com/playlist/...' : 'Choose Spotify or Apple Music first'}
-                    className="no-drag w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50 focus:bg-brand-accent/[0.04] transition-all disabled:opacity-60"
+                    placeholder={musicImportTheme.placeholder}
+                    className="no-drag w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none transition-all disabled:opacity-60"
+                    style={{ '--tw-ring-color': 'var(--music-import-accent)', caretColor: 'var(--music-import-accent)' }}
                   />
+                </div>
+
+                <div>
+                  <label className="block text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Save As</label>
+                  <input
+                    value={spotifyImportPlaylistName}
+                    onChange={(e) => setSpotifyImportPlaylistName(e.target.value)}
+                    disabled={isSpotifyImporting || !musicImportProvider}
+                    placeholder={musicImportProvider ? `${musicImportTheme.label} playlist name (optional)` : 'Choose a source first'}
+                    className="no-drag w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none transition-all disabled:opacity-60"
+                    style={{ caretColor: 'var(--music-import-accent)' }}
+                  />
+                  <div className="mt-2 text-[10px] text-white/35">Leave blank to use the playlist title Aether finds.</div>
                 </div>
 
                 <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4">
                   <div className="flex items-center justify-between gap-3 mb-2">
                     <span className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">Progress</span>
-                    <span className="text-[10px] font-mono text-brand-accent/80">{Math.max(0, Math.min(100, spotifyImportProgress.progress || 0))}%</span>
+                    <span className="text-[10px] font-mono" style={{ color: 'var(--music-import-accent-text)' }}>{Math.max(0, Math.min(100, spotifyImportProgress.progress || 0))}%</span>
                   </div>
                   <div className="h-2 rounded-full bg-white/10 overflow-hidden">
                     <div
-                      className={`h-full rounded-full transition-all duration-300 ${spotifyImportProgress.stage === 'error' ? 'bg-red-500' : 'bg-brand-accent'}`}
-                      style={{ width: `${Math.max(4, Math.min(100, spotifyImportProgress.progress || 0))}%` }}
+                      className="h-full rounded-full transition-all duration-300"
+                      style={{ width: `${Math.max(4, Math.min(100, spotifyImportProgress.progress || 0))}%`, background: spotifyImportProgress.stage === 'error' ? '#ff3b4f' : 'var(--music-import-accent)' }}
                     />
                   </div>
                   <div className="mt-3 text-[11px] text-white/60 min-h-[1.5em]">
@@ -12364,8 +13216,11 @@ function App() {
                 </div>
 
                 <div className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3">
-                  <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Debug Log</div>
-                  <div className="max-h-28 overflow-auto space-y-1 pr-1">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">Debug Log</div>
+                    <button type="button" onClick={copySpotifyImportDebugLog} className="rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-white/45 transition-colors hover:text-white">Copy</button>
+                  </div>
+                  <div className="custom-scrollbar-heavy max-h-28 select-text overflow-auto space-y-1 pr-1">
                     {spotifyImportLogs.length === 0 ? (
                       <div className="text-[10px] text-white/35">No logs yet.</div>
                     ) : spotifyImportLogs.map((line, idx) => (
@@ -12384,9 +13239,10 @@ function App() {
                   <button
                     onClick={handleImportSpotifyPlaylist}
                     disabled={isSpotifyImporting || !musicImportProvider || !spotifyImportUrl.trim()}
-                    className="no-drag px-5 py-2 rounded-xl bg-brand-accent text-brand-dark font-black text-sm hover:scale-[1.01] active:scale-95 transition-all disabled:opacity-50 disabled:hover:scale-100"
+                    className="no-drag px-5 py-2 rounded-xl font-black text-sm hover:scale-[1.01] active:scale-95 transition-all disabled:opacity-50 disabled:hover:scale-100"
+                    style={{ background: 'var(--music-import-accent)', color: 'var(--music-import-cta-text)' }}
                   >
-                    {isSpotifyImporting ? 'Importing...' : `Import ${musicImportProvider === 'apple' ? 'Apple' : musicImportProvider === 'spotify' ? 'Spotify' : ''} Playlist`}
+                    {isSpotifyImporting ? 'Matching...' : musicImportProvider ? `Match ${musicImportTheme.label} Playlist` : 'Choose a Source'}
                   </button>
                 </div>
               </div>
@@ -12417,20 +13273,20 @@ function App() {
                 '--vault-spin': `${vaultPulse.spin}deg`,
                 '--vault-glow': vaultPulse.energy,
               }}
-              className="relative w-[min(92vw,760px)] rounded-[2rem] border border-brand-accent/25 bg-[#07090c]/96 shadow-[0_0_80px_rgba(0,255,191,0.14)] overflow-hidden"
+              className="mixtape-vault-shell relative w-[min(94vw,920px)] rounded-[2rem] border border-brand-accent/25 bg-[#07090c]/96 shadow-[0_0_80px_rgba(0,255,191,0.14)] overflow-hidden"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-brand-accent/70 to-transparent" />
 
-              <div className="p-6 md:p-8">
+              <div className="p-5 md:p-7">
                 <div className="flex items-start justify-between gap-4 mb-6">
                   <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-10 h-10 flex items-center justify-center rounded-xl border border-brand-accent/40 bg-brand-accent/10">
+                  <div className="w-11 h-11 flex items-center justify-center rounded-2xl border border-brand-accent/40 bg-brand-accent/10 shadow-[0_0_24px_rgba(0,255,191,0.12)]">
                     <Music size={18} className="text-brand-accent" />
                   </div>
                   <div className="min-w-0">
-                    <h2 className="text-brand-accent font-black text-xl tracking-[0.18em] uppercase leading-none">Mixtape Vault</h2>
-                    <span className="text-white/45 text-[9px] font-mono tracking-[0.2em] uppercase">SECRET_MODE // ANALOG_NIGHT</span>
+                    <h2 className="text-brand-accent font-black text-xl md:text-2xl tracking-[0.16em] uppercase leading-none">Mixtape Vault</h2>
+                    <span className="text-white/45 text-[9px] font-mono tracking-[0.2em] uppercase">Private live scene // tape deck</span>
                     <div className="mt-2 text-[11px] font-black text-white/85 truncate">{currentTrack?.title || 'Aether Secret Session'}</div>
                     <div className="mt-1 text-[9px] uppercase tracking-[0.22em] text-brand-accent/70 truncate">{currentTrack?.author || 'Unknown Artist'}</div>
                   </div>
@@ -12455,68 +13311,80 @@ function App() {
                     <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/32">Preparing Analog Scene</div>
                   </div>
                 ) : (
-                <div className="rounded-2xl border border-white/10 bg-black/30 p-5 md:p-6">
-                  <div className="flex items-center justify-center mb-6">
-                    <motion.div
-                      animate={{ opacity: 1 }}
-                      transition={{ duration: 0.2 }}
-                      className="w-40 h-40 rounded-full border border-brand-accent/35 bg-[radial-gradient(circle_at_center,rgba(0,255,191,0.22)_0%,rgba(0,255,191,0.08)_25%,rgba(10,10,10,0.92)_26%,rgba(20,20,20,0.95)_55%,rgba(0,255,191,0.08)_100%)] relative will-change-transform"
-                      style={{
-                        transform: `rotate(${vaultPulse.spin}deg) scale(${1 + (vaultPulse.energy * 0.14)})`,
-                        transition: 'transform 90ms linear, box-shadow 120ms ease',
-                        boxShadow: `0 0 ${24 + (vaultPulse.energy * 40)}px rgba(0,255,191,${0.16 + vaultPulse.bass * 0.28})`,
-                      }}
-                    >
-                      <div
-                        className="absolute left-1/2 top-4 -translate-x-1/2 w-2.5 h-2.5 rounded-full bg-brand-accent"
-                        style={{
-                          boxShadow: `0 0 ${10 + (vaultPulse.highs * 18)}px rgba(0,255,191,${0.35 + vaultPulse.highs * 0.45})`,
-                        }}
-                      />
-                      <div
-                        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-full w-[2px] h-[34%] rounded-full bg-brand-accent/70"
-                        style={{
-                          opacity: 0.45 + (vaultPulse.energy * 0.45),
-                        }}
-                      />
-                      <div
-                        className="absolute inset-0 m-auto w-8 h-8 rounded-full bg-brand-accent/80"
-                        style={{
-                          transform: `scale(${1 + (vaultPulse.bass * 0.4) + (vaultPulse.energy * 0.12)})`,
-                          boxShadow: `0 0 ${18 + (vaultPulse.highs * 26)}px rgba(0,255,191,${0.45 + vaultPulse.highs * 0.35})`,
-                        }}
-                      />
-                    </motion.div>
-                  </div>
+                <div className="mixtape-console rounded-[1.75rem] border border-white/10 bg-black/30 p-4 md:p-5">
+                  <div className="grid gap-5 md:grid-cols-[0.9fr_1.1fr] items-stretch">
+                    <div className="mixtape-deck rounded-[1.5rem] border border-white/8 bg-white/[0.025] p-4 flex flex-col items-center justify-center">
+                      <div className="mixtape-record-stage">
+                        <div className={`mixtape-record ${isPlaying ? 'is-playing' : ''}`}>
+                          <div className="mixtape-record-grooves" />
+                          <img
+                            src={getProxyUrl(currentTrack?.thumbnail)}
+                            className="mixtape-record-art"
+                            alt=""
+                            draggable={false}
+                          />
+                          <div className="mixtape-record-pin" />
+                        </div>
+                        <div className="mixtape-tonearm" />
+                      </div>
+                      <div className="mt-4 grid w-full grid-cols-3 gap-2 text-center">
+                        <div className="rounded-2xl border border-white/8 bg-black/24 px-3 py-2">
+                          <div className="text-[8px] uppercase tracking-[0.2em] text-white/28">Bass</div>
+                          <div className="mt-1 font-mono text-[11px] text-brand-accent">{Math.round(vaultPulse.bass * 100)}</div>
+                        </div>
+                        <div className="rounded-2xl border border-white/8 bg-black/24 px-3 py-2">
+                          <div className="text-[8px] uppercase tracking-[0.2em] text-white/28">Mids</div>
+                          <div className="mt-1 font-mono text-[11px] text-brand-accent">{Math.round(vaultPulse.mids * 100)}</div>
+                        </div>
+                        <div className="rounded-2xl border border-white/8 bg-black/24 px-3 py-2">
+                          <div className="text-[8px] uppercase tracking-[0.2em] text-white/28">Highs</div>
+                          <div className="mt-1 font-mono text-[11px] text-brand-accent">{Math.round(vaultPulse.highs * 100)}</div>
+                        </div>
+                      </div>
+                    </div>
 
-                  <div className="grid grid-cols-8 gap-1 items-end h-16 mb-4">
-                    {vaultSpectrum.map((bin, idx) => {
-                      const h = 8 + (bin * 54);
-                      return (
-                        <motion.div
-                          key={idx}
-                          animate={{ height: h }}
-                          transition={{ duration: 0.12, ease: 'easeOut' }}
-                          className="rounded-md bg-brand-accent/75"
-                          style={{ opacity: 0.45 + (bin * 0.5) + (vaultPulse.energy * 0.2) }}
-                        />
-                      );
-                    })}
-                  </div>
+                    <div className="rounded-[1.5rem] border border-white/8 bg-black/24 p-4 flex flex-col justify-between min-w-0">
+                      <div className="min-w-0">
+                        <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/28">Now Sealed In The Tape</div>
+                        <div className="mt-3 text-lg md:text-xl font-black uppercase tracking-tight text-white truncate">{currentTrack?.title || 'Aether Secret Session'}</div>
+                        <div className="mt-1 text-[10px] font-black uppercase tracking-[0.22em] text-brand-accent/70 truncate">{currentTrack?.author || 'Unknown Artist'}</div>
+                      </div>
 
-                  <div className="text-center">
-                    <div className="text-[10px] text-white/45 uppercase tracking-[0.3em]">Type <span className="text-brand-accent font-black">mixtape</span> to summon this vault.</div>
-                    <div className="mt-4 flex flex-col items-center gap-2">
-                      <div className="flex flex-wrap items-center justify-center gap-2">
+                      <div className="my-5">
+                        <div className="mixtape-meter grid grid-cols-8 gap-1 items-end h-16">
+                          {vaultSpectrum.map((bin, idx) => {
+                            const h = 12 + (bin * 52);
+                            return (
+                              <div
+                                key={idx}
+                                className="rounded-md bg-brand-accent/75 transition-[height,opacity] duration-200 ease-out"
+                                style={{ height: `${h}px`, opacity: 0.35 + (bin * 0.55) + (vaultPulse.energy * 0.1) }}
+                              />
+                            );
+                          })}
+                        </div>
+                        <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/[0.06]">
+                          <div
+                            className="h-full rounded-full bg-brand-accent shadow-[0_0_18px_rgba(0,255,191,0.28)] transition-[width] duration-200"
+                            style={{ width: `${Math.min(100, Math.max(4, vaultPulse.energy * 100))}%` }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                        <div className="rounded-2xl border border-white/8 bg-white/[0.025] px-4 py-3 min-w-0">
+                          <div className="text-[8px] font-black uppercase tracking-[0.22em] text-white/28">Summon Phrase</div>
+                          <div className="mt-1 text-[10px] text-white/48 uppercase tracking-[0.22em]">Type <span className="text-brand-accent font-black">mixtape</span> anywhere in the app</div>
+                          <div className="mt-2 truncate font-mono text-[9px] uppercase tracking-[0.18em] text-white/34">
+                            {currentTrack?.title ? `${currentTrack.title} // ${formatTime(getActivePlaybackPositionMs())} // ${vaultPulse.stamp}` : vaultPulse.stamp}
+                          </div>
+                        </div>
                         <button
                           onClick={copyVaultSceneEmbed}
-                          className="px-4 py-2 rounded-full border border-brand-accent/30 bg-brand-accent/10 text-[10px] uppercase tracking-[0.24em] text-brand-accent hover:bg-brand-accent hover:text-black transition-all"
+                          className="h-12 rounded-2xl border border-brand-accent/35 bg-brand-accent/12 px-5 text-[10px] font-black uppercase tracking-[0.22em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black active:scale-95"
                         >
                           Copy Live Scene Link
                         </button>
-                      </div>
-                      <div className="text-[10px] text-white/40 font-mono uppercase tracking-[0.18em]">
-                        {currentTrack?.title ? `${currentTrack.title} • ${formatTime(getActivePlaybackPositionMs())} • ${vaultPulse.stamp}` : vaultPulse.stamp}
                       </div>
                     </div>
                   </div>
@@ -12878,6 +13746,7 @@ function App() {
                         <>
                           <button onClick={() => { setQueue((prev) => [normalizeQueueTrack(inspectTrack) || inspectTrack, ...(Array.isArray(prev) ? prev.filter((track) => normalizeTrackIdentity(track) !== normalizeTrackIdentity(inspectTrack)) : [])]); setIsManualStop(false); setIsPlaying(true); setInspectTarget(null); }} className="rounded-xl border border-brand-accent/25 bg-brand-accent/12 px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black">Play Now</button>
                           <button onClick={() => handleAdd(inspectTrack)} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Queue</button>
+                          <button onClick={() => toggleFavoriteTrack(inspectTrack)} className={`rounded-xl border px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${isTrackFavorite(inspectTrack) ? 'border-rose-300/30 bg-rose-400/14 text-rose-200' : 'border-white/10 bg-white/[0.04] text-white/58 hover:border-rose-300/35 hover:text-rose-300'}`}>{isTrackFavorite(inspectTrack) ? 'Unfavorite' : 'Favorite'}</button>
                           <button onClick={() => openLibraryOverlay({ type: 'track', items: [inspectTrack] })} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Vault</button>
                           <button disabled={!inspectSourceUrl} onClick={() => { if (inspectSourceUrl) { if (isStandalone && window.aether?.openExternal) window.aether.openExternal(inspectSourceUrl); else window.open(inspectSourceUrl, '_blank', 'noopener,noreferrer'); } }} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Source</button>
                           <button disabled={!inspectSourceUrl} onClick={() => handleCopyDiagnosticsValue(inspectSourceUrl, 'Source copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Copy URL</button>
@@ -13139,7 +14008,7 @@ function App() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap justify-end">
-                      <button onClick={handleImportVault} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all" title="Import Vault (.aether)">Import</button>
+                      {isStandalone && <button onClick={handleImportVault} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all" title="Import Vault (.aether)">Import</button>}
                       <button onClick={handleGenerateSmartMix} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all" title="Generate Smart Mix">Smart Mix</button>
                       <button onClick={handleCleanVault} disabled={isVaultCleaning} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all disabled:opacity-40" title="Clean Vault">Clean</button>
                       <button onClick={() => { setIsLibraryOverlayOpen(false); setLibraryActionTarget(null); }} className="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close">
@@ -13148,12 +14017,6 @@ function App() {
                     </div>
                  </div>
 
-                 {!isLibraryOverlayContentReady ? (
-                   <div className="flex min-h-[56vh] flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
-                     <Loader2 size={28} className="animate-spin text-brand-accent/70" />
-                     <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/32">Preparing Studio Library</div>
-                   </div>
-                 ) : (
                  <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[0.95fr_1.3fr] gap-4 p-4 md:p-6 overflow-hidden">
                     <div className="glass-card border border-white/8 bg-gradient-to-b from-white/[0.05] to-white/[0.02] rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 shadow-[0_12px_40px_rgba(0,0,0,0.22)]">
                       <div className="px-4 py-4 border-b border-white/8 flex items-center justify-between bg-black/20">
@@ -13224,8 +14087,146 @@ function App() {
                         )}
                       </div>
 
+                      <div className="border-b border-white/8 bg-black/18 p-4 space-y-3">
+                        <div className="relative">
+                          <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
+                          <input
+                            value={librarySearchTerm}
+                            onChange={(e) => setLibrarySearchTerm(e.target.value)}
+                            placeholder={libraryBrowseMode === 'songs' ? 'Search songs, artists, vaults...' : 'Search vaults, songs, artists...'}
+                            className="no-drag w-full rounded-2xl border border-white/10 bg-white/[0.035] py-2.5 pl-9 pr-9 text-[12px] font-bold text-white outline-none transition-colors placeholder:text-white/25 focus:border-brand-accent/35 focus:bg-brand-accent/[0.045]"
+                          />
+                          {librarySearchTerm && (
+                            <button
+                              onClick={() => setLibrarySearchTerm('')}
+                              className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-xl text-white/35 transition-colors hover:text-brand-accent"
+                              title="Clear library search"
+                            >
+                              <X size={13} />
+                            </button>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-2 rounded-2xl border border-white/8 bg-black/28 p-1">
+                          {libraryModeOptions.map((option) => (
+                            <button
+                              key={option.id}
+                              onClick={() => setLibraryBrowseMode(option.id)}
+                              className={`rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${libraryBrowseMode === option.id ? 'bg-brand-accent text-black shadow-[0_0_18px_rgba(0,255,191,0.18)]' : 'text-white/42 hover:text-brand-accent'}`}
+                            >
+                              {option.label}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between gap-3 text-[8px] font-black uppercase tracking-[0.2em] text-white/24">
+                            <span>Filter</span>
+                            <span>{libraryBrowseMode === 'songs' ? 'Track View' : 'Vault View'}</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {(libraryBrowseMode === 'songs' ? librarySongFilterOptions : libraryPlaylistFilterOptions).map((option) => {
+                              const active = libraryBrowseMode === 'songs' ? librarySongFilter === option.id : libraryFilter === option.id;
+                              return (
+                                <button
+                                  key={option.id}
+                                  onClick={() => libraryBrowseMode === 'songs' ? setLibrarySongFilter(option.id) : setLibraryFilter(option.id)}
+                                  className={`rounded-xl border px-2.5 py-1.5 text-[9px] font-black uppercase tracking-[0.14em] transition-all ${active ? 'border-brand-accent/45 bg-brand-accent/15 text-brand-accent' : 'border-white/8 bg-white/[0.025] text-white/42 hover:border-brand-accent/25 hover:text-brand-accent'}`}
+                                >
+                                  {option.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <div className="flex items-center justify-between gap-3 text-[8px] font-black uppercase tracking-[0.2em] text-white/24">
+                            <span>Sort</span>
+                            <span>{libraryBrowseMode === 'songs' ? libraryVisibleSongEntries.length : libraryVisiblePlaylistNames.length + (showFavoriteLibraryCard ? 1 : 0)} shown</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {(libraryBrowseMode === 'songs' ? librarySongSortOptions : libraryPlaylistSortOptions).map((option) => {
+                              const active = libraryBrowseMode === 'songs' ? librarySongSort === option.id : librarySort === option.id;
+                              return (
+                                <button
+                                  key={option.id}
+                                  onClick={() => libraryBrowseMode === 'songs' ? setLibrarySongSort(option.id) : setLibrarySort(option.id)}
+                                  className={`rounded-xl border px-2.5 py-1.5 text-[9px] font-black uppercase tracking-[0.14em] transition-all ${active ? 'border-brand-accent/45 bg-brand-accent/15 text-brand-accent' : 'border-white/8 bg-white/[0.025] text-white/42 hover:border-brand-accent/25 hover:text-brand-accent'}`}
+                                >
+                                  {option.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between text-[9px] font-black uppercase tracking-[0.2em] text-white/28">
+                          <span>{libraryBrowseMode === 'songs' ? `${libraryVisibleSongEntries.length} songs` : `${libraryVisiblePlaylistNames.length + (showFavoriteLibraryCard ? 1 : 0)} vaults`}</span>
+                          <span>{librarySearchNeedle ? 'Filtered' : libraryBrowseMode === 'songs' ? 'Song Index' : 'Browse'}</span>
+                        </div>
+                      </div>
+
                       <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 space-y-3">
-                        {orderedPlaylistNames.map((name) => (
+                        {libraryBrowseMode === 'songs' ? (
+                          <>
+                            {libraryVisibleSongEntries.map((entry) => {
+                              const track = entry.track;
+                              return (
+                                <div
+                                  key={`library-song-${entry.key}`}
+                                  onClick={() => openTrackInspect(track, 'studio-library')}
+                                  className="performance-list-item group rounded-2xl border border-white/8 bg-black/20 p-3 transition-all cursor-pointer hover:border-brand-accent/30 hover:bg-white/[0.03]"
+                                >
+                                  <div className="flex items-center gap-3">
+                                    <img src={getProxyUrl(track.thumbnail)} className="h-12 w-12 rounded-xl border border-white/10 object-cover bg-white/[0.03]" alt="" />
+                                    <div className="min-w-0 flex-1">
+                                      <div className="text-[11px] font-black uppercase tracking-widest text-white truncate group-hover:text-brand-accent transition-colors">{track.title || 'Unknown Track'}</div>
+                                      <div className="mt-1 text-[9px] uppercase tracking-[0.22em] text-white/30 truncate">{track.author || 'Unknown Artist'}</div>
+                                      <div className="mt-1 text-[8px] uppercase tracking-[0.16em] text-white/22 truncate">{entry.playlists.slice(0, 2).join(' / ')}{entry.playlists.length > 2 ? ` +${entry.playlists.length - 2}` : ''}</div>
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                      <button onClick={(e) => { e.stopPropagation(); handleAdd(track); }} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent/70 hover:text-brand-accent hover:bg-brand-accent/20 transition-all" title="Add to queue"><Plus size={12} /></button>
+                                      <button onClick={(e) => { e.stopPropagation(); toggleFavoriteTrack(track); }} className={`p-2 rounded-lg transition-all ${isTrackFavorite(track) ? 'bg-rose-400/12 text-rose-300' : 'bg-white/5 text-white/35 hover:text-rose-300'}`} title={isTrackFavorite(track) ? 'Remove from Favorites' : 'Add to Favorites'}><Heart size={12} fill={isTrackFavorite(track) ? 'currentColor' : 'none'} /></button>
+                                      <button onClick={(e) => { e.stopPropagation(); openTrackInspect(track, 'studio-library'); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title="Inspect"><Eye size={12} /></button>
+                                    </div>
+                                  </div>
+                                  <div className="mt-2 flex items-center justify-between text-[8px] uppercase tracking-[0.18em] text-white/25">
+                                    <span>{getTrackPlayCount(track)} plays</span>
+                                    <span>{getTrackLastListenedMs(track) ? 'Recently played' : getTrackAddedMs(track) ? 'Added' : 'Indexed'}</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            {libraryVisibleSongEntries.length === 0 && (
+                              <div className="rounded-2xl border border-white/8 bg-black/20 p-5 text-center">
+                                <Search size={22} className="mx-auto text-white/25" />
+                                <div className="mt-3 text-[10px] font-black uppercase tracking-[0.22em] text-white/38">No songs match</div>
+                                <button onClick={() => { setLibrarySearchTerm(''); setLibrarySongFilter('all'); }} className="mt-3 rounded-xl border border-brand-accent/25 bg-brand-accent/10 px-3 py-2 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent transition-colors hover:bg-brand-accent hover:text-black">Reset songs</button>
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                        {showFavoriteLibraryCard && (
+                        <div
+                          onClick={() => setViewingPlaylist(FAVORITES_PLAYLIST_ID)}
+                          className={`performance-list-item group rounded-2xl border p-3 transition-all cursor-pointer ${viewingPlaylist === FAVORITES_PLAYLIST_ID ? 'border-rose-300/40 bg-rose-400/12 shadow-[0_0_18px_rgba(251,113,133,0.09)]' : 'border-rose-300/15 bg-rose-400/[0.035] hover:border-rose-300/35 hover:bg-rose-400/[0.06]'}`}
+                        >
+                          <div className="flex items-center justify-between gap-3 mb-2">
+                            <div className="min-w-0">
+                              <div className="text-[9px] font-black uppercase tracking-[0.26em] text-rose-200/45">Built-in Vault</div>
+                              <div className="font-black uppercase tracking-tight truncate group-hover:text-rose-300 transition-colors">{FAVORITES_PLAYLIST_NAME}</div>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              {viewingPlaylist === FAVORITES_PLAYLIST_ID && (
+                                <span className="px-2 py-1 rounded-md bg-rose-400/12 border border-rose-300/25 text-rose-200 text-[8px] font-black uppercase tracking-[0.2em]">Focused</span>
+                              )}
+                              <button onClick={(e) => { e.stopPropagation(); handleFavoriteAddAll(); }} className="p-2 rounded-lg bg-rose-400/10 text-rose-200/80 hover:text-rose-100 hover:bg-rose-400/20 transition-all" title="Queue Favorites"><Plus size={12} /></button>
+                              {isStandalone && <button onClick={(e) => { e.stopPropagation(); handleExportVault(FAVORITES_PLAYLIST_ID); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-rose-200 transition-all" title="Export Favorites"><Download size={12} /></button>}
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between text-[9px] uppercase tracking-[0.2em] text-white/30">
+                            <span>{favoriteTracksList.length} nodes</span>
+                            <span>{favoriteTracksList.length > 0 ? 'Ready' : 'Empty'}</span>
+                          </div>
+                        </div>
+                        )}
+                        {libraryVisiblePlaylistNames.map((name) => (
                           <div
                             key={name}
                             draggable
@@ -13250,16 +14251,32 @@ function App() {
                             <div className="flex items-center justify-between gap-3 mb-2">
                               <div className="min-w-0">
                                 <div className="text-[9px] font-black uppercase tracking-[0.26em] text-white/25">Vault Node</div>
-                                <div className="font-black uppercase tracking-tight truncate group-hover:text-brand-accent transition-colors">{name}</div>
+                                {isRenamingPlaylist === name ? (
+                                  <input
+                                    autoFocus
+                                    className="no-drag w-full rounded-md border border-brand-accent/30 bg-white/5 px-2 py-1 text-[11px] font-black uppercase tracking-tight text-brand-accent outline-none"
+                                    value={renameValue}
+                                    onClick={(e) => e.stopPropagation()}
+                                    onChange={(e) => setRenameValue(e.target.value)}
+                                    onBlur={() => handleRenamePlaylist(name, renameValue)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') handleRenamePlaylist(name, renameValue);
+                                      if (e.key === 'Escape') setIsRenamingPlaylist(null);
+                                    }}
+                                  />
+                                ) : (
+                                  <div className="font-black uppercase tracking-tight truncate group-hover:text-brand-accent transition-colors">{name}</div>
+                                )}
                               </div>
                               <div className="flex items-center gap-1">
                                 {viewingPlaylist === name && (
                                   <span className="px-2 py-1 rounded-md bg-brand-accent/12 border border-brand-accent/25 text-brand-accent text-[8px] font-black uppercase tracking-[0.2em]">Focused</span>
                                 )}
                                 <button onClick={(e) => { e.stopPropagation(); handleAddToPlaylist(name, pendingLibraryItems); }} disabled={!canAddPendingToVault} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent/70 hover:text-brand-accent hover:bg-brand-accent/20 transition-all disabled:opacity-30 disabled:cursor-not-allowed" title={`Add pending context to ${name}`}><Plus size={12} /></button>
+                                <button onClick={(e) => { e.stopPropagation(); setIsRenamingPlaylist(name); setRenameValue(name); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title={`Rename ${name}`}><Edit3 size={12} /></button>
                                 <button onClick={(e) => { e.stopPropagation(); movePlaylist(name, -1); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title="Move up"><ChevronLeft size={12} /></button>
                                 <button onClick={(e) => { e.stopPropagation(); movePlaylist(name, 1); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title="Move down"><ChevronRight size={12} /></button>
-                                <button onClick={(e) => { e.stopPropagation(); handleExportVault(name); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title={`Export ${name} to .aether`}><Download size={12} /></button>
+                                {isStandalone && <button onClick={(e) => { e.stopPropagation(); handleExportVault(name); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title={`Export ${name} to .aether`}><Download size={12} /></button>}
                                 <button onClick={(e) => { e.stopPropagation(); handleDeletePlaylist(name); }} className="p-2 rounded-lg bg-white/5 text-red-400/60 hover:text-red-400 transition-all" title={`Delete ${name}`}><Trash2 size={12} /></button>
                               </div>
                             </div>
@@ -13269,6 +14286,15 @@ function App() {
                             </div>
                           </div>
                         ))}
+                        {!showFavoriteLibraryCard && libraryVisiblePlaylistNames.length === 0 && (
+                          <div className="rounded-2xl border border-white/8 bg-black/20 p-5 text-center">
+                            <Search size={22} className="mx-auto text-white/25" />
+                            <div className="mt-3 text-[10px] font-black uppercase tracking-[0.22em] text-white/38">No vault matches</div>
+                            <button onClick={() => { setLibrarySearchTerm(''); setLibraryFilter('all'); }} className="mt-3 rounded-xl border border-brand-accent/25 bg-brand-accent/10 px-3 py-2 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent transition-colors hover:bg-brand-accent hover:text-black">Reset filters</button>
+                          </div>
+                        )}
+                          </>
+                        )}
                       </div>
                     </div>
 
@@ -13284,18 +14310,36 @@ function App() {
                           <div className="px-4 py-4 border-b border-white/8 flex items-center justify-between bg-black/20">
                             <div className="min-w-0">
                               <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Focused Vault</div>
-                              <div className="text-lg font-black uppercase tracking-tight text-brand-accent truncate">{viewingPlaylist}</div>
-                              <div className="mt-1 text-[9px] uppercase tracking-[0.22em] text-white/35">{(playlists[viewingPlaylist] || []).length} tracks</div>
+                              <div className={`text-lg font-black uppercase tracking-tight truncate ${isViewingFavorites ? 'text-rose-300' : 'text-brand-accent'}`}>{focusedVaultName}</div>
+                              <div className="mt-1 text-[9px] uppercase tracking-[0.22em] text-white/35">{focusedVaultVisibleTracks.length}/{focusedVaultTracks.length} tracks</div>
                             </div>
-                            <div className="flex items-center gap-2">
-                              <button onClick={() => handlePlaylistAddAll(viewingPlaylist)} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent hover:bg-brand-accent hover:text-black transition-all" title={`Add all tracks from ${viewingPlaylist} to queue`}><Plus size={12} /></button>
-                              <button onClick={() => handleExportVault(viewingPlaylist)} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title={`Export ${viewingPlaylist} to .aether`}><Download size={12} /></button>
-                              <button onClick={() => handleDeletePlaylist(viewingPlaylist)} className="p-2 rounded-lg bg-white/5 text-red-400/60 hover:text-red-400 transition-all" title={`Delete ${viewingPlaylist}`}><Trash2 size={12} /></button>
+                            <div className="flex items-center gap-2 flex-wrap justify-end">
+                              <select
+                                value={libraryTrackSort}
+                                onChange={(e) => setLibraryTrackSort(e.target.value)}
+                                className="no-drag rounded-lg border border-white/10 bg-[#0b0f12] px-2 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-white/55 outline-none focus:border-brand-accent/35"
+                                title="Sort tracks"
+                              >
+                                <option value="original">Original</option>
+                                <option value="title">Title</option>
+                                <option value="artist">Artist</option>
+                                <option value="listened-desc">Recently Played</option>
+                                <option value="added-desc">Recently Added</option>
+                                <option value="plays-desc">Most Played</option>
+                                <option value="duration-desc">Longest</option>
+                                <option value="duration-asc">Shortest</option>
+                              </select>
+                              {!isViewingFavorites && (
+                                <button onClick={() => { setIsRenamingPlaylist(viewingPlaylist); setRenameValue(viewingPlaylist); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title={`Rename ${viewingPlaylist}`}><Edit3 size={12} /></button>
+                              )}
+                              <button onClick={() => handlePlaylistAddAll(viewingPlaylist)} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent hover:bg-brand-accent hover:text-black transition-all" title={`Add all tracks from ${focusedVaultName} to queue`}><Plus size={12} /></button>
+                              {isStandalone && <button onClick={() => handleExportVault(viewingPlaylist)} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title={`Export ${focusedVaultName} to .aether`}><Download size={12} /></button>}
+                              <button onClick={() => handleDeletePlaylist(viewingPlaylist)} className="p-2 rounded-lg bg-white/5 text-red-400/60 hover:text-red-400 transition-all" title={isViewingFavorites ? 'Clear Favorites' : `Delete ${viewingPlaylist}`}><Trash2 size={12} /></button>
                               <button onClick={() => setViewingPlaylist(null)} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-red-400 transition-all" title="Back"><ChevronLeft size={12} /></button>
                             </div>
                           </div>
                           <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 space-y-2 bg-gradient-to-b from-brand-accent/5 to-transparent">
-                            {(playlists[viewingPlaylist] || []).map((track, tidx) => (
+                            {focusedVaultVisibleTracks.map((track, tidx) => (
                               <div key={`${viewingPlaylist}-${tidx}`} className="performance-list-item group rounded-2xl border border-white/8 bg-black/20 p-3 flex items-center gap-3 hover:border-brand-accent/30 hover:bg-white/[0.03] transition-all">
                                 <img src={getProxyUrl(track.thumbnail)} className="w-11 h-11 rounded-xl object-cover border border-white/10" alt="" />
                                 <div className="flex-1 min-w-0">
@@ -13303,9 +14347,16 @@ function App() {
                                   <div className="text-[9px] uppercase tracking-[0.22em] text-white/30 truncate mt-1">{track.author}</div>
                                 </div>
                                 <button onClick={() => handleAdd(track)} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent hover:bg-brand-accent hover:text-black transition-all" title="Add to queue"><Plus size={12} /></button>
-                                <button onClick={() => handleRemoveFromPlaylist(viewingPlaylist, tidx)} className="p-2 rounded-lg bg-white/5 text-red-400/50 hover:text-red-400 transition-all" title="Remove"><Trash2 size={12} /></button>
+                                <button onClick={() => toggleFavoriteTrack(track)} className={`p-2 rounded-lg transition-all ${isTrackFavorite(track) ? 'bg-rose-400/12 text-rose-300' : 'bg-white/5 text-white/35 hover:text-rose-300'}`} title={isTrackFavorite(track) ? 'Remove from Favorites' : 'Add to Favorites'}><Heart size={12} fill={isTrackFavorite(track) ? 'currentColor' : 'none'} /></button>
+                                <button onClick={() => handleRemoveTrackFromPlaylist(viewingPlaylist, track, tidx)} className="p-2 rounded-lg bg-white/5 text-red-400/50 hover:text-red-400 transition-all" title="Remove"><Trash2 size={12} /></button>
                               </div>
                             ))}
+                            {focusedVaultVisibleTracks.length === 0 && (
+                              <div className="rounded-2xl border border-white/8 bg-black/20 p-8 text-center">
+                                <Search size={24} className="mx-auto text-white/25" />
+                                <div className="mt-3 text-[10px] font-black uppercase tracking-[0.22em] text-white/38">No tracks match this search</div>
+                              </div>
+                            )}
                           </div>
                         </motion.div>
                       ) : (
@@ -13328,7 +14379,6 @@ function App() {
                       )}
                     </div>
                  </div>
-                 )}
               </motion.div>
            </motion.div>
         )}
@@ -13336,6 +14386,7 @@ function App() {
 
       
       {/* GESTURE NOTICE TOAST */}
+      <ToastPortal>
       <AnimatePresence>
         {gestureNotice && (
           <motion.div
@@ -13344,20 +14395,22 @@ function App() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 16, scale: 0.95 }}
             transition={{ type: 'spring', stiffness: 420, damping: 30 }}
-            className="fixed bottom-24 left-1/2 z-[520] flex -translate-x-1/2 items-center gap-2.5 rounded-2xl border border-brand-accent/30 bg-[#06100d]/94 px-4 py-2.5 text-[10px] font-black uppercase tracking-[0.2em] text-brand-accent shadow-[0_0_28px_rgba(0,255,191,0.18),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl"
+            className="fixed bottom-24 left-1/2 z-[700] flex -translate-x-1/2 items-center gap-2.5 rounded-2xl border border-brand-accent/30 bg-[#06100d]/94 px-4 py-2.5 text-[10px] font-black uppercase tracking-[0.2em] text-brand-accent shadow-[0_0_28px_rgba(0,255,191,0.18),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl"
           >
             <span>{gestureNotice}</span>
           </motion.div>
         )}
       </AnimatePresence>
+      </ToastPortal>
 
+      <ToastPortal>
       <AnimatePresence>
         {volumeToast && (
           <motion.div 
             initial={{ opacity: 0, y: 50, scale: 0.9 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 20, scale: 0.9 }}
-            className="fixed bottom-32 left-1/2 -translate-x-1/2 z-[520] bg-brand-dark/95 backdrop-blur-xl border border-brand-accent/30 px-6 py-3 rounded-2xl flex items-center gap-4 shadow-[0_0_30px_rgba(0,255,191,0.2)]"
+            className="fixed bottom-32 left-1/2 -translate-x-1/2 z-[700] bg-brand-dark/95 backdrop-blur-xl border border-brand-accent/30 px-6 py-3 rounded-2xl flex items-center gap-4 shadow-[0_0_30px_rgba(0,255,191,0.2)]"
           >
             <div className="text-brand-accent font-black text-[10px] tracking-widest uppercase">Volume</div>
             <div className="w-48 h-1 bg-white/10 rounded-full overflow-hidden">
@@ -13367,6 +14420,7 @@ function App() {
           </motion.div>
         )}
       </AnimatePresence>
+      </ToastPortal>
 
       <AnimatePresence>
         {isPlayerOverlayOpen && (
@@ -13581,6 +14635,13 @@ function App() {
                               title="Add to Queue"
                             >
                               <Plus size={14} />
+                            </button>
+                            <button
+                              onClick={() => toggleFavoriteTrack(track)}
+                              className={`opacity-0 group-hover:opacity-100 p-2 rounded-lg transition-all ${isTrackFavorite(track) ? 'bg-rose-400/15 text-rose-300' : 'bg-white/5 hover:bg-rose-400/15 hover:text-rose-300 text-white/45'}`}
+                              title={isTrackFavorite(track) ? 'Remove from Favorites' : 'Add to Favorites'}
+                            >
+                              <Heart size={14} fill={isTrackFavorite(track) ? 'currentColor' : 'none'} />
                             </button>
                             <button
                               onClick={() => openLibraryOverlay({ type: 'track', items: [track] })}
@@ -13826,7 +14887,7 @@ function App() {
                ref={pulseCanvasRef} 
                width={400} 
                height={400} 
-            className={`w-[800px] h-[800px] transition-opacity duration-1000 ${visualizerMode === 'pulse' ? 'opacity-55' : 'opacity-0'}`} 
+            className={`aether-visualizer-canvas w-[800px] h-[800px] transition-opacity duration-1000 ${visualizerMode === 'pulse' ? 'opacity-55' : 'opacity-0'}`}
             />
          </div>
          <div className="absolute inset-0 bg-black/60" />
@@ -14109,6 +15170,7 @@ function App() {
       </AnimatePresence>
 
     </div>
+    </MotionConfig>
   );
 }
 
