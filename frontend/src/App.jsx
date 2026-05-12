@@ -8,6 +8,7 @@ import { motion, AnimatePresence, MotionConfig } from 'framer-motion';
 import { setupDiscordSdk } from './discord';
 import axios from 'axios';
 import { APP_VERSION, BUILD_VERSION, UX_VERSION } from './buildVersion';
+import { buildLibrarySearchIndex, persistLibraryIndexSnapshot } from './libraryIndex';
 import catDoodlePeek from './assets/cat-doodle-peek.svg';
 import './App.css';
 
@@ -8203,36 +8204,62 @@ function App() {
   const librarySongEntries = useMemo(() => {
     const entries = [];
     const seen = new Set();
+    const entryByKey = new Map();
     Object.entries(playlists || {}).forEach(([playlistName, tracks]) => {
       (Array.isArray(tracks) ? tracks : []).forEach((track, index) => {
         const key = normalizeTrackIdentity(track) || `${playlistName}-${index}`;
-        const existing = entries.find((entry) => entry.key === key);
+        const existing = entryByKey.get(key);
         if (existing) {
           if (!existing.playlists.includes(playlistName)) existing.playlists.push(playlistName);
           return;
         }
         seen.add(key);
-        entries.push({ key, track, playlists: [playlistName], playlistName, index });
+        const entry = { key, track, playlists: [playlistName], playlistName, index };
+        entryByKey.set(key, entry);
+        entries.push(entry);
       });
     });
     favoriteTracksList.forEach((track, index) => {
       const key = normalizeTrackIdentity(track) || `${FAVORITES_PLAYLIST_ID}-${index}`;
-      const existing = entries.find((entry) => entry.key === key);
+      const existing = entryByKey.get(key);
       if (existing) {
         existing.isFavorite = true;
         if (!existing.playlists.includes(FAVORITES_PLAYLIST_NAME)) existing.playlists.push(FAVORITES_PLAYLIST_NAME);
         return;
       }
-      if (!seen.has(key)) entries.push({ key, track, playlists: [FAVORITES_PLAYLIST_NAME], playlistName: FAVORITES_PLAYLIST_ID, index, isFavorite: true });
+      if (!seen.has(key)) {
+        const entry = { key, track, playlists: [FAVORITES_PLAYLIST_NAME], playlistName: FAVORITES_PLAYLIST_ID, index, isFavorite: true };
+        entryByKey.set(key, entry);
+        entries.push(entry);
+      }
     });
     return entries;
   }, [favoriteTracksList, normalizeTrackIdentity, playlists]);
+  const librarySearchIndex = useMemo(() => buildLibrarySearchIndex({
+    songEntries: librarySongEntries,
+    playlistNames: orderedPlaylistNames,
+    playlists,
+  }), [librarySongEntries, orderedPlaylistNames, playlists]);
+  const librarySearchMatches = useMemo(
+    () => librarySearchIndex.search(librarySearchNeedle),
+    [librarySearchIndex, librarySearchNeedle]
+  );
+  useEffect(() => {
+    if (!librarySearchIndex.docs.length) return;
+    const handle = window.setTimeout(() => {
+      persistLibraryIndexSnapshot({
+        version: APP_VERSION,
+        docs: librarySearchIndex.docs,
+        songCount: librarySongEntries.length,
+        playlistCount: orderedPlaylistNames.length,
+      });
+    }, 400);
+    return () => window.clearTimeout(handle);
+  }, [librarySearchIndex.docs, librarySongEntries.length, orderedPlaylistNames.length]);
   const libraryVisibleSongEntries = useMemo(() => {
     const matchesSearch = (entry) => {
       if (!librarySearchNeedle) return true;
-      const track = entry.track || {};
-      const haystack = `${track.title || ''} ${track.author || ''} ${entry.playlists.join(' ')}`.toLowerCase();
-      return haystack.includes(librarySearchNeedle);
+      return librarySearchMatches?.songKeys?.has(entry.key);
     };
     const filtered = librarySongEntries.filter((entry) => {
       if (!matchesSearch(entry)) return false;
@@ -8253,14 +8280,11 @@ function App() {
       sorted.sort((a, b) => getLibrarySongSortValue(b, librarySongSort) - getLibrarySongSortValue(a, librarySongSort) || byTitle(a, b));
     }
     return sorted;
-  }, [getLibrarySongSortValue, getTrackLastListenedMs, getTrackPlayCount, librarySearchNeedle, librarySongEntries, librarySongFilter, librarySongSort]);
+  }, [getLibrarySongSortValue, getTrackLastListenedMs, getTrackPlayCount, librarySearchMatches, librarySearchNeedle, librarySongEntries, librarySongFilter, librarySongSort]);
   const libraryVisiblePlaylistNames = useMemo(() => {
     const matchesSearch = (name) => {
       if (!librarySearchNeedle) return true;
-      if (String(name || '').toLowerCase().includes(librarySearchNeedle)) return true;
-      return (playlists[name] || []).some((track) => (
-        `${track?.title || ''} ${track?.author || ''}`.toLowerCase().includes(librarySearchNeedle)
-      ));
+      return librarySearchMatches?.playlistNames?.has(name);
     };
 
     const matchesFilter = (name) => {
@@ -8289,15 +8313,13 @@ function App() {
       sorted.sort((a, b) => getPlaylistLibraryStats(b).playCount - getPlaylistLibraryStats(a).playCount || byName(a, b));
     }
     return sorted;
-  }, [getPlaylistLibraryStats, libraryFilter, librarySearchNeedle, librarySort, orderedPlaylistNames, playlists]);
+  }, [getPlaylistLibraryStats, libraryFilter, librarySearchMatches, librarySearchNeedle, librarySort, orderedPlaylistNames, playlists]);
   const showFavoriteLibraryCard = useMemo(() => {
     if (libraryFilter === 'empty') return false;
     if (!librarySearchNeedle) return true;
     if (FAVORITES_PLAYLIST_NAME.toLowerCase().includes(librarySearchNeedle)) return true;
-    return favoriteTracksList.some((track) => (
-      `${track?.title || ''} ${track?.author || ''}`.toLowerCase().includes(librarySearchNeedle)
-    ));
-  }, [favoriteTracksList, libraryFilter, librarySearchNeedle]);
+    return librarySongEntries.some((entry) => entry.isFavorite && librarySearchMatches?.songKeys?.has(entry.key));
+  }, [libraryFilter, librarySearchMatches, librarySearchNeedle, librarySongEntries]);
   const focusedVaultVisibleTracks = useMemo(() => {
     const focusedNameMatches = String(focusedVaultName || '').toLowerCase().includes(librarySearchNeedle);
     const base = !librarySearchNeedle || focusedNameMatches
@@ -10318,6 +10340,30 @@ function App() {
         placeholder: 'Choose Spotify or Apple Music first',
       };
 
+  const auraStageDurationMs = currentTrack?.totalDurationMs || currentTrack?.duration || 0;
+  const auraStagePulseScale = 1 + livePulseReadout * 0.12;
+  const mixtapeDurationMs = Math.max(0, Number(currentTrack?.totalDurationMs || currentTrack?.duration || 0));
+  const mixtapePositionMs = getActivePlaybackPositionMs();
+  const mixtapeProgressPct = mixtapeDurationMs > 0 ? clamp01(mixtapePositionMs / mixtapeDurationMs) * 100 : 0;
+  const mixtapeLiveLyric = compactLyric || activeLyric || 'No live lyric locked yet';
+  const mixtapeFallbackPulse = useMemo(
+    () => deriveFallbackPulse(currentTrack, mixtapePositionMs, isPlaying),
+    [currentTrack?.author, currentTrack?.id, currentTrack?.title, currentTrack?.youtubeId, isPlaying, mixtapePositionMs]
+  );
+  const hasLivePulseSignal = liveBeatIntensity > 0.015 || vaultPulse.bass > 0.015 || vaultPulse.mids > 0.015 || vaultPulse.highs > 0.015 || vaultPulse.energy > 0.015;
+  const mixtapePulse = hasLivePulseSignal ? vaultPulse : mixtapeFallbackPulse;
+  const mixtapePulseReadout = hasLivePulseSignal ? livePulseReadout : Math.max(mixtapeFallbackPulse.energy, isPlaying ? 0.08 : 0);
+  const mixtapeSpectrum = useMemo(() => {
+    if (hasLivePulseSignal) return vaultSpectrum;
+    const seed = hashStringToUnit(`${currentTrack?.title || ''}|${currentTrack?.author || ''}`);
+    return vaultSpectrum.map((bin, idx) => {
+      const phase = (mixtapePositionMs / 1000) * (0.8 + idx * 0.08) + seed * 6 + idx;
+      const fallback = isPlaying ? clamp01(0.18 + mixtapePulseReadout * 0.55 + Math.sin(phase) * 0.1) : 0.08;
+      return Math.max(bin, fallback);
+    });
+  }, [currentTrack?.author, currentTrack?.title, hasLivePulseSignal, isPlaying, mixtapePositionMs, mixtapePulseReadout, vaultSpectrum]);
+  const mixtapeEnergyPct = Math.round(mixtapePulseReadout * 100);
+
   if (loading) return (
     <div className="h-screen w-full bg-[#0a0a0a] flex flex-col items-center justify-center gap-6 p-6 text-center">
       <div className="relative">
@@ -10920,29 +10966,6 @@ function App() {
     setLastAdded(`Queued ${inspectPlaylistName} (${normalized.length})`);
     setTimeout(() => setLastAdded(null), 2600);
   };
-  const auraStageDurationMs = currentTrack?.totalDurationMs || currentTrack?.duration || 0;
-  const auraStagePulseScale = 1 + livePulseReadout * 0.12;
-  const mixtapeDurationMs = Math.max(0, Number(currentTrack?.totalDurationMs || currentTrack?.duration || 0));
-  const mixtapePositionMs = getActivePlaybackPositionMs();
-  const mixtapeProgressPct = mixtapeDurationMs > 0 ? clamp01(mixtapePositionMs / mixtapeDurationMs) * 100 : 0;
-  const mixtapeLiveLyric = compactLyric || activeLyric || 'No live lyric locked yet';
-  const mixtapeFallbackPulse = useMemo(
-    () => deriveFallbackPulse(currentTrack, mixtapePositionMs, isPlaying),
-    [currentTrack?.author, currentTrack?.id, currentTrack?.title, currentTrack?.youtubeId, isPlaying, mixtapePositionMs]
-  );
-  const hasLivePulseSignal = liveBeatIntensity > 0.015 || vaultPulse.bass > 0.015 || vaultPulse.mids > 0.015 || vaultPulse.highs > 0.015 || vaultPulse.energy > 0.015;
-  const mixtapePulse = hasLivePulseSignal ? vaultPulse : mixtapeFallbackPulse;
-  const mixtapePulseReadout = hasLivePulseSignal ? livePulseReadout : Math.max(mixtapeFallbackPulse.energy, isPlaying ? 0.08 : 0);
-  const mixtapeSpectrum = useMemo(() => {
-    if (hasLivePulseSignal) return vaultSpectrum;
-    const seed = hashStringToUnit(`${currentTrack?.title || ''}|${currentTrack?.author || ''}`);
-    return vaultSpectrum.map((bin, idx) => {
-      const phase = (mixtapePositionMs / 1000) * (0.8 + idx * 0.08) + seed * 6 + idx;
-      const fallback = isPlaying ? clamp01(0.18 + mixtapePulseReadout * 0.55 + Math.sin(phase) * 0.1) : 0.08;
-      return Math.max(bin, fallback);
-    });
-  }, [currentTrack?.author, currentTrack?.title, hasLivePulseSignal, isPlaying, mixtapePositionMs, mixtapePulseReadout, vaultSpectrum]);
-  const mixtapeEnergyPct = Math.round(mixtapePulseReadout * 100);
   const rootModeClass = [
     isVerticalStack ? 'vertical-stack-mode' : '',
     isDoodleMode ? `doodle-mode-active doodle-preset-${doodleIntensity}` : '',
