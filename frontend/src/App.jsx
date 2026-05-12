@@ -12618,7 +12618,9 @@ function App() {
                                 Built-in favorites
                               </div>
                            </div>
-                           <div className="grid grid-cols-3 gap-1.5">
+                           <div className="grid grid-cols-5 gap-1.5">
+                              <button onClick={() => handleFavoritePlayAll(false)} className="vault-project-tool favorite-play" title="Play Favorites"><Play size={11} /></button>
+                              <button onClick={() => handleFavoritePlayAll(true)} className="vault-project-tool favorite-play" title="Shuffle Favorites"><Shuffle size={11} /></button>
                               <button onClick={handleFavoriteAddAll} className="vault-project-tool" title="Queue Favorites"><Plus size={11} /></button>
                               {isStandalone && <button onClick={() => handleExportVault(FAVORITES_PLAYLIST_ID)} className="vault-project-tool" title="Export Favorites"><Download size={11} /></button>}
                               <button onClick={() => setViewingPlaylist(FAVORITES_PLAYLIST_ID)} className="vault-project-tool" title="View Favorites"><Maximize2 size={11} /></button>
@@ -14164,15 +14166,12 @@ function App() {
 
       <AnimatePresence>
           {isLibraryOverlayOpen && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[300] flex items-center justify-center p-4 md:p-6">
-              <div className="absolute inset-0 bg-black/85 backdrop-blur-2xl" onClick={() => { setIsLibraryOverlayOpen(false); setLibraryActionTarget(null); }} />
-              <div className="absolute inset-0 pointer-events-none overflow-hidden">
-               <div className="absolute -top-20 left-1/3 w-80 h-80 rounded-full bg-brand-accent/10 blur-[110px]" />
-               <div className="absolute bottom-0 right-0 w-[32rem] h-[32rem] rounded-full bg-fuchsia-500/10 blur-[140px]" />
-              </div>
-              <motion.div initial={{ scale: 0.95, y: 18 }} animate={{ scale: 1, y: 0 }} className="w-full max-w-6xl h-[88vh] glass-card bg-[#090b0f]/96 border border-brand-accent/20 rounded-[2.2rem] relative z-10 overflow-hidden flex flex-col shadow-[0_28px_100px_rgba(0,0,0,0.55)]">
-                <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-brand-accent/70 to-transparent" />
-                <div className="flex items-center justify-between gap-4 p-5 md:p-6 border-b border-white/8 bg-black/25 backdrop-blur-md">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="studio-library-shell fixed inset-0 z-[300] flex items-center justify-center p-3 md:p-6">
+              <div className="absolute inset-0 bg-black/78 backdrop-blur-[24px]" onClick={() => { setIsLibraryOverlayOpen(false); setLibraryActionTarget(null); }} />
+              <div className="studio-library-backdrop absolute inset-0 pointer-events-none overflow-hidden" />
+              <motion.div initial={{ scale: 0.965, y: 18 }} animate={{ scale: 1, y: 0 }} className="studio-library-modal w-full max-w-[1540px] h-[92vh] bg-[#070a0d]/86 border border-white/10 rounded-[2.25rem] relative z-10 overflow-hidden flex flex-col shadow-[0_32px_110px_rgba(0,0,0,0.62)]">
+                <div className="studio-library-glow-line absolute inset-x-0 top-0 h-px" />
+                <div className="studio-library-topbar flex items-center justify-between gap-4 p-5 md:p-6 border-b border-white/8">
                     <div className="flex items-center gap-4 min-w-0">
                       <div className="w-11 h-11 rounded-2xl bg-brand-accent/10 border border-brand-accent/25 flex items-center justify-center shrink-0">
                         <HardDrive size={18} className="text-brand-accent" />
@@ -14192,8 +14191,8 @@ function App() {
                     </div>
                  </div>
 
-                 <div className="flex-1 min-h-0 h-full grid grid-cols-1 lg:grid-cols-[0.92fr_1.38fr] gap-4 p-3 md:p-5 overflow-y-auto lg:overflow-hidden custom-scrollbar overscroll-contain">
-                    <div className="glass-card border border-white/8 bg-gradient-to-b from-white/[0.05] to-white/[0.02] rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 h-full shadow-[0_12px_40px_rgba(0,0,0,0.22)]">
+                 <div className="studio-library-workspace flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[minmax(380px,0.92fr)_minmax(520px,1.38fr)] gap-4 p-3 md:p-5 overflow-hidden">
+                    <div className="studio-library-column studio-library-left border border-white/8 rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 h-full">
                       <div className="px-4 py-4 border-b border-white/8 flex items-center justify-between bg-black/20">
                         <div>
                           <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Quick Actions</div>
@@ -14209,7 +14208,7 @@ function App() {
                         </div>
                       </div>
 
-                      <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar overscroll-contain p-4 space-y-3 bg-gradient-to-b from-brand-accent/5 to-transparent">
+                      <div className="shrink-0 min-h-0 p-4 space-y-3 bg-gradient-to-b from-brand-accent/5 to-transparent">
                         <div className="flex items-center gap-3 rounded-2xl bg-black/20 border border-brand-accent/20 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
                           {libraryActionTarget?.type === 'queue' ? (
                             <div className="w-12 h-12 rounded-xl bg-brand-accent/10 border border-brand-accent/20 flex items-center justify-center text-brand-accent font-black text-[10px]">Q</div>
@@ -14262,7 +14261,7 @@ function App() {
                         )}
                       </div>
 
-                      <div className="rounded-[1.35rem] border border-white/8 bg-black/18 p-4 space-y-3">
+                      <div className="studio-library-controls shrink-0 border-y border-white/8 bg-black/28 p-4 space-y-3">
                         <div className="relative">
                           <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
                           <input
@@ -14336,7 +14335,7 @@ function App() {
                         </div>
                       </div>
 
-                      <div className="space-y-3 pb-24">
+                      <div className="studio-library-list flex-1 min-h-0 overflow-y-auto custom-scrollbar-heavy overscroll-contain p-4 space-y-3 pb-10">
                         {libraryBrowseMode === 'songs' ? (
                           <>
                             {libraryVisibleSongEntries.map((entry) => {
@@ -14475,7 +14474,7 @@ function App() {
                       </div>
                     </div>
 
-                    <div className="glass-card border border-white/8 bg-gradient-to-b from-white/[0.05] to-white/[0.02] rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 h-full shadow-[0_12px_40px_rgba(0,0,0,0.22)]">
+                    <div className="studio-library-column studio-library-focus border border-white/8 rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 h-full">
                       {viewingPlaylist ? (
                         <motion.div
                           key={viewingPlaylist}
