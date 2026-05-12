@@ -275,6 +275,24 @@ const parseManualLyricsLrcText = (input = '') => {
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
 const lerp = (a, b, t) => a + (b - a) * t;
 const alphaHex = (a) => Math.round(clamp01(a) * 255).toString(16).padStart(2, '0');
+const hashStringToUnit = (value) => {
+  const text = String(value || '');
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return ((hash >>> 0) % 1000) / 1000;
+};
+const deriveFallbackPulse = (track, positionMs = 0, playing = false) => {
+  if (!playing) return { bass: 0, mids: 0, highs: 0, energy: 0 };
+  const seed = hashStringToUnit(`${track?.title || ''}|${track?.author || ''}|${track?.youtubeId || track?.id || ''}`);
+  const t = Math.max(0, Number(positionMs) || 0) / 1000;
+  const bass = clamp01(0.18 + Math.sin(t * (1.55 + seed * 0.7) + seed * 6.28) * 0.12 + Math.sin(t * 0.38 + seed) * 0.08);
+  const mids = clamp01(0.15 + Math.sin(t * (1.05 + seed * 0.55) + 1.7) * 0.09 + Math.sin(t * 0.29 + seed * 4) * 0.07);
+  const highs = clamp01(0.11 + Math.sin(t * (2.15 + seed * 0.45) + 2.3) * 0.08 + Math.sin(t * 0.52 + seed * 5) * 0.05);
+  return { bass, mids, highs, energy: clamp01(bass * 0.46 + mids * 0.34 + highs * 0.2) };
+};
 const clampChannel = (value) => Math.max(0, Math.min(255, Math.round(Number(value) || 0)));
 const rgbToHex = (r, g, b) => `#${[r, g, b].map((channel) => clampChannel(channel).toString(16).padStart(2, '0')).join('')}`;
 const hslToRgb = (h, s, l) => {
@@ -4035,6 +4053,11 @@ function App() {
   const copyVaultSceneEmbed = useCallback(async () => {
     const totalDurationMs = currentTrack?.totalDurationMs || currentTrack?.duration || 0;
     const currentMs = getActivePlaybackPositionMs();
+    const sceneFallbackPulse = deriveFallbackPulse(currentTrack, currentMs, isPlaying);
+    const sceneLivePulse = vaultPulseRef.current || vaultPulse;
+    const hasScenePulseSignal = clamp01(sceneLivePulse.energy) + clamp01(sceneLivePulse.bass) + clamp01(sceneLivePulse.mids) + clamp01(sceneLivePulse.highs) > 0.035;
+    const scenePulse = hasScenePulseSignal ? sceneLivePulse : sceneFallbackPulse;
+    const sceneEnergy = hasScenePulseSignal ? (isPlaying ? Math.max(scenePulse.energy, livePulseReadout) : scenePulse.energy) : scenePulse.energy;
     const lyricLine = (() => {
       if (!Array.isArray(lyrics) || lyrics.length === 0) return 'No lyric locked yet';
       const line = [...lyrics].reverse().find((l) => l.time <= currentMs);
@@ -4053,10 +4076,10 @@ function App() {
       s: isPlaying ? 1 : 0,
       m: visualizerMode === 'pulse' ? 1 : 0,
       p: [
-        Math.round(clamp01(isPlaying ? Math.max(vaultPulse.energy, livePulseReadout) : vaultPulse.energy) * 100),
-        Math.round(clamp01(vaultPulse.bass) * 100),
-        Math.round(clamp01(vaultPulse.mids) * 100),
-        Math.round(clamp01(vaultPulse.highs) * 100),
+        Math.round(clamp01(sceneEnergy) * 100),
+        Math.round(clamp01(scenePulse.bass) * 100),
+        Math.round(clamp01(scenePulse.mids) * 100),
+        Math.round(clamp01(scenePulse.highs) * 100),
       ],
       c: themeColor,
     };
@@ -4092,7 +4115,7 @@ function App() {
       setLastAdded('Scene link unavailable');
       setTimeout(() => setLastAdded(null), 2200);
     }
-  }, [appendRecentEvent, currentTrack?.actualUrl, currentTrack?.author, currentTrack?.duration, currentTrack?.thumbnail, currentTrack?.title, currentTrack?.youtubeId, formatTime, getActivePlaybackPositionMs, isPlaying, livePulseReadout, lyrics, themeColor, visualizerMode, vaultPulse.bass, vaultPulse.energy, vaultPulse.highs, vaultPulse.mids]);
+  }, [appendRecentEvent, currentTrack, currentTrack?.actualUrl, currentTrack?.author, currentTrack?.duration, currentTrack?.thumbnail, currentTrack?.title, currentTrack?.youtubeId, formatTime, getActivePlaybackPositionMs, isPlaying, livePulseReadout, lyrics, themeColor, visualizerMode, vaultPulse]);
 
   const refreshLockStatus = useCallback(async () => {
     if (!isStandalone || !window.aether?.getLockStatus) return;
@@ -6278,12 +6301,12 @@ function App() {
           }
 
           // Throttle React state updates; CSS variables carry the smoother beat response.
-          const now = Date.now();
-          const vaultUiGap = livePerformanceMode === 'high' ? 180 : 360;
-          if (now - lastVaultStateUpdateRef.current > vaultUiGap) {
+          const stateNow = Date.now();
+          const vaultUiGap = livePerformanceMode === 'high' ? 260 : 520;
+          if (stateNow - lastVaultStateUpdateRef.current > vaultUiGap) {
             setVaultPulse(pulseData);
             setVaultSpectrum((prev) => sampledBars.map((v, idx) => lerp(prev[idx] ?? 0, v, 0.45)));
-            lastVaultStateUpdateRef.current = now;
+            lastVaultStateUpdateRef.current = stateNow;
           }
         }
 
@@ -10903,7 +10926,23 @@ function App() {
   const mixtapePositionMs = getActivePlaybackPositionMs();
   const mixtapeProgressPct = mixtapeDurationMs > 0 ? clamp01(mixtapePositionMs / mixtapeDurationMs) * 100 : 0;
   const mixtapeLiveLyric = compactLyric || activeLyric || 'No live lyric locked yet';
-  const mixtapeEnergyPct = Math.round(livePulseReadout * 100);
+  const mixtapeFallbackPulse = useMemo(
+    () => deriveFallbackPulse(currentTrack, mixtapePositionMs, isPlaying),
+    [currentTrack?.author, currentTrack?.id, currentTrack?.title, currentTrack?.youtubeId, isPlaying, mixtapePositionMs]
+  );
+  const hasLivePulseSignal = liveBeatIntensity > 0.015 || vaultPulse.bass > 0.015 || vaultPulse.mids > 0.015 || vaultPulse.highs > 0.015 || vaultPulse.energy > 0.015;
+  const mixtapePulse = hasLivePulseSignal ? vaultPulse : mixtapeFallbackPulse;
+  const mixtapePulseReadout = hasLivePulseSignal ? livePulseReadout : Math.max(mixtapeFallbackPulse.energy, isPlaying ? 0.08 : 0);
+  const mixtapeSpectrum = useMemo(() => {
+    if (hasLivePulseSignal) return vaultSpectrum;
+    const seed = hashStringToUnit(`${currentTrack?.title || ''}|${currentTrack?.author || ''}`);
+    return vaultSpectrum.map((bin, idx) => {
+      const phase = (mixtapePositionMs / 1000) * (0.8 + idx * 0.08) + seed * 6 + idx;
+      const fallback = isPlaying ? clamp01(0.18 + mixtapePulseReadout * 0.55 + Math.sin(phase) * 0.1) : 0.08;
+      return Math.max(bin, fallback);
+    });
+  }, [currentTrack?.author, currentTrack?.title, hasLivePulseSignal, isPlaying, mixtapePositionMs, mixtapePulseReadout, vaultSpectrum]);
+  const mixtapeEnergyPct = Math.round(mixtapePulseReadout * 100);
   const rootModeClass = [
     isVerticalStack ? 'vertical-stack-mode' : '',
     isDoodleMode ? `doodle-mode-active doodle-preset-${doodleIntensity}` : '',
@@ -13524,13 +13563,14 @@ function App() {
               exit={{ scale: 0.96, y: 8 }}
               ref={mixtapeVaultRef}
               style={{
-                '--vault-bass': vaultPulse.bass,
-                '--vault-mids': vaultPulse.mids,
-                '--vault-highs': vaultPulse.highs,
-                '--vault-energy': vaultPulse.energy,
-                '--vault-scale': 1 + (vaultPulse.energy * 0.1),
-                '--vault-spin': `${vaultPulse.spin}deg`,
-                '--vault-glow': vaultPulse.energy,
+                '--vault-bass': mixtapePulse.bass,
+                '--vault-mids': mixtapePulse.mids,
+                '--vault-highs': mixtapePulse.highs,
+                '--vault-energy': mixtapePulse.energy,
+                '--vault-scale': 1 + (mixtapePulse.energy * 0.1),
+                '--vault-spin': `${vaultPulse.spin || 0}deg`,
+                '--vault-glow': mixtapePulseReadout,
+                '--mixtape-progress': mixtapeProgressPct / 100,
               }}
               className="mixtape-vault-shell relative w-[min(94vw,920px)] rounded-[2rem] border border-brand-accent/25 bg-[#07090c]/96 shadow-[0_0_80px_rgba(0,255,191,0.14)] overflow-hidden"
               onClick={(e) => e.stopPropagation()}
@@ -13538,30 +13578,22 @@ function App() {
               <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-brand-accent/70 to-transparent" />
 
               <div className="p-5 md:p-7">
-                <div className="flex items-start justify-between gap-4 mb-6">
-                  <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-11 h-11 flex items-center justify-center rounded-2xl border border-brand-accent/40 bg-brand-accent/10 shadow-[0_0_24px_rgba(0,255,191,0.12)]">
-                    <Music size={18} className="text-brand-accent" />
-                  </div>
-                  <div className="min-w-0">
-                    <h2 className="text-brand-accent font-black text-xl md:text-2xl tracking-[0.16em] uppercase leading-none">Mixtape Vault</h2>
-                    <span className="text-white/45 text-[9px] font-mono tracking-[0.2em] uppercase">Private live scene // tape deck</span>
-                    <div className="mt-2 text-[11px] font-black text-white/85 truncate">{currentTrack?.title || 'Aether Secret Session'}</div>
-                    <div className="mt-1 text-[9px] uppercase tracking-[0.22em] text-brand-accent/70 truncate">{currentTrack?.author || 'Unknown Artist'}</div>
-                  </div>
-                  </div>
-                  <div className="flex items-center gap-3 shrink-0">
-                    <div className="rounded-2xl border border-white/10 bg-black/25 px-3 py-2 text-right">
-                      <div className="text-[8px] font-black uppercase tracking-[0.22em] text-white/35">Scene Time</div>
-                      <div className="mt-1 text-[11px] font-mono text-brand-accent">{formatTime(mixtapePositionMs)}</div>
+                <div className="relative mb-6 flex items-center justify-center text-center">
+                  <div className="min-w-0 px-14">
+                    <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border border-brand-accent/40 bg-brand-accent/10 shadow-[0_0_24px_rgba(0,255,191,0.12)]">
+                      <Music size={18} className="text-brand-accent" />
                     </div>
+                    <h2 className="text-brand-accent font-black text-xl md:text-2xl tracking-[0.16em] uppercase leading-none">Mixtape Vault</h2>
+                    <span className="mt-2 block text-white/45 text-[9px] font-mono tracking-[0.2em] uppercase">Private live scene // tape deck</span>
+                    <div className="mx-auto mt-3 max-w-xl truncate text-[11px] font-black text-white/85">{currentTrack?.title || 'Aether Secret Session'}</div>
+                    <div className="mx-auto mt-1 max-w-sm truncate text-[9px] uppercase tracking-[0.22em] text-brand-accent/70">{currentTrack?.author || 'Unknown Artist'}</div>
+                  </div>
                     <button
                       onClick={() => setIsMixtapeVaultOpen(false)}
-                      className={sharedModalCloseButtonClass}
+                      className={`${sharedModalCloseButtonClass} absolute right-0 top-0`}
                     >
                       <X size={16} />
                     </button>
-                  </div>
                 </div>
 
                 {!isMixtapeVaultContentReady ? (
@@ -13584,19 +13616,22 @@ function App() {
                           />
                           <div className="mixtape-record-pin" />
                         </div>
+                        <div className={`mixtape-tonearm ${isPlaying ? 'is-playing' : ''}`}>
+                          <div className="mixtape-tonearm-head" />
+                        </div>
                       </div>
                       <div className="mt-4 grid w-full grid-cols-3 gap-2 text-center">
                         <div className="rounded-2xl border border-white/8 bg-black/24 px-3 py-2">
                           <div className="text-[8px] uppercase tracking-[0.2em] text-white/28">Bass</div>
-                          <div className="mt-1 font-mono text-[11px] text-brand-accent">{Math.round(Math.max(vaultPulse.bass, livePulseReadout * 0.35) * 100)}</div>
+                          <div className="mt-1 font-mono text-[11px] text-brand-accent">{Math.round(clamp01(mixtapePulse.bass) * 100)}</div>
                         </div>
                         <div className="rounded-2xl border border-white/8 bg-black/24 px-3 py-2">
                           <div className="text-[8px] uppercase tracking-[0.2em] text-white/28">Mids</div>
-                          <div className="mt-1 font-mono text-[11px] text-brand-accent">{Math.round(Math.max(vaultPulse.mids, livePulseReadout * 0.28) * 100)}</div>
+                          <div className="mt-1 font-mono text-[11px] text-brand-accent">{Math.round(clamp01(mixtapePulse.mids) * 100)}</div>
                         </div>
                         <div className="rounded-2xl border border-white/8 bg-black/24 px-3 py-2">
                           <div className="text-[8px] uppercase tracking-[0.2em] text-white/28">Highs</div>
-                          <div className="mt-1 font-mono text-[11px] text-brand-accent">{Math.round(Math.max(vaultPulse.highs, livePulseReadout * 0.22) * 100)}</div>
+                          <div className="mt-1 font-mono text-[11px] text-brand-accent">{Math.round(clamp01(mixtapePulse.highs) * 100)}</div>
                         </div>
                       </div>
                     </div>
@@ -13610,13 +13645,13 @@ function App() {
 
                       <div className="my-5">
                         <div className="mixtape-meter grid grid-cols-8 gap-1 items-end h-16">
-                          {vaultSpectrum.map((bin, idx) => {
+                          {mixtapeSpectrum.map((bin, idx) => {
                             const h = 12 + (bin * 52);
                             return (
                               <div
                                 key={idx}
                                 className="mixtape-meter-cell rounded-md bg-brand-accent/75 transition-[height,opacity] duration-200 ease-out"
-                                style={{ height: `${h}px`, opacity: 0.35 + (bin * 0.55) + (livePulseReadout * 0.18), '--meter-index': idx }}
+                                style={{ height: `${h}px`, opacity: 0.35 + (bin * 0.55) + (mixtapePulseReadout * 0.18), '--meter-index': idx }}
                               />
                             );
                           })}
@@ -13638,7 +13673,7 @@ function App() {
                           <div className="text-[8px] font-black uppercase tracking-[0.22em] text-white/28">Live Lyric</div>
                           <div className="mt-1 line-clamp-2 text-sm font-black leading-snug text-brand-accent">{mixtapeLiveLyric}</div>
                           <div className="mt-2 truncate font-mono text-[9px] uppercase tracking-[0.18em] text-white/34">
-                            Pulse {mixtapeEnergyPct}% / {vaultPulse.stamp}
+                            Pulse {mixtapeEnergyPct}% / {vaultPulse.stamp || 'AETHER-PULSE'}
                           </div>
                         </div>
                         <button

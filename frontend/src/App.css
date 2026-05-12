@@ -968,6 +968,61 @@ body.perf-low .active\:scale-\[0\.98\] {
   box-shadow: 0 0 20px rgba(var(--brand-accent-rgb), 0.7);
 }
 
+.mixtape-tonearm {
+  position: absolute;
+  left: 57%;
+  top: 13%;
+  width: 42%;
+  height: 42%;
+  transform-origin: 12% 12%;
+  transform: rotate(calc(18deg + (var(--mixtape-progress, 0) * 18deg)));
+  transition: transform 260ms ease;
+  pointer-events: none;
+}
+
+.mixtape-tonearm::before {
+  content: "";
+  position: absolute;
+  left: 10%;
+  top: 10%;
+  width: 5px;
+  height: 72%;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.62), rgba(var(--brand-accent-rgb), 0.75));
+  box-shadow: 0 0 calc(14px + (var(--vault-energy, 0) * 22px)) rgba(var(--brand-accent-rgb), 0.35);
+}
+
+.mixtape-tonearm::after {
+  content: "";
+  position: absolute;
+  left: 4%;
+  top: 4%;
+  width: 18px;
+  aspect-ratio: 1;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(255,255,255,0.95) 0 2px, transparent 3px),
+    linear-gradient(135deg, #2f3137, #111217);
+  border: 1px solid rgba(255,255,255,0.16);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.38);
+}
+
+.mixtape-tonearm-head {
+  position: absolute;
+  left: -2%;
+  top: 76%;
+  width: 18px;
+  height: 22px;
+  border-radius: 8px 8px 4px 4px;
+  transform: rotate(-12deg);
+  background: linear-gradient(180deg, var(--brand-accent), rgba(var(--brand-accent-rgb), 0.42));
+  box-shadow: 0 0 calc(16px + (var(--vault-energy, 0) * 24px)) rgba(var(--brand-accent-rgb), 0.55);
+}
+
+.mixtape-tonearm.is-playing .mixtape-tonearm-head {
+  animation: mixtape-stylus-pulse 0.9s ease-in-out infinite;
+}
+
 .mixtape-meter {
   padding: 10px;
   border-radius: 18px;
@@ -983,6 +1038,7 @@ body.perf-low .active\:scale-\[0\.98\] {
 
 body.perf-low .mixtape-record.is-playing,
 body.perf-low .mixtape-record,
+body.perf-low .mixtape-tonearm.is-playing .mixtape-tonearm-head,
 body.perf-low .mixtape-meter-cell {
   animation: none !important;
 }
@@ -999,6 +1055,15 @@ body.perf-low .mixtape-meter-cell {
   }
   50% {
     transform: scaleY(calc(1 + (var(--vault-energy, 0) * 0.32)));
+  }
+}
+
+@keyframes mixtape-stylus-pulse {
+  0%, 100% {
+    transform: rotate(-12deg) translateY(0);
+  }
+  50% {
+    transform: rotate(-12deg) translateY(calc(-1px - (var(--vault-energy, 0) * 3px)));
   }
 }
 
