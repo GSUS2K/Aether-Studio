@@ -2,9 +2,8 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, Com
 import { createPortal } from 'react-dom';
 // NOTE: Many async operations and state changes below may be subject to race conditions if triggered rapidly.
 // Consider debouncing or locking for critical flows (e.g., downloads, updates, queue changes).
-import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, VolumeX, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles, Clapperboard, Columns2, Repeat, MessageSquare, Send, Layers, Eye, Hand, MousePointer2, Camera, Copy, Check, Heart, Link2, Mic, MicOff } from 'lucide-react';
+import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, VolumeX, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles, Clapperboard, Columns2, Repeat, MessageSquare, Send, Layers, Eye, Hand, MousePointer2, Camera, Copy, Check, Heart, Link2 } from 'lucide-react';
 
-import { useOfflineVoice } from "./useOfflineVoice.js";
 import { motion, AnimatePresence, MotionConfig } from 'framer-motion';
 import { setupDiscordSdk } from './discord';
 import axios from 'axios';
@@ -12,6 +11,8 @@ import { APP_VERSION, BUILD_VERSION, UX_VERSION } from './buildVersion';
 import { buildLibrarySearchIndex, persistLibraryIndexSnapshot } from './libraryIndex';
 import catDoodlePeek from './assets/cat-doodle-peek.svg';
 import './App.css';
+
+const getAssetUrl = (assetPath) => `${import.meta.env.BASE_URL || '/'}${assetPath}`;
 
 // --- Memoized Mixtape subcomponents to reduce App re-renders ---
 const MixtapeLeft = memo(function MixtapeLeft({ cassetteSide, mixtapePulse, mixtapePulseReadout, mixtapeSpectrum, clamp01, isPlaying }) {
@@ -65,12 +66,12 @@ const MixtapeLeft = memo(function MixtapeLeft({ cassetteSide, mixtapePulse, mixt
           <div className="w-full relative transition-transform duration-[1.2s] ease-[cubic-bezier(0.2,0.8,0.2,1)]" style={{ transformStyle: 'preserve-3d', transform: isSideB ? 'rotateY(180deg)' : 'rotateY(0deg)' }}>
 
             <div className="w-full relative" style={{ backfaceVisibility: 'hidden' }}>
-              <img src="/cassette_a.png" className="w-full h-auto block cassette-glow" alt="Cassette Side A" />
+              <img src={getAssetUrl('cassette_a.png')} className="w-full h-auto block cassette-glow" alt="Cassette Side A" />
               {renderVisualizer()}
             </div>
 
             <div className="absolute inset-0 w-full h-full" style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}>
-              <img src="/cassette_b.png" className="w-full h-full object-contain block cassette-glow" alt="Cassette Side B" />
+              <img src={getAssetUrl('cassette_b.png')} className="w-full h-full object-contain block cassette-glow" alt="Cassette Side B" />
               {renderVisualizer()}
             </div>
 
@@ -2387,20 +2388,61 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
     ledgerLiveIntervalRef.current = 0;
   }, []);
 
+  const scoreLedgerPayload = useCallback((payload) => {
+    const data = normalizePlaybackLedgerData(payload);
+    const totalTracksPlayed = Math.max(0, Math.floor(Number(data.totalPlays) || 0));
+    const totalSessions = Math.max(0, Math.floor(Number(data.totalSessions) || 0));
+    const totalMs = Math.max(0, Math.floor(Number(data.totalMs) || 0));
+    const tracks = Object.keys(data.tracks || {}).length;
+    const sessions = Array.isArray(data.recentSessions) ? data.recentSessions.length : 0;
+    return { data, score: (totalTracksPlayed * 1000000) + (totalSessions * 100000) + totalMs + (tracks * 1000) + sessions };
+  }, []);
+
   const loadLedger = useCallback(async () => {
     try {
       setLedgerError('');
-      let data = null;
+      const candidates = [];
       if (window.aether?.store?.get) {
-        data = await window.aether.store.get(PLAYBACK_LEDGER_STORAGE_KEY);
-      } else if (typeof localStorage !== 'undefined') {
-        const raw = localStorage.getItem(PLAYBACK_LEDGER_STORAGE_KEY);
-        data = raw ? JSON.parse(raw) : null;
+        candidates.push(await window.aether.store.get(PLAYBACK_LEDGER_STORAGE_KEY));
       }
-      const normalized = normalizePlaybackLedgerData(data);
+      if (window.aether?.getPlaybackLedger) {
+        candidates.push(await window.aether.getPlaybackLedger());
+      }
+      if (typeof localStorage !== 'undefined') {
+        const raw = localStorage.getItem(PLAYBACK_LEDGER_STORAGE_KEY);
+        if (raw) candidates.push(JSON.parse(raw));
+      }
+      try {
+        // Temporary debug logs to help trace why Sync shows empty
+        // Prints raw candidate payloads before scoring
+        // Visible in renderer DevTools console when clicking Sync
+        // and in terminal when running the dev server
+        // eslint-disable-next-line no-console
+        console.debug('[Aether] Ledger candidates (raw)', candidates);
+      } catch (e) {}
+      const bestCandidate = candidates
+        .map((payload) => scoreLedgerPayload(payload))
+        .sort((left, right) => right.score - left.score)[0] || scoreLedgerPayload(null);
+      try {
+        // eslint-disable-next-line no-console
+        console.debug('[Aether] Ledger bestCandidate', bestCandidate && { score: bestCandidate.score, dataSummary: { totalPlays: bestCandidate.data.totalPlays, totalMs: bestCandidate.data.totalMs, tracks: Object.keys(bestCandidate.data.tracks || {}).length } });
+      } catch (e) {}
+      const normalized = bestCandidate.data;
       if (!ledgerMountedRef.current) return normalized;
       setSoundCapsuleData(normalized);
       setLastUpdatedAt(Date.now());
+      if (window.aether?.store?.set) {
+        try {
+          await window.aether.store.set(PLAYBACK_LEDGER_STORAGE_KEY, normalized);
+        } catch (syncError) {
+          console.warn('[Aether] Failed to persist Signal Ledger after refresh', syncError);
+        }
+      }
+      if (typeof localStorage !== 'undefined') {
+        try {
+          localStorage.setItem(PLAYBACK_LEDGER_STORAGE_KEY, JSON.stringify(normalized));
+        } catch { }
+      }
       return normalized;
     } catch (error) {
       if (!ledgerMountedRef.current) return normalizePlaybackLedgerData(null);
@@ -2409,7 +2451,7 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
       setSoundCapsuleData(fallback);
       return fallback;
     }
-  }, []);
+  }, [scoreLedgerPayload]);
 
   const soundLedgerView = useMemo(() => {
     const data = normalizePlaybackLedgerData(soundCapsuleData);
@@ -2536,7 +2578,12 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
   }, []);
 
   const syncLedger = useCallback(async () => {
-    await loadLedger();
+    const res = await loadLedger();
+    const committed = normalizePlaybackLedgerData(res);
+    if (ledgerMountedRef.current) {
+      setSoundCapsuleData(committed);
+      setLastUpdatedAt(Date.now());
+    }
     setLastAdded?.('Signal Ledger synced');
     window.setTimeout(() => setLastAdded?.(null), 2200);
   }, [loadLedger, setLastAdded]);
@@ -2580,7 +2627,8 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
       const emptyLedger = createPlaybackLedgerData();
       if (window.aether?.store?.set) {
         await window.aether.store.set(PLAYBACK_LEDGER_STORAGE_KEY, emptyLedger);
-      } else if (typeof localStorage !== 'undefined') {
+      }
+      if (typeof localStorage !== 'undefined') {
         localStorage.setItem(PLAYBACK_LEDGER_STORAGE_KEY, JSON.stringify(emptyLedger));
       }
       setSoundCapsuleData(emptyLedger);
@@ -10581,9 +10629,22 @@ function App() {
   }, [queue, downloadedTracks, isPlaying, API_BASE, streamPort, playbackResetNonce, isStandalone]);
 
   const logSoundCapsulePlayback = useCallback(async (track, options = {}) => {
-    if (!track || !isStandalone || !window.aether?.store) return;
+    if (!track) return;
     try {
-      const data = normalizePlaybackLedgerData(await window.aether.store.get(PLAYBACK_LEDGER_STORAGE_KEY));
+      const candidatePayloads = [];
+      if (window.aether?.store?.get) {
+        candidatePayloads.push(await window.aether.store.get(PLAYBACK_LEDGER_STORAGE_KEY));
+      }
+      if (window.aether?.getPlaybackLedger) {
+        candidatePayloads.push(await window.aether.getPlaybackLedger());
+      }
+      if (typeof localStorage !== 'undefined') {
+        const raw = localStorage.getItem(PLAYBACK_LEDGER_STORAGE_KEY);
+        if (raw) candidatePayloads.push(JSON.parse(raw));
+      }
+      const data = candidatePayloads
+        .map((payload) => scoreLedgerPayload(payload))
+        .sort((left, right) => right.score - left.score)[0]?.data || normalizePlaybackLedgerData(null);
       const now = new Date();
       const hour = now.getHours();
       const day = now.getDay();
@@ -10678,7 +10739,12 @@ function App() {
         ...(Array.isArray(data.recentSessions) ? data.recentSessions : []).filter((entry) => entry?.id !== sessionId),
       ].slice(0, 24);
 
-      await window.aether.store.set(PLAYBACK_LEDGER_STORAGE_KEY, data);
+      if (window.aether?.store?.set) {
+        await window.aether.store.set(PLAYBACK_LEDGER_STORAGE_KEY, data);
+      }
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(PLAYBACK_LEDGER_STORAGE_KEY, JSON.stringify(data));
+      }
       ledgerSessionRef.current = {
         id: sessionId,
         trackKey,
@@ -10686,7 +10752,7 @@ function App() {
         lastLoggedMs: Math.max(playedMs, previousLoggedMs),
       };
     } catch (e) { console.error('[Aether] Sound capsule write failed', e); }
-  }, [isStandalone, normalizeTrackIdentity]);
+  }, [normalizeTrackIdentity]);
 
   useEffect(() => {
     ledgerSessionRef.current = { id: '', trackKey: '', counted: false, lastLoggedMs: 0 };
@@ -11034,188 +11100,6 @@ function App() {
   const handleLyricLineSeek = useCallback((lineTime) => {
     handleSeek(lineTime + (currentTrackRef.current?.introOffsetMs || 0) + (lyricOffsetMs || 0));
   }, [handleSeek, lyricOffsetMs]);
-
-  // ─── VOICE CONTROL ENGINE (OFFLINE) ──────────────────────────────────────
-  const [voiceToast, setVoiceToast] = useState(null);
-  const voiceToastTimerRef = useRef(null);
-  const showVoiceToast = useCallback((message, type = "info", duration = 3200) => {
-    if (voiceToastTimerRef.current) clearTimeout(voiceToastTimerRef.current);
-    setVoiceToast({ message, type });
-    voiceToastTimerRef.current = setTimeout(() => setVoiceToast(null), duration);
-  }, []);
-
-  const fuzzyMatchBest = useCallback((needle, candidates) => {
-    const n = needle.toLowerCase().trim();
-    const exact = candidates.find(c => c.toLowerCase().trim() === n);
-    if (exact) return exact;
-    const contains = candidates.find(c => c.toLowerCase().includes(n) || n.includes(c.toLowerCase()));
-    if (contains) return contains;
-    const nWords = n.split(/\s+/).filter(w => w.length > 2);
-    let best = null, bestScore = 0;
-    for (const c of candidates) {
-      const cWords = c.toLowerCase().split(/\s+/);
-      const hits = nWords.filter(w => cWords.some(cw => cw.includes(w) || w.includes(cw))).length;
-      const score = hits / Math.max(nWords.length, 1);
-      if (score > bestScore) { bestScore = score; best = c; }
-    }
-    return bestScore >= 0.4 ? best : null;
-  }, []);
-
-
-  const handleVoiceCommand = useCallback((rawTranscript) => {
-    const t = rawTranscript.toLowerCase().trim();
-    setVoiceTranscript(rawTranscript);
-    setVoiceStatus('processing');
-
-    // ── PAUSE / STOP ───────────────────────────────────────────────────────
-    if (/^(aether\s+)?(pause|stop( music| song| playback)?)$/.test(t)) {
-      handleControl('pause');
-      showVoiceToast('⏸  Paused', 'success'); setVoiceStatus('listening'); return;
-    }
-    // ── RESUME / PLAY (no args) ────────────────────────────────────────────
-    if (/^(aether\s+)?(resume|continue|unpause)( music| playback)?$/.test(t)) {
-      handleControl('resume');
-      showVoiceToast('▶  Resumed', 'success'); setVoiceStatus('listening'); return;
-    }
-    // ── NEXT / PREVIOUS ───────────────────────────────────────────────────
-    if (/^(aether\s+)?(next|skip( (song|track|this))?|next (song|track))$/.test(t)) {
-      handleControl('skip');
-      showVoiceToast('⏭  Next track', 'success'); setVoiceStatus('listening'); return;
-    }
-    if (/^(aether\s+)?(previous|go back|last|prev(ious)?( (song|track))?)$/.test(t)) {
-      handleControl('previous');
-      showVoiceToast('⏮  Previous track', 'success'); setVoiceStatus('listening'); return;
-    }
-    // ── VOLUME ─────────────────────────────────────────────────────────────
-    const volSetMatch = t.match(/^(aether\s+)?(set volume|volume) (to\s+)?(\d{1,3})(%| percent)?$/);
-    if (volSetMatch) {
-      const pct = Math.max(0, Math.min(100, parseInt(volSetMatch[4], 10)));
-      handleVolumeChange(pct / 100);
-      showVoiceToast(`🔊  Volume → ${pct}%`, 'success'); setVoiceStatus('listening'); return;
-    }
-    if (/^(aether\s+)?(volume up|louder|increase volume|turn up)$/.test(t)) {
-      handleVolumeChange(Math.min(1, (volume || 0.5) + 0.15));
-      showVoiceToast('🔊  Volume up', 'success'); setVoiceStatus('listening'); return;
-    }
-    if (/^(aether\s+)?(volume down|quieter|lower|turn down|decrease volume)$/.test(t)) {
-      handleVolumeChange(Math.max(0, (volume || 0.5) - 0.15));
-      showVoiceToast('🔉  Volume down', 'success'); setVoiceStatus('listening'); return;
-    }
-    if (/^(aether\s+)?(mute|silence|shut up|no sound)$/.test(t)) {
-      handleControl('mute');
-      showVoiceToast('🔇  Muted', 'info'); setVoiceStatus('listening'); return;
-    }
-    // ── PLAY FAVORITES ─────────────────────────────────────────────────────
-    if (/^(aether\s+)?play (my\s+)?(favorites?|liked songs?|heart(ed)? songs?|loved songs?)$/.test(t)) {
-      handleFavoritePlayAll(false);
-      showVoiceToast('❤️  Playing Favorites', 'success'); setVoiceStatus('listening'); return;
-    }
-    if (/^(aether\s+)?shuffle (my\s+)?(favorites?|liked songs?|heart(ed)? songs?)$/.test(t)) {
-      handleFavoritePlayAll(true);
-      showVoiceToast('🔀  Shuffling Favorites', 'success'); setVoiceStatus('listening'); return;
-    }
-    // ── TOP PLAYED ─────────────────────────────────────────────────────────
-    if (/^(aether\s+)?play (my\s+)?(top|most) played( songs?)?$/.test(t)) {
-      const sorted = librarySongEntries.map(e => e.track).filter(Boolean)
-        .sort((a, b) => getTrackPlayCount(b) - getTrackPlayCount(a)).slice(0, 25);
-      if (!sorted.length) { showVoiceToast('No play history yet', 'error'); }
-      else { playLibraryTracks(sorted, 'Top Played', false); showVoiceToast(`🏆  Top ${sorted.length} most played`, 'success'); }
-      setVoiceStatus('listening'); return;
-    }
-    // ── RECENTLY PLAYED ────────────────────────────────────────────────────
-    if (/^(aether\s+)?play (my\s+)?(recently|recent( songs?| plays?)|last played)$/.test(t)) {
-      const recent = librarySongEntries
-        .map(e => ({ track: e.track, ts: getTrackLastListenedMs(e.track) }))
-        .filter(e => e.ts > 0).sort((a, b) => b.ts - a.ts).slice(0, 20).map(e => e.track);
-      if (!recent.length) { showVoiceToast('No recent history', 'error'); }
-      else { playLibraryTracks(recent, 'Recently Played', false); showVoiceToast('🕒  Playing Recently Played', 'success'); }
-      setVoiceStatus('listening'); return;
-    }
-    // ── SHUFFLE EVERYTHING ─────────────────────────────────────────────────
-    if (/^(aether\s+)?shuffle (everything|all|my library|the library|all songs?)$/.test(t)) {
-      const allTracks = Object.values(playlists).flat();
-      playLibraryTracks(allTracks, 'Library', true);
-      showVoiceToast('🔀  Shuffling entire library', 'success'); setVoiceStatus('listening'); return;
-    }
-    // ── PLAY A PLAYLIST ────────────────────────────────────────────────────
-    const playlistPlayMatch = t.match(/^(aether\s+)?play (my\s+)?playlist (.+)$/);
-    if (playlistPlayMatch) {
-      const needle = playlistPlayMatch[3].trim();
-      const matched = fuzzyMatchBest(needle, Object.keys(playlists));
-      if (matched) { handlePlaylistPlayAll(matched, false); showVoiceToast(`▶  Playing "${matched}"`, 'success'); }
-      else { showVoiceToast(`Playlist "${needle}" not found`, 'error'); }
-      setVoiceStatus('listening'); return;
-    }
-    const playlistShuffleMatch = t.match(/^(aether\s+)?shuffle (my\s+)?playlist (.+)$/);
-    if (playlistShuffleMatch) {
-      const needle = playlistShuffleMatch[3].trim();
-      const matched = fuzzyMatchBest(needle, Object.keys(playlists));
-      if (matched) { handlePlaylistPlayAll(matched, true); showVoiceToast(`🔀  Shuffling "${matched}"`, 'success'); }
-      else { showVoiceToast(`Playlist "${needle}" not found`, 'error'); }
-      setVoiceStatus('listening'); return;
-    }
-    // ── PLAY A SPECIFIC SONG ("play <song> [by <artist>]") ─────────────────
-    const playSongMatch = t.match(/^(aether\s+)?play (.+?)(\s+by\s+(.+))?$/);
-    if (playSongMatch) {
-      const songNeedle = (playSongMatch[2] || '').trim();
-      const artistNeedle = (playSongMatch[4] || '').trim();
-      const allSongs = librarySongEntries.map(e => e.track).filter(Boolean);
-      let best = null, bestScore = -1;
-      for (const track of allSongs) {
-        const titleWords = (track.title || '').toLowerCase().split(/\s+/);
-        const sWords = songNeedle.toLowerCase().split(/\s+/).filter(w => w.length > 1);
-        const titleHits = sWords.filter(w => titleWords.some(tw => tw.includes(w) || w.includes(tw))).length;
-        const titleScore = titleHits / Math.max(sWords.length, 1);
-        let artistScore = 0;
-        if (artistNeedle) {
-          const aWords = (track.author || '').toLowerCase().split(/\s+/);
-          const arWords = artistNeedle.split(/\s+/).filter(w => w.length > 1);
-          artistScore = arWords.filter(w => aWords.some(aw => aw.includes(w) || w.includes(aw))).length / Math.max(arWords.length, 1);
-        }
-        const total = artistNeedle ? titleScore * 0.6 + artistScore * 0.4 : titleScore;
-        if (total > bestScore) { bestScore = total; best = track; }
-      }
-      if (best && bestScore >= 0.4) {
-        const norm = normalizeQueueTrack(best);
-        if (norm) {
-          setQueue([norm]); setIsPlaying(true); setIsManualStop(false); setCurrentTime(0);
-          showVoiceToast(`▶  "${best.title}"`, 'success', 4000);
-        }
-      } else {
-        showVoiceToast(`"${songNeedle}" not found in library`, 'error');
-      }
-      setVoiceStatus('listening'); return;
-    }
-    // ── UNRECOGNIZED ───────────────────────────────────────────────────────
-    if (t.startsWith('aether')) {
-      showVoiceToast(`Didn't catch that: "${rawTranscript}"`, 'error');
-    }
-    setVoiceStatus('listening');
-  }, [
-    handleControl, handleVolumeChange, volume, handleFavoritePlayAll, handlePlaylistPlayAll,
-    playLibraryTracks, librarySongEntries, getTrackPlayCount, getTrackLastListenedMs, playlists,
-    fuzzyMatchBest, normalizeQueueTrack, showVoiceToast,
-    setQueue, setIsPlaying, setIsManualStop, setCurrentTime,
-  ]);
-
-
-  const { enabled: voiceEnabled, setEnabled: setVoiceEnabled, status: voiceStatus, setStatus: setVoiceStatus, transcript: voiceTranscript, setTranscript: setVoiceTranscript } = useOfflineVoice({ onCommand: handleVoiceCommand, showToast: showVoiceToast });
-
-  // Temporarily disable microphone/voice feature while keeping the UI visible.
-  // Toggle this flag to `false` to re-enable the mic feature later.
-  const micFeatureDisabled = true;
-  const effectiveVoiceEnabled = micFeatureDisabled ? false : voiceEnabled;
-
-  const toggleVoiceControl = useCallback(() => {
-    if (micFeatureDisabled) return; // no-op while disabled
-    setVoiceEnabled(prev => {
-      if (!prev) showVoiceToast("🎙  Loading Offline AI...", "info", 3500);
-      else { setVoiceToast(null); setVoiceTranscript(""); }
-      return !prev;
-    });
-  }, [showVoiceToast, setVoiceEnabled, setVoiceTranscript]);
-  // ─────────────────────────────────────────────────────────────────────────
-
 
   const memoizedLyricsContent = useMemo(() => lyrics.map((line, idx) => {
     const distance = Math.abs(idx - activeLyricIndex);
@@ -12824,72 +12708,6 @@ function App() {
           />
         )}
 
-        {/* ── VOICE CONTROL UI ────────────────────────────────────────────── */}
-        <button
-          id="voice-control-btn"
-          onClick={micFeatureDisabled ? undefined : toggleVoiceControl}
-          title={micFeatureDisabled ? 'Voice (temporarily disabled)' : (effectiveVoiceEnabled ? 'Disable Voice Control' : 'Enable Voice Control — say "Aether play..."')}
-          aria-disabled={micFeatureDisabled}
-          tabIndex={micFeatureDisabled ? -1 : 0}
-          className={`fixed z-[355] bottom-6 right-6 flex items-center justify-center rounded-full shadow-2xl transition-all duration-300 active:scale-90 select-none ${micFeatureDisabled ? 'pointer-events-none cursor-default opacity-90' : ''} ${!effectiveVoiceEnabled ? 'w-10 h-10 border border-white/20 bg-black/60 text-white/40 hover:text-white/70 hover:border-white/40 hover:bg-black/80' : 'w-12 h-12 border-2'}`}
-          style={effectiveVoiceEnabled ? {
-            background: voiceStatus === 'listening' ? 'rgba(22,247,198,0.13)' : (voiceStatus === 'processing' || voiceStatus === 'loading') ? 'rgba(251,191,36,0.13)' : 'rgba(239,68,68,0.13)',
-            borderColor: voiceStatus === 'listening' ? 'rgba(22,247,198,0.75)' : (voiceStatus === 'processing' || voiceStatus === 'loading') ? 'rgba(251,191,36,0.75)' : 'rgba(239,68,68,0.5)',
-            color: voiceStatus === 'listening' ? 'rgb(22,247,198)' : (voiceStatus === 'processing' || voiceStatus === 'loading') ? 'rgb(251,191,36)' : 'rgb(252,165,165)',
-            boxShadow: voiceStatus === 'listening' ? '0 0 28px rgba(22,247,198,0.3), 0 8px 24px rgba(0,0,0,0.5)' : '0 8px 24px rgba(0,0,0,0.5)',
-          } : undefined}
-        >
-          {effectiveVoiceEnabled ? (
-            voiceStatus === 'listening' ? (
-              <span className="relative flex items-center justify-center">
-                <span className="absolute inline-flex w-9 h-9 rounded-full animate-ping opacity-25" style={{ background: 'rgba(22,247,198,0.5)' }} />
-                <Mic size={18} />
-              </span>
-            ) : (voiceStatus === 'processing' || voiceStatus === 'loading') ? (
-              <Loader2 size={18} className="animate-spin" />
-            ) : (
-              <MicOff size={18} />
-            )
-          ) : (
-            <Mic size={15} />
-          )}
-        </button>
-        <AnimatePresence>
-          {effectiveVoiceEnabled && voiceToast && (
-            <motion.div
-              key={`vt-${voiceToast.message}`}
-              initial={{ opacity: 0, y: 14, scale: 0.94 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 6, scale: 0.97 }}
-              transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-              className="fixed z-[354] bottom-[76px] right-4 max-w-[290px] rounded-2xl px-4 py-3 text-[13px] font-semibold shadow-2xl pointer-events-none"
-              style={{
-                background: 'rgba(10,10,12,0.94)',
-                border: `1px solid ${voiceToast.type === 'success' ? 'rgba(22,247,198,0.45)' : voiceToast.type === 'error' ? 'rgba(239,68,68,0.45)' : 'rgba(255,255,255,0.12)'}`,
-                backdropFilter: 'blur(22px)',
-                color: voiceToast.type === 'success' ? 'rgb(22,247,198)' : voiceToast.type === 'error' ? 'rgb(252,165,165)' : 'rgba(255,255,255,0.9)',
-                boxShadow: '0 20px 60px rgba(0,0,0,0.65)',
-              }}
-            >
-              {voiceToast.message}
-            </motion.div>
-          )}
-        </AnimatePresence>
-        <AnimatePresence>
-          {effectiveVoiceEnabled && voiceStatus === 'listening' && !voiceToast && (
-            <motion.div
-              key="voice-hint"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 6 }}
-              transition={{ delay: 0.7, duration: 0.3 }}
-              className="fixed z-[353] bottom-[76px] right-4 rounded-xl px-3 py-2 text-[11px] font-medium text-white/45 pointer-events-none"
-              style={{ background: 'rgba(10,10,12,0.72)', border: '1px solid rgba(255,255,255,0.07)', backdropFilter: 'blur(14px)' }}
-            >
-              Say <span className="text-white/80 font-semibold">"Aether play…"</span>
-            </motion.div>
-          )}
-        </AnimatePresence>
 
         {/* ── WEB AUDIO UNLOCK OVERLAY ─────────────────────────────────────────
           Browsers block audio.play() without a prior user gesture in the tab.

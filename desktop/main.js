@@ -179,6 +179,7 @@ const applyWindowsTitleBarOverlay = (win, compact = false) => {
 const APP_LOCK_STORE_KEY = 'appLock';
 const APP_LOCK_RECOVERY_STORE_KEY = 'appLockRecovery';
 const SESSION_PLAYBACK_STORE_KEY = 'aether.sessionPlayback.v1';
+const PLAYBACK_LEDGER_STORAGE_KEY = 'sound-capsule';
 
 
 const getRecoveryRecord = () => {
@@ -2496,6 +2497,18 @@ app.whenReady().then(async () => {
         if (isAppQuitting && key === SESSION_PLAYBACK_STORE_KEY) return true;
         store.set(key, val);
         return true;
+    });
+    ipcMain.handle('aether:get-playback-ledger', () => {
+        try {
+            const configPath = path.join(app.getPath('userData'), 'config.json');
+            if (!fs.existsSync(configPath)) return null;
+            const raw = fs.readFileSync(configPath, 'utf8');
+            const parsed = JSON.parse(raw);
+            return parsed?.[PLAYBACK_LEDGER_STORAGE_KEY] || null;
+        } catch (error) {
+            console.warn('[Aether] Failed to read playback ledger from config file', error?.message || String(error));
+            return null;
+        }
     });
     ipcMain.handle('aether:get-port', () => actualPort);
     ipcMain.handle('aether:get-engine-status', async () => {

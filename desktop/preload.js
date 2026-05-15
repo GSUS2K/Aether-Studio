@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld('aether', {
     get: (key) => ipcRenderer.invoke('aether:store-get', key),
     set: (key, val) => ipcRenderer.invoke('aether:store-set', key, val)
   },
+  getPlaybackLedger: () => ipcRenderer.invoke('aether:get-playback-ledger'),
   onControl: (callback) => {
     const handler = (event, action) => callback(action);
     ipcRenderer.on('aether:control', handler);
