@@ -26,6 +26,8 @@ It will show playback, synced lyrics, Dual Visual mode, Cinema mode, Mixtape Vau
   |
   <a href="#download">Download</a>
   |
+  <a href="#community">Community</a>
+  |
   <a href="#features">Features</a>
   |
   <a href="#screenshots">Screenshots</a>
@@ -74,6 +76,12 @@ Get the latest build from the [GitHub Releases page](https://github.com/GSUS2K/A
 | Windows | [Aether-Setup-x64.exe](https://github.com/GSUS2K/Aether-Studio/releases/latest/download/Aether-Setup-x64.exe) |
 | Linux | [Aether-x86_64.AppImage](https://github.com/GSUS2K/Aether-Studio/releases/latest/download/Aether-x86_64.AppImage) |
 
+## Community
+
+Join the Aether Discord server to discuss the app, report bugs, share feedback, test builds, and suggest features.
+
+[Join the Discord](https://discord.gg/bMUvBkqhuV)
+
 ## Features
 
 | Area | What it does |
@@ -86,9 +94,9 @@ Get the latest build from the [GitHub Releases page](https://github.com/GSUS2K/A
 | Playlist imports | Import public playlists from Spotify and Apple Music, with debug logs for checking import issues |
 | Offline | Download helpers, cache controls, storage estimates, and local playback recovery |
 | Signal Ledger | Listening time, plays, recent sessions, top artists, hourly pulse, replay stats, and genre pulse |
+| Discord status | Shows what you are playing in Aether through Discord activity status |
 | Desktop | Native window controls, updater support, diagnostics, app lock, shortcuts, and local media backend |
 | Website companion | Minimal web version for basic access through the public site |
-| Discord status | Shows what you are playing in Aether through Discord activity status |
 
 ## Gesture Support Notes
 
