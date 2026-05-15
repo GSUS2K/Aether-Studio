@@ -47,9 +47,11 @@ The app is usable, but it is not the final polished version yet. Some areas may 
 
 Aether has not been tested on every platform and device yet. If you try it on your system and run into any bugs, crashes, playback issues, or UI problems, please report them through <a href="https://github.com/GSUS2K/Aether-Studio/issues">GitHub Issues</a> or the Issues button inside the Aether app.
 
+Use <a href="https://github.com/GSUS2K/Aether-Studio/releases/tag/v2026.4.28">Aether v2026.4.28</a> if you want a smooth experience with almost no input lags.
+
 The goal is to keep improving stability, performance, media handling, and the overall studio experience with each release.
 
-Check out the easter egg in app by typing "MIXTAPE" in any non input fields.
+Check out the easter egg in app by pressing anywhere on the app (ensure no buttons/input fields are in focus) and typing "MIXTAPE".
 
 ## Download
 
