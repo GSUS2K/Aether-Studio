@@ -11,8 +11,6 @@
   <a href="https://aetherstudio.me"><img alt="Website" src="https://img.shields.io/badge/website-aetherstudio.me-008f73?style=for-the-badge&labelColor=1b1f23"></a>
 </p>
 
-<p>App not yet tested for all platforms and devices. Would be grateful if issues are </p>
-
 <p align="center">
   <img src="docs/assets/main-studio.png" alt="Aether Preview">
 </p>
@@ -50,6 +48,8 @@ The app is usable, but it is not the final polished version yet. Some areas may 
 Aether has not been tested on every platform and device yet. If you try it on your system and run into any bugs, crashes, playback issues, or UI problems, please report them through <a href="https://github.com/GSUS2K/Aether-Studio/issues">GitHub Issues</a> or the Issues button inside the Aether app.
 
 The goal is to keep improving stability, performance, media handling, and the overall studio experience with each release.
+
+Check out the easter egg in app by typing "MIXTAPE" in any non input fields.
 
 ## Download
 
