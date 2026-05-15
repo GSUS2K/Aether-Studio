@@ -26,7 +26,7 @@
   |
   <a href="#run-from-source">Run from source</a>
   |
-  <a href="#development-shape">Development</a>
+  <a href="#architecture">Development</a>
 </p>
 
 ## Overview
