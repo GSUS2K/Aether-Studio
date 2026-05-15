@@ -1,7 +1,7 @@
 {
   "name": "aether",
   "productName": "Aether",
-  "version": "2026.5.1",
+  "version": "2026.5.2",
   "description": "Standalone Aether Desktop Application",
   "main": "desktop/main.js",
   "scripts": {
@@ -9,8 +9,8 @@
     "start": "NODE_ENV=production electron .",
     "dev": "electron .",
     "dev:frontend": "cd frontend && npm run dev",
-    "dev:electron": "wait-on http://localhost:5173 && electron .",
-    "dev:all": "concurrently -k -n FRONTEND,ELECTRON -c cyan,magenta \"npm run dev:frontend\" \"npm run dev:electron\"",
+    "dev:electron": "wait-on ${AETHER_DEV_SERVER_URL:-http://localhost:5173} && electron .",
+    "dev:all": "node scripts/dev-all.mjs",
     "prepare-binaries": "node scripts/prepare-bundled-binaries.cjs",
     "build-frontend": "cd frontend && npm install && npm run build",
     "package": "npm run prepare-binaries && npm run build-frontend && electron-builder build --mac --dir",

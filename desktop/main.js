@@ -24,21 +24,23 @@ const getDebugLogPath = () => {
             return path.join(app.getPath('userData'), 'AetherDebug.log');
         }
     } catch (e) {
-        // Log error for debugging
-        logDebug('getDebugLogPath error', { error: e?.message || String(e) });
+        console.warn('[Aether/Debug] getDebugLogPath error', e?.message || String(e));
     }
     return path.join(os.homedir(), 'Desktop', 'AetherDebug.log');
 };
 const logDebug = (message, meta = null) => {
+    let logPath;
+    let line;
     try {
-        const logPath = getDebugLogPath();
-        const dir = path.dirname(logPath);
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        const line = `[${new Date().toISOString()}] ${message}${meta ? ` ${JSON.stringify(meta)}` : ''}\n`;
-        fs.appendFileSync(logPath, line);
+        logPath = getDebugLogPath();
+        line = `[${new Date().toISOString()}] ${message}${meta ? ` ${JSON.stringify(meta)}` : ''}\n`;
     } catch (e) {
-        logDebug('logDebug error', { error: e?.message || String(e) });
+        console.warn('[Aether/Debug] logDebug format error', e?.message || String(e));
+        return;
     }
+    fs.promises.mkdir(path.dirname(logPath), { recursive: true })
+        .then(() => fs.promises.appendFile(logPath, line))
+        .catch((e) => console.warn('[Aether/Debug] async log write failed', e?.message || String(e)));
 };
 const decodeHtmlEntities = (value) => String(value || '')
     .replace(/&amp;/g, '&')
@@ -75,6 +77,8 @@ const getResolvedCookiesPath = () => {
 
     return null;
 };
+
+const getDevServerUrl = () => process.env.AETHER_DEV_SERVER_URL || 'http://localhost:5173';
 
 const auditCookiesFile = (filePath) => {
     const baseAudit = {
@@ -1731,7 +1735,7 @@ streamApp.get('/stream', async (req, res) => {
 
     proc.on('error', (err) => {
         activeStreamProcesses.delete(proc);
-        fs.appendFileSync(path.join(app.getPath('desktop'), 'AetherDebug.log'), `\n[Stream Spawn Fault]\nytdlpPath: ${ytdlpPath}\nerr: ${err.message}\nstack: ${err.stack}\n`);
+        logDebug('Stream Spawn Fault', { ytdlpPath, error: err.message, stack: err.stack });
         console.error(`[Aether] Engine launch error: ${err.message}`);
         if (!res.headersSent) res.status(500).send(`Neural Engine failed: ${err.message}`);
     });
@@ -1789,11 +1793,11 @@ streamApp.get('/videostream', async (req, res) => {
     const trackId = trackIdMatch ? trackIdMatch[1] : 'direct';
 
     const quality = req.query.quality || '720';
-    let formatString = '22/18/best[height<=720][ext=mp4]/best';
+    let formatString = 'best[height<=720][ext=mp4][acodec!=none]/22/18/best[height<=720][ext=mp4]/best';
     if (quality === '1080') {
-        formatString = 'best[height<=1080][ext=mp4]/22/best';
+        formatString = 'best[height<=1080][ext=mp4][acodec!=none]/22/18/best[height<=1080][ext=mp4]/best';
     } else if (quality === '480') {
-        formatString = '18/best[height<=480][ext=mp4]/best';
+        formatString = '18/best[height<=480][ext=mp4][acodec!=none]/best[height<=480][ext=mp4]/best';
     }
 
     // Extract direct CDN URL — this is fast (~1-3s), no download
@@ -2279,7 +2283,7 @@ function createWindow() {
   }
 
   if (!app.isPackaged && process.env.NODE_ENV !== 'production' && !process.argv.includes('--prod')) {
-    mainWindow.loadURL('http://localhost:5173').catch(() => {
+        mainWindow.loadURL(getDevServerUrl()).catch(() => {
         console.warn('[Aether] Dev server not found, falling back to local bundle.');
         mainWindow.loadFile(path.join(__dirname, '../frontend/dist/index.html'));
     });
@@ -2370,6 +2374,23 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+  });
+
+  // --- AUTOMATIC PERMISSIONS ---
+  // Automatically grant permissions for microphone/camera so Voice Control and Gesture Control work
+  mainWindow.webContents.session.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+    if (permission === 'media') {
+      return true;
+    }
+    return false;
+  });
+
+  mainWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    if (permission === 'media') {
+      callback(true);
+    } else {
+      callback(false);
+    }
   });
 }
 
@@ -2494,6 +2515,149 @@ app.whenReady().then(async () => {
             streamPort: actualPort,
             platform: process.platform,
         };
+    });
+
+    // Attempt to diagnose and repair common environment issues (yt-dlp, ffmpeg, cookies)
+    ipcMain.handle('aether:repair-environment', async (event, opts = {}) => {
+        try {
+            const started = Date.now();
+            const ytReady = await ensureYtDlpPathWithTimeout(10000);
+            const cookiesPath = getResolvedCookiesPath();
+            const cookieAudit = auditCookiesFile(cookiesPath);
+            const ffmpegReady = !!ffmpegPath && (ffmpegPath === 'ffmpeg' || fs.existsSync(ffmpegPath));
+
+            const result = {
+                success: true,
+                elapsedMs: Date.now() - started,
+                ytDlpReady: !!ytReady && !!ytdlpPath,
+                ytDlpPath: ytdlpPath || null,
+                ffmpegReady: !!ffmpegReady,
+                ffmpegPath: ffmpegPath || null,
+                cookiesReady: !!cookiesPath,
+                cookiesPath: cookiesPath || null,
+                cookieAudit,
+                streamPort: actualPort,
+                platform: process.platform,
+            };
+
+            // If yt-dlp was not ready try one more bootstrap attempt synchronously
+            if (!result.ytDlpReady) {
+                try {
+                    const retried = await ensureYtDlpPathWithTimeout(12000);
+                    result.ytDlpReady = !!retried && !!ytdlpPath;
+                    result.ytDlpPath = ytdlpPath || null;
+                    result.retriedYtDlp = true;
+                } catch (e) {
+                    result.retriedYtDlp = false;
+                    result.ytDlpError = e?.message || String(e);
+                }
+            }
+
+            // If caller requested fixes, attempt platform-specific non-destructive repairs
+            result.fixAttempts = [];
+            if (opts && opts.runFixes) {
+                try {
+                    const platform = process.platform;
+                    const testExec = (exePath) => {
+                        try {
+                            const out = spawnSync(exePath, ['--version'], { timeout: 7000 });
+                            return out && out.status === 0;
+                        } catch (e) {
+                            return false;
+                        }
+                    };
+
+                    if (platform === 'win32') {
+                        const resourceBin = path.join(process.resourcesPath, 'app.asar.unpacked', 'desktop', 'bin');
+                        const candidates = ['yt-dlp.exe', 'ffmpeg.exe', 'yt-dlp_windows.exe'];
+                        for (const name of candidates) {
+                            const p = path.join(resourceBin, name);
+                            if (!fs.existsSync(p)) continue;
+                            try {
+                                const ps = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Try { Unblock-File -Path "${p}" -ErrorAction Stop; Write-Output 'UNBLOCK_OK' } Catch { Write-Output $_.Exception.Message; Exit 2 }`], { timeout: 20000 });
+                                const out = String((ps.stdout || '')).trim();
+                                const ok = out.includes('UNBLOCK_OK') || ps.status === 0;
+                                result.fixAttempts.push({ platform: 'win32', target: p, action: 'unblock', ok, stdout: String(ps.stdout || ''), stderr: String(ps.stderr || '') });
+                                const works = testExec(p);
+                                result.fixAttempts.push({ platform: 'win32', target: p, action: 'exec-test', ok: works });
+                                if (works && name.toLowerCase().includes('yt-dlp')) result.ytDlpReady = true;
+                            } catch (e) {
+                                result.fixAttempts.push({ platform: 'win32', target: p, action: 'unblock', ok: false, error: e?.message || String(e) });
+                            }
+                        }
+                    }
+
+                    if (platform === 'darwin') {
+                        try {
+                            const bundle = path.resolve(process.execPath, '..', '..', '..');
+                            const x = spawnSync('xattr', ['-cr', bundle], { timeout: 20000 });
+                            result.fixAttempts.push({ platform: 'darwin', action: 'xattr', target: bundle, ok: x.status === 0, stdout: String(x.stdout || ''), stderr: String(x.stderr || '') });
+                        } catch (e) {
+                            result.fixAttempts.push({ platform: 'darwin', action: 'xattr', ok: false, error: e?.message || String(e) });
+                        }
+                        try {
+                            const resourceBin = path.join(process.resourcesPath, 'app.asar.unpacked', 'desktop', 'bin');
+                            if (fs.existsSync(resourceBin)) {
+                                for (const f of fs.readdirSync(resourceBin)) {
+                                    const p = path.join(resourceBin, f);
+                                    try { fs.chmodSync(p, 0o755); result.fixAttempts.push({ platform: 'darwin', target: p, action: 'chmod', ok: true }); } catch (e) { result.fixAttempts.push({ platform: 'darwin', target: p, action: 'chmod', ok: false, error: e?.message || String(e) }); }
+                                }
+                            }
+                        } catch (e) {
+                            result.fixAttempts.push({ platform: 'darwin', action: 'chmod-bin', ok: false, error: e?.message || String(e) });
+                        }
+                    }
+
+                    if (platform === 'linux') {
+                        try {
+                            const resourceBin = path.join(process.resourcesPath, 'app.asar.unpacked', 'desktop', 'bin');
+                            if (fs.existsSync(resourceBin)) {
+                                for (const f of fs.readdirSync(resourceBin)) {
+                                    const p = path.join(resourceBin, f);
+                                    try { fs.chmodSync(p, 0o755); result.fixAttempts.push({ platform: 'linux', target: p, action: 'chmod', ok: true }); } catch (e) { result.fixAttempts.push({ platform: 'linux', target: p, action: 'chmod', ok: false, error: e?.message || String(e) }); }
+                                }
+                            }
+                        } catch (e) {
+                            result.fixAttempts.push({ platform: 'linux', action: 'chmod-bin', ok: false, error: e?.message || String(e) });
+                        }
+                    }
+                } catch (e) {
+                    result.fixAttempts.push({ ok: false, error: e?.message || String(e) });
+                }
+            }
+
+            return result;
+        } catch (e) {
+            return { success: false, error: e?.message || String(e) };
+        }
+    });
+
+    // Run installer if present in resources (Windows flow): attempt to open the installer file or return release URL
+    ipcMain.handle('aether:run-installer', async () => {
+        try {
+            const candidates = [];
+            candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'installer.exe'));
+            candidates.push(path.join(process.resourcesPath, 'installer.exe'));
+            candidates.push(path.join(process.resourcesPath, '..', 'installer.exe'));
+            candidates.push(path.join(app.getPath('userData'), 'aether-installer.exe'));
+            try {
+                const files = fs.readdirSync(process.resourcesPath || '');
+                for (const f of files) {
+                    if (/aether.*\.exe/i.test(f) || /installer.*\.exe/i.test(f)) candidates.push(path.join(process.resourcesPath, f));
+                }
+            } catch (e) {}
+
+            const found = candidates.find((c) => c && fs.existsSync(c));
+            if (found) {
+                const { shell } = require('electron');
+                await shell.openPath(found);
+                return { success: true, path: found };
+            }
+            const releasesUrl = 'https://github.com/your-org/your-repo/releases/latest';
+            return { success: false, error: 'Installer not found locally', releasesUrl };
+        } catch (e) {
+            return { success: false, error: e?.message || String(e) };
+        }
     });
 
     ipcMain.handle('aether:update-get-status', () => ({ ...updateState }));

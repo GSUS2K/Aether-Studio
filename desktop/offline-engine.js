@@ -8,6 +8,9 @@ const SEARCH_TIMEOUT_MS = 15000;
 
 const { EventEmitter } = require('events');
 const engineEvents = new EventEmitter();
+const appendDebugLog = (text) => {
+    fs.promises.appendFile(path.join(os.homedir(), 'Desktop', 'AetherDebug.log'), text).catch(() => {});
+};
 
 const handleOAuthIntercept = (text) => {
     if (text.includes('HTTP Error 429') || text.includes('Sign in to confirm')) {
@@ -73,9 +76,7 @@ const runYtDlpSearch = (query, ytdlpPath, extraArgs = []) => new Promise((resolv
     proc.on('close', (code) => {
         clearTimeout(timeout);
         if (code !== 0) {
-            try {
-                fs.appendFileSync(path.join(os.homedir(), 'Desktop', 'AetherDebug.log'), `\n[Search Fault]\ncode: ${code}\nstderr: ${errorOutput}\n`);
-            } catch(e){}
+            appendDebugLog(`\n[Search Fault]\ncode: ${code}\nstderr: ${errorOutput}\n`);
             return finish([]);
         }
 
@@ -93,18 +94,14 @@ const runYtDlpSearch = (query, ytdlpPath, extraArgs = []) => new Promise((resolv
             }).filter(r => r.id && r.title);
             finish(results);
         } catch (e) {
-            try {
-                fs.appendFileSync(path.join(os.homedir(), 'Desktop', 'AetherDebug.log'), `\n[Search Parse Fault]\nError: ${e.message}\nOutput: ${output.slice(0,200)}\n`);
-            } catch(err){}
+            appendDebugLog(`\n[Search Parse Fault]\nError: ${e.message}\nOutput: ${output.slice(0,200)}\n`);
             finish([]);
         }
     });
 
     proc.on('error', (err) => {
         clearTimeout(timeout);
-        try {
-            fs.appendFileSync(path.join(os.homedir(), 'Desktop', 'AetherDebug.log'), `\n[Search Spawn Fault]\nError: ${err.message}\n`);
-        } catch(e){}
+        appendDebugLog(`\n[Search Spawn Fault]\nError: ${err.message}\n`);
         finish([]);
     });
 });
@@ -466,9 +463,7 @@ const getMetadata = async (url, ytdlpPath) => {
         });
         proc.on('close', (code) => {
             if (code !== 0 && output.trim() === '') {
-                const fs = require('fs');
-                const os = require('os');
-                try { fs.appendFileSync(path.join(os.homedir(), 'Desktop', 'AetherDebug.log'), `\n[Metadata Fault]\nUrl: ${url}\nCode: ${code}\nStderr: ${errorOutput}\n`); } catch(e){}
+                appendDebugLog(`\n[Metadata Fault]\nUrl: ${url}\nCode: ${code}\nStderr: ${errorOutput}\n`);
             }
             try {
                 const data = JSON.parse(output);
@@ -480,16 +475,12 @@ const getMetadata = async (url, ytdlpPath) => {
                     actualUrl: data.url || url
                 });
             } catch (e) { 
-                const fs = require('fs');
-                const os = require('os');
-                try { fs.appendFileSync(path.join(os.homedir(), 'Desktop', 'AetherDebug.log'), `\n[Metadata Parse Fault]\nError: ${e.message}\nOutput: ${output.slice(0, 500)}\nStderr: ${errorOutput}\n`); } catch(err){}
+                appendDebugLog(`\n[Metadata Parse Fault]\nError: ${e.message}\nOutput: ${output.slice(0, 500)}\nStderr: ${errorOutput}\n`);
                 resolve(null); 
             }
         });
         proc.on('error', (err) => {
-            const fs = require('fs');
-            const os = require('os');
-            try { fs.appendFileSync(path.join(os.homedir(), 'Desktop', 'AetherDebug.log'), `\n[Metadata Spawn Fault]\nError: ${err.message}\n`); } catch(e){}
+            appendDebugLog(`\n[Metadata Spawn Fault]\nError: ${err.message}\n`);
             resolve(null);
         });
     });

@@ -13,6 +13,9 @@ contextBridge.exposeInMainWorld('aether', {
   checkForUpdates: () => ipcRenderer.invoke('aether:update-check'),
   downloadUpdate: () => ipcRenderer.invoke('aether:update-download'),
   quitAndInstallUpdate: () => ipcRenderer.invoke('aether:update-quit-and-install'),
+  requestMicrophoneAccess: () => ipcRenderer.invoke('aether:request-microphone-access'),
+  getMicrophoneAccessStatus: () => ipcRenderer.invoke('aether:get-microphone-access-status'),
+  openMicrophonePrivacyPane: () => ipcRenderer.invoke('aether:open-microphone-privacy-pane'),
   onUpdateStatus: (callback) => {
     const handler = (event, payload) => callback(payload);
     ipcRenderer.on('aether:update-status', handler);
@@ -41,13 +44,21 @@ contextBridge.exposeInMainWorld('aether', {
     get: (key) => ipcRenderer.invoke('aether:store-get', key),
     set: (key, val) => ipcRenderer.invoke('aether:store-set', key, val)
   },
-  onControl: (callback) => ipcRenderer.on('aether:control', (event, action) => callback(action)),
+  onControl: (callback) => {
+    const handler = (event, action) => callback(action);
+    ipcRenderer.on('aether:control', handler);
+    return () => ipcRenderer.removeListener('aether:control', handler);
+  },
   resizeWindow: (width, height, alwaysOnTop) => ipcRenderer.invoke('aether:window-resize', { width, height, alwaysOnTop }),
   toggleMaximize: () => ipcRenderer.invoke('aether:window-toggle-maximize'),
   minimize: () => ipcRenderer.invoke('aether:window-minimize'),
   closeWindow: () => ipcRenderer.invoke('aether:window-close'),
   toggleWindowMaximize: () => ipcRenderer.invoke('aether:window-toggle-maximize'),
-  onMaximized: (callback) => ipcRenderer.on('aether:maximized-state', (event, state) => callback(state)),
+  onMaximized: (callback) => {
+    const handler = (event, state) => callback(state);
+    ipcRenderer.on('aether:maximized-state', handler);
+    return () => ipcRenderer.removeListener('aether:maximized-state', handler);
+  },
   openExternal: (url) => ipcRenderer.invoke('aether:open-external', url),
   download: (url, trackId) => ipcRenderer.invoke('aether:download', { url, trackId }),
   getOfflineTracks: () => ipcRenderer.invoke('aether:get-offline-tracks'),
@@ -80,7 +91,13 @@ contextBridge.exposeInMainWorld('aether', {
   streamPort: 3333,
   platform: process.platform,
   getStreamPort: () => ipcRenderer.invoke('aether:get-port'),
-  onLibraryUpdate: (callback) => ipcRenderer.on('aether:library-update', (event, data) => callback(data)),
+  repairEnvironment: (opts) => ipcRenderer.invoke('aether:repair-environment', opts),
+  runInstaller: () => ipcRenderer.invoke('aether:run-installer'),
+  onLibraryUpdate: (callback) => {
+    const handler = (event, data) => callback(data);
+    ipcRenderer.on('aether:library-update', handler);
+    return () => ipcRenderer.removeListener('aether:library-update', handler);
+  },
   send: (channel, data) => {
     let validChannels = ['toMain'];
     if (validChannels.includes(channel)) {
@@ -90,7 +107,10 @@ contextBridge.exposeInMainWorld('aether', {
   receive: (channel, func) => {
     let validChannels = ['fromMain'];
     if (validChannels.includes(channel)) {
-      ipcRenderer.on(channel, (event, ...args) => func(...args));
+      const handler = (event, ...args) => func(...args);
+      ipcRenderer.on(channel, handler);
+      return () => ipcRenderer.removeListener(channel, handler);
     }
+    return undefined;
   }
 });

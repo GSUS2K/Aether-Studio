@@ -1,9 +1,10 @@
-import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, Component, startTransition, memo, forwardRef, useImperativeHandle } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, Component, startTransition, memo, forwardRef, useImperativeHandle, Profiler } from 'react';
 import { createPortal } from 'react-dom';
 // NOTE: Many async operations and state changes below may be subject to race conditions if triggered rapidly.
 // Consider debouncing or locking for critical flows (e.g., downloads, updates, queue changes).
-import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, VolumeX, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles, Clapperboard, Columns2, Repeat, MessageSquare, Send, Layers, Eye, Hand, MousePointer2, Camera, Copy, Check, Heart } from 'lucide-react';
+import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, VolumeX, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles, Clapperboard, Columns2, Repeat, MessageSquare, Send, Layers, Eye, Hand, MousePointer2, Camera, Copy, Check, Heart, Link2, Mic, MicOff } from 'lucide-react';
 
+import { useOfflineVoice } from "./useOfflineVoice.js";
 import { motion, AnimatePresence, MotionConfig } from 'framer-motion';
 import { setupDiscordSdk } from './discord';
 import axios from 'axios';
@@ -11,6 +12,250 @@ import { APP_VERSION, BUILD_VERSION, UX_VERSION } from './buildVersion';
 import { buildLibrarySearchIndex, persistLibraryIndexSnapshot } from './libraryIndex';
 import catDoodlePeek from './assets/cat-doodle-peek.svg';
 import './App.css';
+
+// --- Memoized Mixtape subcomponents to reduce App re-renders ---
+const MixtapeLeft = memo(function MixtapeLeft({ cassetteSide, mixtapePulse, mixtapePulseReadout, mixtapeSpectrum, clamp01, isPlaying }) {
+  const isSideB = cassetteSide === 'B';
+
+  const renderVisualizer = () => {
+    const numBars = 48;
+    return (
+      <div className="absolute flex items-end justify-center gap-[2px] lg:gap-[3px] overflow-hidden pointer-events-none z-20 px-1" style={{
+        left: '15%', right: '15%', bottom: '33.25%', height: '10%', borderRadius: '2px'
+      }}>
+        {Array.from({ length: numBars }).map((_, i) => {
+          let val = 0;
+          if (isPlaying && mixtapeSpectrum && mixtapeSpectrum.length > 0) {
+            // With 48 bars sampled logarithmically, we map directly 1:1
+            const binIdx = Math.min(i, mixtapeSpectrum.length - 1);
+            let rawVal = mixtapeSpectrum[binIdx] || 0;
+
+            // Use pure raw value to prevent flat ceilings (blocks) from artificial boosting
+            val = clamp01(rawVal);
+          }
+
+          // Ensure a minimum height and snappier reactive scale
+          const scaleY = isPlaying ? clamp01(0.08 + val * 0.92) : 0.08;
+          const isActive = isPlaying && val > 0.15;
+
+          return (
+            <div key={i} className="flex-1 rounded-[1px] origin-bottom transition-transform duration-[60ms] ease-out"
+              style={{
+                height: '100%',
+                transform: `scaleY(${scaleY})`,
+                opacity: isActive ? 0.9 : 0.4,
+                background: 'var(--neon-mint)',
+                boxShadow: isActive ? `0 0 12px rgba(22,247,198, ${0.4 + val * 0.5})` : 'none'
+              }} />
+          );
+        })}
+      </div>
+    );
+  };
+
+  return (
+    <div className="vault-panel px-6 pb-6 pt-10 lg:px-8 lg:pb-8 lg:pt-14 flex flex-col justify-between relative overflow-hidden h-full min-w-0">
+      <div className="flex-1 flex items-center justify-center w-full relative perspective-[1200px] mb-6 min-h-0">
+
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0">
+          {/* Subtle ambient lighting removed, using pure cassette-glow */}
+        </div>
+
+        <div className="relative z-10 w-full max-w-[420px] 2xl:max-w-[540px] mx-auto">
+          <div className="w-full relative transition-transform duration-[1.2s] ease-[cubic-bezier(0.2,0.8,0.2,1)]" style={{ transformStyle: 'preserve-3d', transform: isSideB ? 'rotateY(180deg)' : 'rotateY(0deg)' }}>
+
+            <div className="w-full relative" style={{ backfaceVisibility: 'hidden' }}>
+              <img src="/cassette_a.png" className="w-full h-auto block cassette-glow" alt="Cassette Side A" />
+              {renderVisualizer()}
+            </div>
+
+            <div className="absolute inset-0 w-full h-full" style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}>
+              <img src="/cassette_b.png" className="w-full h-full object-contain block cassette-glow" alt="Cassette Side B" />
+              {renderVisualizer()}
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <div className="text-center mb-6 shrink-0 relative z-20">
+        <div className="flex items-center justify-center gap-6 mb-1">
+          <div className="h-[1px] w-20 bg-gradient-to-r from-transparent to-[#0A8F78]"></div>
+          <div className="text-[14px] font-black uppercase tracking-[0.3em] analog-text">Analog Session</div>
+          <div className="h-[1px] w-20 bg-gradient-to-l from-transparent to-[#0A8F78]"></div>
+        </div>
+        <div className="mt-2 text-[11px] font-medium uppercase tracking-[0.2em] text-white/40">Side {cassetteSide} Active</div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3 shrink-0 relative z-20">
+        <div className="rounded-2xl bg-black/40 border border-white/5 p-3 lg:p-4 text-center">
+          <div className="text-[8px] lg:text-[9px] uppercase tracking-[0.2em] text-white/50 mb-1 lg:mb-2">Bass</div>
+          <div className="font-mono text-[18px] lg:text-[20px] font-black" style={{ color: 'var(--neon-mint)', textShadow: '0 0 10px rgba(22,247,198,0.5)' }}>{Math.round(clamp01(mixtapePulse.bass) * 100)}</div>
+        </div>
+        <div className="rounded-2xl bg-black/40 border border-white/5 p-3 lg:p-4 text-center">
+          <div className="text-[8px] lg:text-[9px] uppercase tracking-[0.2em] text-white/50 mb-1 lg:mb-2">Mids</div>
+          <div className="font-mono text-[18px] lg:text-[20px] font-black" style={{ color: 'var(--neon-mint)', textShadow: '0 0 10px rgba(22,247,198,0.5)' }}>{Math.round(clamp01(mixtapePulse.mids) * 100)}</div>
+        </div>
+        <div className="rounded-2xl bg-black/40 border border-white/5 p-3 lg:p-4 text-center">
+          <div className="text-[8px] lg:text-[9px] uppercase tracking-[0.2em] text-white/50 mb-1 lg:mb-2">Highs</div>
+          <div className="font-mono text-[18px] lg:text-[20px] font-black" style={{ color: 'var(--neon-mint)', textShadow: '0 0 10px rgba(22,247,198,0.5)' }}>{Math.round(clamp01(mixtapePulse.highs) * 100)}</div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const MixtapeRight = memo(function MixtapeRight({ currentTrack, isPlaying, handleControl, mixtapePositionMs, mixtapeDurationMs, mixtapeProgressPct, handleSeek, formatTime, volume, setVolume, mixtapeLiveLyric, nextLyric, mixtapePulseReadout, mixtapeEnergyPct, mixtapeSpectrum, copyVaultSceneEmbed }) {
+
+  const renderPulseGraph = () => {
+    if (!isPlaying || !mixtapeSpectrum || mixtapeSpectrum.length === 0) {
+      return (
+        <svg viewBox="0 0 100 40" className="w-full h-full overflow-visible" preserveAspectRatio="none">
+          <path d="M 0 20 L 100 20" fill="none" stroke="currentColor" strokeWidth="2.5" className="opacity-30" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    }
+
+    const d = "M 0 20 L 10 20 L 13 14 L 17 32 L 22 8 L 26 24 L 29 20 L 42 20 L 45 14 L 49 32 L 54 8 L 58 24 L 61 20 L 74 20 L 77 14 L 81 32 L 86 8 L 90 24 L 93 20 L 100 20";
+    const scaleY = Math.max(0.2, (mixtapeEnergyPct / 100) * 1.3);
+
+    return (
+      <svg viewBox="0 0 100 40" className="w-full h-full overflow-visible" preserveAspectRatio="none">
+        <path
+          d={d}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="drop-shadow-[0_0_8px_rgba(0,255,191,0.6)] transition-transform duration-[120ms] origin-center"
+          style={{ transform: `scaleY(${scaleY})` }}
+        />
+      </svg>
+    );
+  };
+
+  return (
+    <div className="vault-panel p-6 lg:p-8 flex flex-col justify-between h-full min-w-0">
+      <div>
+        <div className="text-[10px] font-black uppercase tracking-[0.3em] mb-4" style={{ color: 'var(--neon-mint)', opacity: 0.8 }}>Now Playing</div>
+        <div className="mb-8 overflow-hidden w-full">
+          {String(currentTrack?.title || 'Aether Secret Session').length > 25 ? (
+            <div className="overlay-marquee mt-1 text-xl lg:text-2xl font-black uppercase tracking-tight text-white leading-tight mb-2">
+              <div className="overlay-marquee-track">
+                <span>{currentTrack?.title || 'Aether Secret Session'}</span>
+                <span aria-hidden="true">{currentTrack?.title || 'Aether Secret Session'}</span>
+                <span aria-hidden="true">{currentTrack?.title || 'Aether Secret Session'}</span>
+                <span aria-hidden="true">{currentTrack?.title || 'Aether Secret Session'}</span>
+              </div>
+            </div>
+          ) : (
+            <h3 className="text-xl lg:text-2xl font-black uppercase tracking-tight text-white leading-tight mb-2 truncate">{currentTrack?.title || 'Aether Secret Session'}</h3>
+          )}
+          <p className="mt-2 text-[11px] font-black uppercase tracking-[0.2em] text-brand-accent/80 truncate">{currentTrack?.author || 'Unknown Artist'}</p>
+        </div>
+      </div>
+
+      <div className="mb-8 flex items-center gap-6">
+        <div className="flex-1 space-y-6">
+          <div className="flex items-center gap-4">
+            <span className="text-[11px] font-mono text-white/50 w-9 text-right">{formatTime(mixtapePositionMs)}</span>
+            <div className="flex-1 h-1.5 rounded-full bg-white/10 relative cursor-pointer group/slider" 
+                 onPointerDown={(e) => {
+                   if (!mixtapeDurationMs) return;
+                   e.currentTarget.setPointerCapture(e.pointerId);
+                   const rect = e.currentTarget.getBoundingClientRect();
+                   const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                   handleSeek(pct * mixtapeDurationMs);
+                 }}
+                 onPointerMove={(e) => {
+                   if (!mixtapeDurationMs || !e.currentTarget.hasPointerCapture(e.pointerId)) return;
+                   const rect = e.currentTarget.getBoundingClientRect();
+                   const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                   handleSeek(pct * mixtapeDurationMs);
+                 }}
+                 onPointerUp={(e) => {
+                   e.currentTarget.releasePointerCapture(e.pointerId);
+                 }}>
+              <div className="h-full transition-[width] duration-200 relative" style={{ width: `${Math.min(100, Math.max(isPlaying ? 1 : 0, mixtapeProgressPct))}%`, background: 'var(--neon-mint)', boxShadow: '0 0 12px rgba(22,247,198,0.5)' }}>
+                <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 w-3 h-3 bg-white rounded-full opacity-0 group-hover/slider:opacity-100 transition-opacity" style={{ boxShadow: '0 0 10px rgba(22,247,198,0.8)' }} />
+              </div>
+            </div>
+            <span className="text-[11px] font-mono text-white/50 w-9 text-left">{mixtapeDurationMs ? formatTime(mixtapeDurationMs) : '--:--'}</span>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <Volume2 size={16} className="text-white/40 ml-1 shrink-0" />
+            <div className="flex-1 h-1.5 rounded-full bg-white/10 relative cursor-pointer group/slider" 
+                 onPointerDown={(e) => {
+                   e.currentTarget.setPointerCapture(e.pointerId);
+                   const rect = e.currentTarget.getBoundingClientRect();
+                   const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                   setVolume(pct);
+                 }}
+                 onPointerMove={(e) => {
+                   if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+                   const rect = e.currentTarget.getBoundingClientRect();
+                   const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                   setVolume(pct);
+                 }}
+                 onPointerUp={(e) => {
+                   e.currentTarget.releasePointerCapture(e.pointerId);
+                 }}>
+              <div className="h-full transition-[width] relative" style={{ width: `${Math.round(volume * 100)}%`, background: 'var(--neon-mint)', boxShadow: '0 0 12px rgba(22,247,198,0.5)' }}>
+                <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 w-3 h-3 bg-white rounded-full opacity-0 group-hover/slider:opacity-100 transition-opacity" style={{ boxShadow: '0 0 10px rgba(22,247,198,0.8)' }} />
+              </div>
+            </div>
+            <span className="text-[11px] font-mono text-white/50 w-9 text-left">{Math.round(volume * 100)}%</span>
+          </div>
+        </div>
+
+        <button onClick={() => handleControl(isPlaying ? 'pause' : 'resume')} className="h-[72px] w-[72px] shrink-0 rounded-full flex items-center justify-center bg-transparent border shadow-[0_0_20px_rgba(22,247,198,0.15)] transition-all hover:scale-105 active:scale-95" style={{ color: 'var(--neon-mint)', borderColor: 'rgba(22,247,198,0.4)', hover: { backgroundColor: 'rgba(22,247,198,0.1)', borderColor: 'rgba(22,247,198,0.7)', boxShadow: '0 0 25px rgba(22,247,198,0.3)' } }}>
+          {isPlaying ? <Pause size={28} fill="currentColor" /> : <Play size={28} fill="currentColor" className="ml-1.5" />}
+        </button>
+      </div>
+
+      <div className="grid gap-4 grid-cols-2 mb-6">
+        <div className="rounded-[1.25rem] border border-white/5 bg-black/40 p-5 flex flex-col justify-between h-[124px]">
+          <div className="flex items-center justify-between mb-4">
+            <div className="text-[10px] font-black uppercase tracking-[0.2em]" style={{ color: 'var(--neon-mint)', opacity: 0.8 }}>Lyrics</div>
+            <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--neon-mint)', boxShadow: '0 0 10px rgba(22,247,198,0.8)' }} />
+          </div>
+          <div className="space-y-1.5">
+            <div className="text-[13px] font-medium leading-snug text-white line-clamp-2 break-words">{mixtapeLiveLyric || 'Instrumental Sequence'}</div>
+            <div className="text-[11px] font-medium leading-snug text-white/40 line-clamp-1 truncate">{nextLyric || '...'}</div>
+          </div>
+        </div>
+
+        <div className="rounded-[1.25rem] border border-white/5 bg-black/40 p-5 flex flex-col justify-between h-[124px]">
+          <div className="text-[10px] font-black uppercase tracking-[0.2em] mb-4" style={{ color: 'var(--neon-mint)', opacity: 0.8 }}>Pulse</div>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center justify-center h-[28px] w-[54px] shrink-0" style={{ color: 'var(--neon-mint)' }}>
+              {renderPulseGraph()}
+            </div>
+            <div>
+              <div className="text-[22px] font-black text-white leading-none tracking-tight">{mixtapeEnergyPct}%</div>
+              <div className="text-[10px] uppercase tracking-[0.2em] text-white/50 mt-1.5">Steady</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <button onClick={copyVaultSceneEmbed} className="w-full h-[56px] rounded-[1.25rem] bg-black/40 text-[11px] font-black uppercase tracking-[0.2em] transition-all hover:bg-black/60 active:scale-[0.98] flex items-center justify-center gap-2 neon-border" style={{ color: 'var(--neon-mint)' }}>
+        <Link2 size={16} /> Copy Live Scene Link
+      </button>
+    </div>
+  );
+});
+
+const MixtapeVaultContent = memo(function MixtapeVaultContent(props) {
+  return (
+    <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8 items-stretch h-full min-h-0">
+      <MixtapeLeft cassetteSide={props.cassetteSide} mixtapePulse={props.mixtapePulse} mixtapePulseReadout={props.mixtapePulseReadout} mixtapeSpectrum={props.mixtapeSpectrum} clamp01={props.clamp01} isPlaying={props.isPlaying} />
+      <MixtapeRight currentTrack={props.currentTrack} isPlaying={props.isPlaying} handleControl={props.handleControl} mixtapePositionMs={props.mixtapePositionMs} mixtapeDurationMs={props.mixtapeDurationMs} mixtapeProgressPct={props.mixtapeProgressPct} handleSeek={props.handleSeek} formatTime={props.formatTime} volume={props.volume} setVolume={props.setVolume} mixtapeLiveLyric={props.mixtapeLiveLyric} nextLyric={props.nextLyric} mixtapePulseReadout={props.mixtapePulseReadout} mixtapeEnergyPct={props.mixtapeEnergyPct} mixtapeSpectrum={props.mixtapeSpectrum} copyVaultSceneEmbed={props.copyVaultSceneEmbed} />
+    </div>
+  );
+});
 
 const getApiBase = () => {
   const isElectronStandalone = typeof window !== 'undefined' && !!window.aether;
@@ -873,10 +1118,14 @@ const HeaderVisualControls = memo(forwardRef(function HeaderVisualControls({
           {isLooksPanelOpen && (
             <div className="absolute left-0 mt-2 z-[340] w-64 rounded-2xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-3 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
               <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2">Visualizer</div>
-              <div className="grid grid-cols-2 gap-1.5 mb-3">
-                {['bars', 'pulse'].map((mode) => (
-                  <button key={mode} onClick={() => setVisualizerMode(mode)} className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${visualizerMode === mode ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}>
-                    {mode === 'pulse' ? 'Aura' : 'Bars'}
+              <div className="grid grid-cols-3 gap-1.5 mb-3">
+                {[{ id: 'off', label: 'Off' }, { id: 'bars', label: 'Bars' }, { id: 'pulse', label: 'Aura' }].map((mode) => (
+                  <button
+                    key={mode.id}
+                    onClick={() => setVisualizerMode(mode.id)}
+                    className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${visualizerMode === mode.id ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                  >
+                    {mode.label}
                   </button>
                 ))}
               </div>
@@ -1200,6 +1449,694 @@ const HeaderSearchBox = memo(function HeaderSearchBox({
   );
 });
 
+const StudioLibrarySongRow = memo(function StudioLibrarySongRow({
+  entry,
+  getProxyUrl,
+  onInspect,
+  onQueue,
+  onToggleFavorite,
+  onDelete,
+  isFavorite,
+  getTrackPlayCount,
+  getTrackLastListenedMs,
+  getTrackAddedMs,
+}) {
+  const track = entry.track;
+  return (
+    <div
+      onClick={() => onInspect(track)}
+      className="performance-list-item group rounded-2xl border border-white/8 bg-black/20 p-3 transition-all cursor-pointer hover:border-brand-accent/30 hover:bg-white/[0.03]"
+    >
+      <div className="flex items-center gap-3">
+        <img src={getProxyUrl(track.thumbnail)} className="h-12 w-12 rounded-xl border border-white/10 object-cover bg-white/[0.03]" alt="" />
+        <div className="min-w-0 flex-1">
+          <div className="text-[11px] font-black uppercase tracking-widest text-white truncate group-hover:text-brand-accent transition-colors">{track.title || 'Unknown Track'}</div>
+          <div className="mt-1 text-[9px] uppercase tracking-[0.22em] text-white/30 truncate">{track.author || 'Unknown Artist'}</div>
+          <div className="mt-1 text-[8px] uppercase tracking-[0.16em] text-white/22 truncate">{entry.playlists.slice(0, 2).join(' / ')}{entry.playlists.length > 2 ? ` +${entry.playlists.length - 2}` : ''}</div>
+        </div>
+        <div className="flex items-center gap-1">
+          <button onClick={(e) => { e.stopPropagation(); onQueue(track); }} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent/70 hover:text-brand-accent hover:bg-brand-accent/20 transition-all" title="Add to queue"><Plus size={12} /></button>
+          <button onClick={(e) => { e.stopPropagation(); onToggleFavorite(track); }} className={`p-2 rounded-lg transition-all ${isFavorite(track) ? 'bg-rose-400/12 text-rose-300' : 'bg-white/5 text-white/35 hover:text-rose-300'}`} title={isFavorite(track) ? 'Remove from Favorites' : 'Add to Favorites'}><Heart size={12} fill={isFavorite(track) ? 'currentColor' : 'none'} /></button>
+          <button onClick={(e) => { e.stopPropagation(); onInspect(track); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title="Inspect"><Eye size={12} /></button>
+          <button onClick={(e) => { e.stopPropagation(); onDelete(track); }} className="p-2 rounded-lg bg-white/5 text-red-400/50 hover:text-red-400 transition-all" title="Delete from every vault"><Trash2 size={12} /></button>
+        </div>
+      </div>
+      <div className="mt-2 flex items-center justify-between text-[8px] uppercase tracking-[0.18em] text-white/25">
+        <span>{getTrackPlayCount(track)} plays</span>
+        <span>{getTrackLastListenedMs(track) ? 'Recently played' : getTrackAddedMs(track) ? 'Added' : 'Indexed'}</span>
+      </div>
+    </div>
+  );
+});
+
+const StudioLibraryPlaylistRow = memo(function StudioLibraryPlaylistRow({
+  name,
+  isRenaming,
+  renameValue,
+  setRenameValue,
+  setIsRenamingPlaylist,
+  viewingPlaylist,
+  onView,
+  onMove,
+  onExport,
+  onDelete,
+  onAddPending,
+  onRename,
+  canAddPendingToVault,
+  isStandalone,
+  draggedPlaylistName,
+  setDraggedPlaylistName,
+  reorderPlaylistByDrag,
+  playlistCount,
+  currentTrack,
+}) {
+  const isFocused = viewingPlaylist === name;
+  const isDragging = draggedPlaylistName === name;
+  const isDragEnabled = !isRenaming;
+  return (
+    <div
+      key={name}
+      draggable={isDragEnabled}
+      onClick={(e) => {
+        if (isRenaming || e.detail > 1) return;
+        onView(name);
+      }}
+      onDragStart={(e) => {
+        if (!isDragEnabled) return;
+        setDraggedPlaylistName(name);
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', name);
+      }}
+      onDragEnd={() => setDraggedPlaylistName(null)}
+      onDragOver={(e) => {
+        if (!isDragEnabled) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+      }}
+      onDrop={(e) => {
+        if (!isDragEnabled) return;
+        e.preventDefault();
+        const droppedName = e.dataTransfer.getData('text/plain');
+        reorderPlaylistByDrag(name, droppedName || draggedPlaylistName);
+      }}
+      className={`performance-list-item group rounded-2xl border p-3 transition-all cursor-pointer ${isDragging ? 'border-brand-accent/40 bg-brand-accent/12 shadow-[0_0_18px_rgba(0,255,191,0.08)]' : (isFocused ? 'border-brand-accent/35 bg-brand-accent/10 shadow-[0_0_18px_rgba(0,255,191,0.09)]' : 'border-white/8 bg-black/20 hover:border-brand-accent/30 hover:bg-white/[0.03]')}`}
+    >
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <div className="min-w-0">
+          <div className="text-[9px] font-black uppercase tracking-[0.26em] text-white/25">Vault Node</div>
+          {isRenaming ? (
+            <input
+              autoFocus
+              className="no-drag w-full rounded-md border border-brand-accent/30 bg-white/5 px-2 py-1 text-[11px] font-black uppercase tracking-tight text-brand-accent outline-none"
+              value={renameValue}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onBlur={(e) => onRename(name, e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') onRename(name, e.currentTarget.value);
+                if (e.key === 'Escape') setIsRenamingPlaylist(null);
+              }}
+            />
+          ) : (
+            <div
+              draggable={false}
+              onPointerDown={(e) => {
+                e.stopPropagation();
+              }}
+              onDoubleClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsRenamingPlaylist(name);
+                setRenameValue(name);
+              }}
+              className="font-black uppercase tracking-tight truncate group-hover:text-brand-accent transition-colors cursor-default"
+              title="Double-click to rename"
+            >
+              {name}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          {isFocused && (
+            <span className="px-2 py-1 rounded-md bg-brand-accent/12 border border-brand-accent/25 text-brand-accent text-[8px] font-black uppercase tracking-[0.2em]">Focused</span>
+          )}
+          <button onClick={(e) => { e.stopPropagation(); onAddPending(name); }} disabled={!canAddPendingToVault && !currentTrack} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent/70 hover:text-brand-accent hover:bg-brand-accent/20 transition-all disabled:opacity-30 disabled:cursor-not-allowed" title={`Add pending context to ${name}`}><Plus size={12} /></button>
+          <button onClick={(e) => { e.stopPropagation(); onMove(name, -1); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title="Move up"><ChevronLeft size={12} /></button>
+          <button onClick={(e) => { e.stopPropagation(); onMove(name, 1); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title="Move down"><ChevronRight size={12} /></button>
+          {isStandalone && <button onClick={(e) => { e.stopPropagation(); onExport(name); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title={`Export ${name} to .aether`}><Download size={12} /></button>}
+          <button onClick={(e) => { e.stopPropagation(); onDelete(name); }} className="p-2 rounded-lg bg-white/5 text-red-400/60 hover:text-red-400 transition-all" title={`Delete ${name}`}><Trash2 size={12} /></button>
+        </div>
+      </div>
+      <div className="flex items-center justify-between text-[9px] uppercase tracking-[0.2em] text-white/30">
+        <span>{playlistCount} nodes</span>
+        <span>{playlistCount > 0 ? 'Ready' : 'Empty'}</span>
+      </div>
+    </div>
+  );
+});
+
+const StudioLibraryFocusedTrackRow = memo(function StudioLibraryFocusedTrackRow({
+  track,
+  getProxyUrl,
+  onQueue,
+  onToggleFavorite,
+  onRemove,
+  isFavorite,
+}) {
+  return (
+    <div className="performance-list-item group rounded-2xl border border-white/8 bg-black/20 p-3 flex items-center gap-3 hover:border-brand-accent/30 hover:bg-white/[0.03] transition-all">
+      <img src={getProxyUrl(track.thumbnail)} className="w-11 h-11 rounded-xl object-cover border border-white/10" alt="" />
+      <div className="flex-1 min-w-0">
+        <div className="text-[11px] font-black uppercase tracking-widest truncate group-hover:text-brand-accent transition-colors">{track.title}</div>
+        <div className="text-[9px] uppercase tracking-[0.22em] text-white/30 truncate mt-1">{track.author}</div>
+      </div>
+      <button onClick={() => onQueue(track)} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent hover:bg-brand-accent hover:text-black transition-all" title="Add to queue"><Plus size={12} /></button>
+      <button onClick={() => onToggleFavorite(track)} className={`p-2 rounded-lg transition-all ${isFavorite(track) ? 'bg-rose-400/12 text-rose-300' : 'bg-white/5 text-white/35 hover:text-rose-300'}`} title={isFavorite(track) ? 'Remove from Favorites' : 'Add to Favorites'}><Heart size={12} fill={isFavorite(track) ? 'currentColor' : 'none'} /></button>
+      <button onClick={() => onRemove(track)} className="p-2 rounded-lg bg-white/5 text-red-400/50 hover:text-red-400 transition-all" title="Remove"><Trash2 size={12} /></button>
+    </div>
+  );
+});
+
+const StudioLibraryOverlayIsland = memo(function StudioLibraryOverlayIsland({
+  isOpen,
+  isStandalone,
+  isVaultCleaning,
+  libraryActionTarget,
+  currentTrack,
+  getProxyUrl,
+  libraryOverlayCreateInputRef,
+  newPlaylistName,
+  setNewPlaylistName,
+  setIsCreatingPlaylist,
+  handleAddToPlaylist,
+  pendingLibraryItems,
+  canAddPendingToVault,
+  libraryBrowseMode,
+  libraryModeOptions,
+  setLibraryBrowseMode,
+  librarySearchTerm,
+  setLibrarySearchTerm,
+  librarySongFilterOptions,
+  libraryPlaylistFilterOptions,
+  librarySongFilter,
+  setLibrarySongFilter,
+  libraryFilter,
+  setLibraryFilter,
+  librarySongSortOptions,
+  libraryPlaylistSortOptions,
+  librarySongSort,
+  setLibrarySongSort,
+  librarySort,
+  setLibrarySort,
+  librarySearchNeedle,
+  libraryVisibleSongEntries,
+  libraryVisiblePlaylistNames,
+  showFavoriteLibraryCard,
+  favoriteTracksList,
+  viewingPlaylist,
+  setViewingPlaylist,
+  isRenamingPlaylist,
+  setIsRenamingPlaylist,
+  renameValue,
+  setRenameValue,
+  handleRenamePlaylist,
+  movePlaylist,
+  handlePlaylistAddAll,
+  handleDeletePlaylist,
+  handleFavoritePlayAll,
+  handleFavoriteAddAll,
+  handleExportVault,
+  openTrackInspect,
+  handleAdd,
+  toggleFavoriteTrack,
+  isTrackFavorite,
+  handleRemoveTrackEverywhere,
+  draggedPlaylistName,
+  setDraggedPlaylistName,
+  reorderPlaylistByDrag,
+  playlists,
+  libraryTrackSort,
+  setLibraryTrackSort,
+  handlePlaylistPlayAll,
+  handleRemoveTrackFromPlaylist,
+  focusedVaultName,
+  focusedVaultVisibleTracks,
+  focusedVaultTracks,
+  libraryInsights,
+  isViewingFavorites,
+  getTrackPlayCount,
+  getTrackLastListenedMs,
+  getTrackAddedMs,
+  isDoodleMode,
+  handleImportVault,
+  handleGenerateSmartMix,
+  handleCleanVault,
+  onClose,
+}) {
+  const [searchDraft, setSearchDraft] = useState(() => librarySearchTerm || '');
+  const searchCommitRef = useRef(0);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (searchDraft === librarySearchTerm) return;
+    window.clearTimeout(searchCommitRef.current);
+    searchCommitRef.current = window.setTimeout(() => {
+      startTransition(() => setLibrarySearchTerm(searchDraft));
+    }, 140);
+    return () => window.clearTimeout(searchCommitRef.current);
+  }, [isOpen, librarySearchTerm, searchDraft, setLibrarySearchTerm]);
+
+  const clearLibrarySearch = useCallback(() => {
+    setSearchDraft('');
+    startTransition(() => setLibrarySearchTerm(''));
+  }, [setLibrarySearchTerm]);
+
+  const inspectLibraryTrack = useCallback((track) => {
+    openTrackInspect(track, 'studio-library');
+  }, [openTrackInspect]);
+
+  const queueLibraryTrack = useCallback((track) => {
+    handleAdd(track);
+  }, [handleAdd]);
+
+  const toggleLibraryFavorite = useCallback((track) => {
+    toggleFavoriteTrack(track);
+  }, [toggleFavoriteTrack]);
+
+  const deleteLibraryTrack = useCallback((track) => {
+    handleRemoveTrackEverywhere(track);
+  }, [handleRemoveTrackEverywhere]);
+
+  const addPendingToVault = useCallback((name) => {
+    const itemsToAdd = (pendingLibraryItems && pendingLibraryItems.length > 0) ? pendingLibraryItems : (currentTrack ? [currentTrack] : []);
+    if (!itemsToAdd || itemsToAdd.length === 0) return;
+    handleAddToPlaylist(name, itemsToAdd);
+    // If there were no explicit pending items and we used the focused `currentTrack`,
+    // also add it to the playback queue so the UX is convenient.
+    if ((!pendingLibraryItems || pendingLibraryItems.length === 0) && currentTrack) {
+      try {
+        handleAdd(currentTrack);
+      } catch (e) {
+        // ignore
+      }
+    }
+  }, [handleAddToPlaylist, pendingLibraryItems, currentTrack, handleAdd]);
+
+  const removeFocusedTrack = useCallback((track, index) => {
+    handleRemoveTrackFromPlaylist(viewingPlaylist, track, index);
+  }, [handleRemoveTrackFromPlaylist, viewingPlaylist]);
+
+  const updateBrowseMode = useCallback((mode) => {
+    startTransition(() => setLibraryBrowseMode(mode));
+  }, [setLibraryBrowseMode]);
+
+  const updateLibraryFilter = useCallback((value) => {
+    startTransition(() => setLibraryFilter(value));
+  }, [setLibraryFilter]);
+
+  const updateLibrarySongFilter = useCallback((value) => {
+    startTransition(() => setLibrarySongFilter(value));
+  }, [setLibrarySongFilter]);
+
+  const updateLibrarySort = useCallback((value) => {
+    startTransition(() => setLibrarySort(value));
+  }, [setLibrarySort]);
+
+  const updateLibrarySongSort = useCallback((value) => {
+    startTransition(() => setLibrarySongSort(value));
+  }, [setLibrarySongSort]);
+
+  const updateLibraryTrackSort = useCallback((value) => {
+    startTransition(() => setLibraryTrackSort(value));
+  }, [setLibraryTrackSort]);
+
+  const updateViewingPlaylist = useCallback((value) => {
+    startTransition(() => setViewingPlaylist(value));
+  }, [setViewingPlaylist]);
+
+  if (!isOpen) return null;
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="studio-library-shell fixed inset-0 z-[300] flex items-center justify-center p-3 md:p-6">
+      <div className="absolute inset-0 bg-black/78 backdrop-blur-[24px]" onClick={onClose} />
+      <div className="studio-library-backdrop absolute inset-0 pointer-events-none overflow-hidden" />
+      <motion.div initial={{ scale: 0.965, y: 18 }} animate={{ scale: 1, y: 0 }} className="studio-library-modal w-full max-w-[1540px] h-[92vh] bg-[#070a0d]/86 border border-white/10 rounded-[2.25rem] relative z-10 overflow-hidden flex flex-col shadow-[0_32px_110px_rgba(0,0,0,0.62)]">
+        <div className="studio-library-glow-line absolute inset-x-0 top-0 h-px" />
+        <div className="studio-library-topbar flex items-center justify-between gap-4 p-5 md:p-6 border-b border-white/8">
+          <div className="flex items-center gap-4 min-w-0">
+            <div className="w-11 h-11 rounded-2xl bg-brand-accent/10 border border-brand-accent/25 flex items-center justify-center shrink-0">
+              <HardDrive size={18} className="text-brand-accent" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-[9px] font-black uppercase tracking-[0.32em] text-white/30">Neural Library Overlay</div>
+              <div className="text-xl md:text-2xl font-black uppercase tracking-tight text-brand-accent truncate">Studio Library</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            {isStandalone && <button onClick={handleImportVault} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all" title="Import Vault (.aether)">Import</button>}
+            <button onClick={handleGenerateSmartMix} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all" title="Generate Smart Mix">Smart Mix</button>
+            <button onClick={handleCleanVault} disabled={isVaultCleaning} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all disabled:opacity-40" title="Clean Vault">Clean</button>
+            <button onClick={onClose} className="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="studio-library-workspace flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[minmax(380px,0.92fr)_minmax(520px,1.38fr)] gap-4 p-3 md:p-5 overflow-hidden">
+          <div className="studio-library-column studio-library-left border border-white/8 rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 h-full">
+            <div className="px-4 py-4 border-b border-white/8 flex items-center justify-between bg-black/20">
+              <div>
+                <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Library Desk</div>
+                <div className="text-[12px] font-black uppercase tracking-widest text-brand-accent">Vault Actions</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={onClose} className="p-2 rounded-xl bg-white/5 border border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/40 transition-all" title="Close Overlay">
+                  <X size={14} />
+                </button>
+                <button onClick={() => { setIsCreatingPlaylist(true); setNewPlaylistName((prev) => prev || ''); }} className="p-2 rounded-xl bg-brand-accent/10 border border-brand-accent/20 text-brand-accent hover:bg-brand-accent hover:text-black transition-all shadow-[0_0_18px_rgba(0,255,191,0.14)]" title="Create New Vault">
+                  <Plus size={14} />
+                </button>
+              </div>
+            </div>
+
+            <div className="studio-library-action-dock shrink-0 min-h-0 p-3 space-y-2">
+              <div className="flex items-center gap-3 rounded-2xl bg-black/18 border border-brand-accent/18 p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                {libraryActionTarget?.type === 'queue' ? (
+                  <div className="w-12 h-12 rounded-xl bg-brand-accent/10 border border-brand-accent/20 flex items-center justify-center text-brand-accent font-black text-[10px]">Q</div>
+                ) : (
+                  <img src={getProxyUrl(libraryActionTarget?.items?.[0]?.thumbnail || currentTrack?.thumbnail)} className="w-12 h-12 rounded-xl object-cover border border-white/10" alt="" />
+                )}
+                <div className="min-w-0">
+                  <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/35">Ready to Save</div>
+                  <div className="font-black uppercase tracking-tight text-white truncate">
+                    {libraryActionTarget?.type === 'queue'
+                      ? `Queue Buffer (${libraryActionTarget.items.length})`
+                      : (libraryActionTarget?.items?.[0]?.title || currentTrack?.title || 'Create Empty Vault')}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 p-1.5 rounded-2xl bg-black/28 border border-white/8 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                <input
+                  ref={libraryOverlayCreateInputRef}
+                  className="bg-transparent border-none outline-none text-[12px] font-black text-brand-accent uppercase tracking-widest placeholder:text-brand-accent/30 w-full px-2 py-2"
+                  placeholder="New vault name..."
+                  value={newPlaylistName}
+                  onChange={(e) => setNewPlaylistName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && newPlaylistName.trim()) {
+                      handleAddToPlaylist(newPlaylistName.trim(), pendingLibraryItems);
+                      setNewPlaylistName('');
+                      setIsCreatingPlaylist(false);
+                    }
+                  }}
+                />
+                <button
+                  onClick={() => {
+                    if (newPlaylistName.trim()) {
+                      handleAddToPlaylist(newPlaylistName.trim(), pendingLibraryItems);
+                      setNewPlaylistName('');
+                      setIsCreatingPlaylist(false);
+                    }
+                  }}
+                  disabled={!newPlaylistName.trim()}
+                  className="p-2 rounded-lg bg-brand-accent/20 text-brand-accent hover:bg-brand-accent hover:text-black transition-all shadow-neon disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  <Plus size={16} />
+                </button>
+              </div>
+              {!libraryActionTarget && !currentTrack && (
+                <div className="text-[9px] uppercase tracking-[0.18em] text-white/28">No active track. Creates an empty vault.</div>
+              )}
+            </div>
+
+            <div className="studio-library-controls shrink-0 border-y border-white/8 bg-black/28 p-4 space-y-3">
+              <div className="relative">
+                <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
+                <input
+                  value={searchDraft}
+                  onChange={(e) => setSearchDraft(e.target.value)}
+                  placeholder={libraryBrowseMode === 'songs' ? 'Search songs, artists, vaults...' : 'Search vaults, songs, artists...'}
+                  className="no-drag w-full rounded-2xl border border-white/10 bg-white/[0.035] py-2.5 pl-9 pr-9 text-[12px] font-bold text-white outline-none transition-colors placeholder:text-white/25 focus:border-brand-accent/35 focus:bg-brand-accent/[0.045]"
+                />
+                {searchDraft && (
+                  <button
+                    onClick={clearLibrarySearch}
+                    className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-xl text-white/35 transition-colors hover:text-brand-accent"
+                    title="Clear library search"
+                  >
+                    <X size={13} />
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-2 rounded-2xl border border-white/8 bg-black/28 p-1">
+                {libraryModeOptions.map((option) => (
+                  <button
+                    key={option.id}
+                    onClick={() => updateBrowseMode(option.id)}
+                    className={`rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${libraryBrowseMode === option.id ? 'bg-brand-accent text-black shadow-[0_0_18px_rgba(0,255,191,0.18)]' : 'text-white/42 hover:text-brand-accent'}`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3 text-[8px] font-black uppercase tracking-[0.2em] text-white/24">
+                  <span>Filter</span>
+                  <span>{libraryBrowseMode === 'songs' ? 'Track View' : 'Vault View'}</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {(libraryBrowseMode === 'songs' ? librarySongFilterOptions : libraryPlaylistFilterOptions).map((option) => {
+                    const active = libraryBrowseMode === 'songs' ? librarySongFilter === option.id : libraryFilter === option.id;
+                    return (
+                      <button
+                        key={option.id}
+                        onClick={() => libraryBrowseMode === 'songs' ? updateLibrarySongFilter(option.id) : updateLibraryFilter(option.id)}
+                        className={`rounded-xl border px-2.5 py-1.5 text-[9px] font-black uppercase tracking-[0.14em] transition-all ${active ? 'border-brand-accent/45 bg-brand-accent/15 text-brand-accent' : 'border-white/8 bg-white/[0.025] text-white/42 hover:border-brand-accent/25 hover:text-brand-accent'}`}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex items-center justify-between gap-3 text-[8px] font-black uppercase tracking-[0.2em] text-white/24">
+                  <span>Sort</span>
+                  <span>{libraryBrowseMode === 'songs' ? libraryVisibleSongEntries.length : libraryVisiblePlaylistNames.length + (showFavoriteLibraryCard ? 1 : 0)} shown</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {(libraryBrowseMode === 'songs' ? librarySongSortOptions : libraryPlaylistSortOptions).map((option) => {
+                    const active = libraryBrowseMode === 'songs' ? librarySongSort === option.id : librarySort === option.id;
+                    return (
+                      <button
+                        key={option.id}
+                        onClick={() => libraryBrowseMode === 'songs' ? updateLibrarySongSort(option.id) : updateLibrarySort(option.id)}
+                        className={`rounded-xl border px-2.5 py-1.5 text-[9px] font-black uppercase tracking-[0.14em] transition-all ${active ? 'border-brand-accent/45 bg-brand-accent/15 text-brand-accent' : 'border-white/8 bg-white/[0.025] text-white/42 hover:border-brand-accent/25 hover:text-brand-accent'}`}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="flex items-center justify-between text-[9px] font-black uppercase tracking-[0.2em] text-white/28">
+                <span>{libraryBrowseMode === 'songs' ? `${libraryVisibleSongEntries.length} songs` : `${libraryVisiblePlaylistNames.length + (showFavoriteLibraryCard ? 1 : 0)} vaults`}</span>
+                <span>{librarySearchNeedle ? 'Filtered' : libraryBrowseMode === 'songs' ? 'Song Index' : 'Browse'}</span>
+              </div>
+            </div>
+
+            <div className="studio-library-list flex-1 min-h-0 overflow-y-auto custom-scrollbar-heavy overscroll-contain p-4 space-y-3 pb-10">
+              {libraryBrowseMode === 'songs' ? (
+                <>
+                  {libraryVisibleSongEntries.map((entry) => (
+                    <StudioLibrarySongRow
+                      key={`library-song-${entry.key}`}
+                      entry={entry}
+                      getProxyUrl={getProxyUrl}
+                      onInspect={inspectLibraryTrack}
+                      onQueue={queueLibraryTrack}
+                      onToggleFavorite={toggleLibraryFavorite}
+                      onDelete={deleteLibraryTrack}
+                      isFavorite={isTrackFavorite}
+                      getTrackPlayCount={getTrackPlayCount}
+                      getTrackLastListenedMs={getTrackLastListenedMs}
+                      getTrackAddedMs={getTrackAddedMs}
+                    />
+                  ))}
+                  {libraryVisibleSongEntries.length === 0 && (
+                    <div className="rounded-2xl border border-white/8 bg-black/20 p-5 text-center">
+                      <Search size={22} className="mx-auto text-white/25" />
+                      <div className="mt-3 text-[10px] font-black uppercase tracking-[0.22em] text-white/38">No songs match</div>
+                      <button onClick={() => { clearLibrarySearch(); updateLibrarySongFilter('all'); }} className="mt-3 rounded-xl border border-brand-accent/25 bg-brand-accent/10 px-3 py-2 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent transition-colors hover:bg-brand-accent hover:text-black">Reset songs</button>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  {showFavoriteLibraryCard && (
+                    <div
+                      onClick={() => updateViewingPlaylist(FAVORITES_PLAYLIST_ID)}
+                      className={`performance-list-item group rounded-2xl border p-3 transition-all cursor-pointer ${viewingPlaylist === FAVORITES_PLAYLIST_ID ? 'border-rose-300/40 bg-rose-400/12 shadow-[0_0_18px_rgba(251,113,133,0.09)]' : 'border-rose-300/15 bg-rose-400/[0.035] hover:border-rose-300/35 hover:bg-rose-400/[0.06]'}`}
+                    >
+                      <div className="flex items-center justify-between gap-3 mb-2">
+                        <div className="min-w-0">
+                          <div className="text-[9px] font-black uppercase tracking-[0.26em] text-rose-200/45">Built-in Vault</div>
+                          <div className="font-black uppercase tracking-tight truncate group-hover:text-rose-300 transition-colors">{FAVORITES_PLAYLIST_NAME}</div>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {viewingPlaylist === FAVORITES_PLAYLIST_ID && (
+                            <span className="px-2 py-1 rounded-md bg-rose-400/12 border border-rose-300/25 text-rose-200 text-[8px] font-black uppercase tracking-[0.2em]">Focused</span>
+                          )}
+                          <button onClick={(e) => { e.stopPropagation(); handleFavoritePlayAll(false); }} className="p-2 rounded-lg bg-rose-400/10 text-rose-200/80 hover:text-rose-100 hover:bg-rose-400/20 transition-all" title="Play Favorites"><Play size={12} /></button>
+                          <button onClick={(e) => { e.stopPropagation(); handleFavoritePlayAll(true); }} className="p-2 rounded-lg bg-rose-400/10 text-rose-200/80 hover:text-rose-100 hover:bg-rose-400/20 transition-all" title="Shuffle Favorites"><Shuffle size={12} /></button>
+                          <button onClick={(e) => { e.stopPropagation(); handleFavoriteAddAll(); }} className="p-2 rounded-lg bg-white/5 text-rose-200/70 hover:text-rose-100 hover:bg-rose-400/20 transition-all" title="Add Favorites to Queue"><Plus size={12} /></button>
+                          {isStandalone && <button onClick={(e) => { e.stopPropagation(); handleExportVault(FAVORITES_PLAYLIST_ID); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-rose-200 transition-all" title="Export Favorites"><Download size={12} /></button>}
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between text-[9px] uppercase tracking-[0.2em] text-white/30">
+                        <span>{favoriteTracksList.length} nodes</span>
+                        <span>{favoriteTracksList.length > 0 ? 'Ready' : 'Empty'}</span>
+                      </div>
+                    </div>
+                  )}
+                  {libraryVisiblePlaylistNames.map((name) => (
+                    <StudioLibraryPlaylistRow
+                      key={name}
+                      name={name}
+                      isRenaming={isRenamingPlaylist === name}
+                      renameValue={renameValue}
+                      setRenameValue={setRenameValue}
+                      setIsRenamingPlaylist={setIsRenamingPlaylist}
+                      viewingPlaylist={viewingPlaylist}
+                      onView={updateViewingPlaylist}
+                      onMove={movePlaylist}
+                      onExport={handleExportVault}
+                      onDelete={handleDeletePlaylist}
+                      onAddPending={addPendingToVault}
+                      currentTrack={currentTrack}
+                      onRename={handleRenamePlaylist}
+                      canAddPendingToVault={canAddPendingToVault}
+                      isStandalone={isStandalone}
+                      draggedPlaylistName={draggedPlaylistName}
+                      setDraggedPlaylistName={setDraggedPlaylistName}
+                      reorderPlaylistByDrag={reorderPlaylistByDrag}
+                      playlistCount={(playlists[name] || []).length}
+                    />
+                  ))}
+                  {!showFavoriteLibraryCard && libraryVisiblePlaylistNames.length === 0 && (
+                    <div className="rounded-2xl border border-white/8 bg-black/20 p-5 text-center">
+                      <Search size={22} className="mx-auto text-white/25" />
+                      <div className="mt-3 text-[10px] font-black uppercase tracking-[0.22em] text-white/38">No vault matches</div>
+                      <button onClick={() => { clearLibrarySearch(); updateLibraryFilter('all'); }} className="mt-3 rounded-xl border border-brand-accent/25 bg-brand-accent/10 px-3 py-2 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent transition-colors hover:bg-brand-accent hover:text-black">Reset filters</button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="studio-library-column studio-library-focus border border-white/8 rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 h-full">
+            {viewingPlaylist ? (
+              <div key={viewingPlaylist} className="flex flex-col min-h-0 flex-1">
+                <div className="px-4 py-4 border-b border-white/8 flex items-center justify-between bg-black/20">
+                  <div className="min-w-0">
+                    <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Focused Vault</div>
+                    {isRenamingPlaylist === viewingPlaylist && !isViewingFavorites ? (
+                      <input
+                        autoFocus
+                        className="no-drag mt-1 w-full max-w-sm rounded-xl border border-brand-accent/35 bg-black/35 px-3 py-2 text-lg font-black uppercase tracking-tight text-brand-accent outline-none"
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onBlur={(e) => handleRenamePlaylist(viewingPlaylist, e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleRenamePlaylist(viewingPlaylist, e.currentTarget.value);
+                          if (e.key === 'Escape') setIsRenamingPlaylist(null);
+                        }}
+                      />
+                    ) : (
+                      <div
+                        onDoubleClick={(e) => {
+                          if (isViewingFavorites) return;
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setIsRenamingPlaylist(viewingPlaylist);
+                          setRenameValue(viewingPlaylist);
+                        }}
+                        className={`text-lg font-black uppercase tracking-tight truncate cursor-default ${isViewingFavorites ? 'text-rose-300' : 'text-brand-accent hover:opacity-80 transition-opacity'}`}
+                        title={isViewingFavorites ? focusedVaultName : 'Double-click to rename'}
+                      >
+                        {focusedVaultName}
+                      </div>
+                    )}
+                    <div className="mt-1 text-[9px] uppercase tracking-[0.22em] text-white/35">{focusedVaultVisibleTracks.length}/{focusedVaultTracks.length} tracks</div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap justify-end">
+                    <select
+                      value={libraryTrackSort}
+                      onChange={(e) => updateLibraryTrackSort(e.target.value)}
+                      className="no-drag rounded-lg border border-white/10 bg-[#0b0f12] px-2 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-white/55 outline-none focus:border-brand-accent/35"
+                      title="Sort tracks"
+                    >
+                      <option value="original">Original</option>
+                      <option value="title">Title</option>
+                      <option value="artist">Artist</option>
+                      <option value="listened-desc">Recently Played</option>
+                      <option value="added-desc">Recently Added</option>
+                      <option value="plays-desc">Most Played</option>
+                      <option value="duration-desc">Longest</option>
+                      <option value="duration-asc">Shortest</option>
+                    </select>
+                    <button onClick={() => handlePlaylistPlayAll(viewingPlaylist, false)} className={`p-2 rounded-lg transition-all ${isViewingFavorites ? 'bg-rose-400/10 text-rose-200/80 hover:bg-rose-400/20' : 'bg-brand-accent/10 text-brand-accent hover:bg-brand-accent hover:text-black'}`} title={`Play ${focusedVaultName}`}><Play size={12} /></button>
+                    <button onClick={() => handlePlaylistPlayAll(viewingPlaylist, true)} className="p-2 rounded-lg bg-white/5 text-white/40 hover:text-brand-accent transition-all" title={`Shuffle ${focusedVaultName}`}><Shuffle size={12} /></button>
+                    <button onClick={() => handlePlaylistAddAll(viewingPlaylist)} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent hover:bg-brand-accent hover:text-black transition-all" title={`Add all tracks from ${focusedVaultName} to queue`}><Plus size={12} /></button>
+                    {isStandalone && <button onClick={() => handleExportVault(viewingPlaylist)} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title={`Export ${focusedVaultName} to .aether`}><Download size={12} /></button>}
+                    <button onClick={() => handleDeletePlaylist(viewingPlaylist)} className="p-2 rounded-lg bg-white/5 text-red-400/60 hover:text-red-400 transition-all" title={isViewingFavorites ? 'Clear Favorites' : `Delete ${viewingPlaylist}`}><Trash2 size={12} /></button>
+                    <button onClick={() => updateViewingPlaylist(null)} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-red-400 transition-all" title="Back"><ChevronLeft size={12} /></button>
+                  </div>
+                </div>
+                <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 pb-24 space-y-2 bg-gradient-to-b from-brand-accent/5 to-transparent overscroll-contain">
+                  {focusedVaultVisibleTracks.map((track, tidx) => (
+                    <StudioLibraryFocusedTrackRow
+                      key={`${viewingPlaylist}-${tidx}`}
+                      track={track}
+                      getProxyUrl={getProxyUrl}
+                      onQueue={queueLibraryTrack}
+                      onToggleFavorite={toggleLibraryFavorite}
+                      onRemove={() => removeFocusedTrack(track, tidx)}
+                      isFavorite={isTrackFavorite}
+                    />
+                  ))}
+                  {focusedVaultVisibleTracks.length === 0 && (
+                    <div className="rounded-2xl border border-white/8 bg-black/20 p-8 text-center">
+                      <Search size={24} className="mx-auto text-white/25" />
+                      <div className="mt-3 text-[10px] font-black uppercase tracking-[0.22em] text-white/38">No tracks match this search</div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 pb-24 flex flex-col gap-3 bg-gradient-to-b from-brand-accent/5 to-transparent overscroll-contain">
+                <div className="rounded-2xl border border-white/8 bg-black/20 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                  <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Library Stats</div>
+                  <div className="mt-3 grid grid-cols-3 gap-3 text-center">
+                    <div className="rounded-xl bg-white/5 border border-white/8 p-3"><div className="text-brand-accent font-black text-lg">{libraryInsights.unique}</div><div className="text-[8px] uppercase tracking-[0.24em] text-white/30">Unique</div></div>
+                    <div className="rounded-xl bg-white/5 border border-white/8 p-3"><div className="text-brand-accent font-black text-lg">{libraryInsights.total}</div><div className="text-[8px] uppercase tracking-[0.24em] text-white/30">Total</div></div>
+                    <div className="rounded-xl bg-white/5 border border-white/8 p-3"><div className="text-brand-accent font-black text-lg">{libraryInsights.duplicates}</div><div className="text-[8px] uppercase tracking-[0.24em] text-white/30">Dupes</div></div>
+                  </div>
+                </div>
+                <div className="text-[10px] uppercase tracking-[0.2em] text-white/25 text-center">Select a vault node to focus it here.</div>
+                {isDoodleMode && (
+                  <div className="flex items-center justify-center gap-2 opacity-70">
+                    <img src={catDoodlePeek} alt="doodle" className="h-8 w-auto select-none pointer-events-none" draggable={false} />
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+});
+
 const PlaybackProgressIsland = memo(function PlaybackProgressIsland({
   durationMs,
   getPositionMs,
@@ -1222,6 +2159,10 @@ const PlaybackProgressIsland = memo(function PlaybackProgressIsland({
     let lastLabel = '';
 
     const update = (now) => {
+      if (typeof document !== 'undefined' && document.hidden) {
+        raf = requestAnimationFrame(update);
+        return;
+      }
       const liveMs = Math.max(0, Math.floor(Number(getPositionMs?.() || 0)));
       const pct = safeDurationMs > 0 ? clamp01(liveMs / safeDurationMs) : 0;
       if (fillRef.current) {
@@ -1434,6 +2375,17 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
   const [ledgerClearPassword, setLedgerClearPassword] = useState('');
   const [ledgerClearError, setLedgerClearError] = useState('');
   const [isClearingLedger, setIsClearingLedger] = useState(false);
+  const ledgerMountedRef = useRef(true);
+  const ledgerRefreshIntervalRef = useRef(0);
+  const ledgerLiveIntervalRef = useRef(0);
+
+  useEffect(() => () => {
+    ledgerMountedRef.current = false;
+    if (ledgerRefreshIntervalRef.current) window.clearInterval(ledgerRefreshIntervalRef.current);
+    if (ledgerLiveIntervalRef.current) window.clearInterval(ledgerLiveIntervalRef.current);
+    ledgerRefreshIntervalRef.current = 0;
+    ledgerLiveIntervalRef.current = 0;
+  }, []);
 
   const loadLedger = useCallback(async () => {
     try {
@@ -1446,10 +2398,12 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
         data = raw ? JSON.parse(raw) : null;
       }
       const normalized = normalizePlaybackLedgerData(data);
+      if (!ledgerMountedRef.current) return normalized;
       setSoundCapsuleData(normalized);
       setLastUpdatedAt(Date.now());
       return normalized;
     } catch (error) {
+      if (!ledgerMountedRef.current) return normalizePlaybackLedgerData(null);
       setLedgerError(error?.message || 'Ledger refresh failed');
       const fallback = normalizePlaybackLedgerData(null);
       setSoundCapsuleData(fallback);
@@ -1644,11 +2598,18 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
 
   useEffect(() => {
     if (!isOpen) return undefined;
-    const refreshInterval = window.setInterval(loadLedger, 5000);
-    const liveInterval = window.setInterval(() => setLiveTick((tick) => tick + 1), 2500);
+    if (ledgerRefreshIntervalRef.current || ledgerLiveIntervalRef.current) {
+      console.warn('[Aether/Perf] Signal Ledger refresh timers were already active; replacing stale timers.');
+      if (ledgerRefreshIntervalRef.current) window.clearInterval(ledgerRefreshIntervalRef.current);
+      if (ledgerLiveIntervalRef.current) window.clearInterval(ledgerLiveIntervalRef.current);
+    }
+    ledgerRefreshIntervalRef.current = window.setInterval(loadLedger, 5000);
+    ledgerLiveIntervalRef.current = window.setInterval(() => setLiveTick((tick) => tick + 1), 2500);
     return () => {
-      window.clearInterval(refreshInterval);
-      window.clearInterval(liveInterval);
+      if (ledgerRefreshIntervalRef.current) window.clearInterval(ledgerRefreshIntervalRef.current);
+      if (ledgerLiveIntervalRef.current) window.clearInterval(ledgerLiveIntervalRef.current);
+      ledgerRefreshIntervalRef.current = 0;
+      ledgerLiveIntervalRef.current = 0;
     };
   }, [isOpen, loadLedger]);
 
@@ -2540,7 +3501,225 @@ const AppLockSettingsIsland = memo(forwardRef(function AppLockSettingsIsland({
   );
 }));
 
+// === DISCOVERY GRID COMPONENT (Memoized) ===
+const DiscoveryGridSection = memo(function DiscoveryGridSection({
+  discoveryItems,
+  isSearching,
+  searchResults,
+  hasCompletedSearch,
+  isTrackFavorite,
+  openTrackInspect,
+  isSearchActive,
+  handleAdd,
+  toggleFavoriteTrack,
+  openLibraryOverlay,
+  isDoodleMode,
+  catDoodlePeek,
+}) {
+  return (
+    <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 pb-6">
+      <AnimatePresence>
+        {discoveryItems.map((t) => (
+          <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} key={t.id} className="performance-list-item glass-card p-4 flex items-center gap-4 hover:border-brand-accent group overflow-hidden relative transition-all active:scale-[0.98] border-white/5">
+            <img src={window.__AETHER_PROXY_URL?.(t.thumbnail) || t.thumbnail} className="w-14 h-14 rounded-2xl object-cover z-10" alt="" />
+            <div className="flex-1 min-w-0 z-10">
+              <div className="text-[13px] font-black truncate group-hover:text-brand-accent transition-colors uppercase tracking-widest">{t.title}</div>
+              <div className="text-[10px] text-brand-text-dim truncate font-bold opacity-50 mt-1 uppercase leading-none">{t.author}</div>
+            </div>
+            <div className="flex items-center gap-2 z-10">
+              <button onClick={() => openTrackInspect(t, isSearchActive ? 'discovery' : 'recommendation')} className="w-10 h-10 rounded-xl bg-white/5 text-white/30 flex items-center justify-center hover:bg-brand-accent/20 hover:text-brand-accent transition-all border border-white/10" title="Inspect Track">
+                <Eye size={18} />
+              </button>
+              <button onClick={() => handleAdd(t)} className="w-10 h-10 rounded-xl bg-brand-accent/10 text-brand-accent flex items-center justify-center hover:bg-brand-accent hover:text-brand-dark transition-all border border-brand-accent/20">
+                <Plus size={22} />
+              </button>
+              <button onClick={() => toggleFavoriteTrack(t)} className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all border ${isTrackFavorite(t) ? 'bg-rose-400/15 text-rose-300 border-rose-300/30' : 'bg-white/5 text-white/30 hover:bg-rose-400/15 hover:text-rose-300 border-white/10 hover:border-rose-300/30'}`} title={isTrackFavorite(t) ? 'Remove from Favorites' : 'Add to Favorites'}>
+                <Heart size={17} fill={isTrackFavorite(t) ? 'currentColor' : 'none'} />
+              </button>
+              <button onClick={() => openLibraryOverlay({ type: 'track', items: [t] })} className="w-10 h-10 rounded-xl bg-white/5 text-white/30 flex items-center justify-center hover:bg-brand-accent/20 hover:text-brand-accent transition-all border border-white/10">
+                <HardDrive size={18} />
+              </button>
+            </div>
+            <div className="absolute inset-0 bg-brand-accent/[0.05] translate-y-full group-hover:translate-y-0 transition-transform duration-500" />
+          </motion.div>
+        ))}
+      </AnimatePresence>
+      {!isSearching && searchResults.length === 0 && window.__AETHER_NEURAL_RECS?.length === 0 && !hasCompletedSearch && (
+        <div className="h-full flex flex-col items-center justify-center gap-4 opacity-10 text-center py-4">
+          <div className="relative">
+            <Search size={32} strokeWidth={1} />
+            <div className="absolute inset-0 blur-xl bg-brand-accent/30 animate-pulse" />
+          </div>
+          <p className="text-[8px] font-black uppercase tracking-[0.4em]">Awaiting Content</p>
+          {isDoodleMode && <img src={catDoodlePeek} alt="doodle" className="h-10 w-auto opacity-75 select-none pointer-events-none" draggable={false} />}
+        </div>
+      )}
+      {!isSearching && searchResults.length === 0 && hasCompletedSearch && (
+        <div className="h-full flex flex-col items-center justify-center gap-4 text-center py-4 opacity-40">
+          <div className="relative text-brand-accent/70">
+            <Search size={30} strokeWidth={1.4} />
+          </div>
+          <div>
+            <p className="text-[9px] font-black uppercase tracking-[0.35em] text-white/60">No Results Found</p>
+            <p className="mt-2 text-[8px] font-bold uppercase tracking-[0.25em] text-white/30 max-w-[220px] mx-auto">
+              Try a different title, artist, or fewer words.
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+// ===  LIBRARY CONTENT SECTIONS (Memoized) ===
+const LibrarySongRowsGrid = memo(function LibrarySongRowsGrid({
+  libraryVisibleSongEntries,
+  getProxyUrl,
+  openTrackInspect,
+  handleAdd,
+  toggleFavoriteTrack,
+  isTrackFavorite,
+  handleRemoveTrackEverywhere,
+  getTrackPlayCount,
+  getTrackLastListenedMs,
+  getTrackAddedMs,
+}) {
+  return (
+    <div className="space-y-2 flex-1 overflow-y-auto pb-4 custom-scrollbar">
+      {libraryVisibleSongEntries.map((entry) => (
+        <StudioLibrarySongRow
+          key={entry.track.id}
+          entry={entry}
+          getProxyUrl={getProxyUrl}
+          onInspect={openTrackInspect}
+          onQueue={handleAdd}
+          onToggleFavorite={toggleFavoriteTrack}
+          onDelete={handleRemoveTrackEverywhere}
+          isFavorite={isTrackFavorite}
+          getTrackPlayCount={getTrackPlayCount}
+          getTrackLastListenedMs={getTrackLastListenedMs}
+          getTrackAddedMs={getTrackAddedMs}
+        />
+      ))}
+    </div>
+  );
+});
+
+// === LIBRARY PLAYLIST ROWS (Memoized) ===
+const LibraryPlaylistRowsGrid = memo(function LibraryPlaylistRowsGrid({
+  libraryVisiblePlaylistNames,
+  showFavoriteLibraryCard,
+  isRenamingPlaylist,
+  renameValue,
+  setRenameValue,
+  setIsRenamingPlaylist,
+  viewingPlaylist,
+  handleRenamePlaylist,
+  movePlaylist,
+  handleExportVault,
+  handleDeletePlaylist,
+  addPendingToVault,
+  currentTrack,
+  canAddPendingToVault,
+  isStandalone,
+  draggedPlaylistName,
+  setDraggedPlaylistName,
+  reorderPlaylistByDrag,
+  playlists,
+  clearLibrarySearch,
+  updateLibraryFilter,
+}) {
+  return (
+    <div className="space-y-2 flex-1 overflow-y-auto pb-4 custom-scrollbar">
+      {showFavoriteLibraryCard && (
+        <StudioLibraryPlaylistRow
+          name="Favorite Songs"
+          isRenaming={false}
+          renameValue=""
+          setRenameValue={() => { }}
+          setIsRenamingPlaylist={() => { }}
+          viewingPlaylist={viewingPlaylist}
+          onView={() => { }}
+          onMove={() => { }}
+          onExport={() => { }}
+          onDelete={() => { }}
+          onAddPendingToVault={addPendingToVault}
+          currentTrack={currentTrack}
+          onRename={() => { }}
+          canAddPendingToVault={canAddPendingToVault}
+          isStandalone={isStandalone}
+          draggedPlaylistName={draggedPlaylistName}
+          setDraggedPlaylistName={setDraggedPlaylistName}
+          reorderPlaylistByDrag={reorderPlaylistByDrag}
+          playlistCount={0}
+        />
+      )}
+      {libraryVisiblePlaylistNames.map((name) => (
+        <StudioLibraryPlaylistRow
+          key={name}
+          name={name}
+          isRenaming={isRenamingPlaylist === name}
+          renameValue={renameValue}
+          setRenameValue={setRenameValue}
+          setIsRenamingPlaylist={setIsRenamingPlaylist}
+          viewingPlaylist={viewingPlaylist}
+          onView={() => { }}
+          onMove={movePlaylist}
+          onExport={handleExportVault}
+          onDelete={handleDeletePlaylist}
+          onAddPendingToVault={addPendingToVault}
+          currentTrack={currentTrack}
+          onRename={handleRenamePlaylist}
+          canAddPendingToVault={canAddPendingToVault}
+          isStandalone={isStandalone}
+          draggedPlaylistName={draggedPlaylistName}
+          setDraggedPlaylistName={setDraggedPlaylistName}
+          reorderPlaylistByDrag={reorderPlaylistByDrag}
+          playlistCount={(playlists[name] || []).length}
+        />
+      ))}
+      {!showFavoriteLibraryCard && libraryVisiblePlaylistNames.length === 0 && (
+        <div className="rounded-2xl border border-white/8 bg-black/20 p-5 text-center">
+          <Search size={22} className="mx-auto text-white/25" />
+          <div className="mt-3 text-[10px] font-black uppercase tracking-[0.22em] text-white/38">No vault matches</div>
+          <button onClick={() => { clearLibrarySearch(); updateLibraryFilter('all'); }} className="mt-3 rounded-xl border border-brand-accent/25 bg-brand-accent/10 px-3 py-2 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent transition-colors hover:bg-brand-accent hover:text-black">Reset filters</button>
+        </div>
+      )}
+    </div>
+  );
+});
+
 function App() {
+  // --- AETHER DEV PROFILER ---
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const measureLag = (e) => {
+      if (!window.AETHER_DEV_PROFILE) return;
+      const start = performance.now();
+      requestAnimationFrame(() => {
+        const lag = performance.now() - start;
+        if (lag > 22) {
+          console.warn(`[Aether Profiler] Input lag spike detected on ${e.type}: ${lag.toFixed(2)}ms render cycle delay.`, e.target);
+        }
+      });
+    };
+    window.addEventListener('mousedown', measureLag, { passive: true });
+    window.addEventListener('keydown', measureLag, { passive: true });
+    return () => {
+      window.removeEventListener('mousedown', measureLag);
+      window.removeEventListener('keydown', measureLag);
+    };
+  }, []);
+
+  // React Profiler callback for tracking render performance
+  const handleProfilerData = useCallback((id, phase, actualDuration, baseDuration, startTime, commitTime) => {
+    if (!window.AETHER_DEV_PROFILE) return;
+    // Only log slow renders (>5ms)
+    if (actualDuration > 5) {
+      console.log(`[Aether React Profiler] ${id} (${phase}): ${actualDuration.toFixed(2)}ms (base: ${baseDuration.toFixed(2)}ms)`);
+    }
+  }, []);
+
   // --- App Lock Recovery (Electron only) ---
   const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState(false);
   const [isLockModalOpen, setIsLockModalOpen] = useState(false);
@@ -2661,6 +3840,7 @@ function App() {
     lastTransportGuardAt: null,
     lastTransportGuardAction: null,
   });
+  const [repairResult, setRepairResult] = useState(null);
   const [lastAdded, setLastAdded] = useState(null);
   const [currentTrackTitle, setCurrentTrackTitle] = useState("");
   const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
@@ -2692,25 +3872,37 @@ function App() {
   const [isLyricsExpanded, setIsLyricsExpanded] = useState(false);
   const typedBufferRef = useRef('');
   const [isMixtapeVaultOpen, setIsMixtapeVaultOpen] = useState(false);
+  const [cassetteSide, setCassetteSide] = useState('A');
+  const prevCassetteTrackIdRef = useRef(null);
+  useEffect(() => {
+    const trackId = queue?.[0]?.id || queue?.[0]?.youtubeId;
+    if (trackId && trackId !== prevCassetteTrackIdRef.current) {
+      if (prevCassetteTrackIdRef.current !== null) {
+        setCassetteSide(prev => prev === 'A' ? 'B' : 'A');
+      }
+      prevCassetteTrackIdRef.current = trackId;
+    }
+  }, [queue]);
   const [sharedScene, setSharedScene] = useState(null);
   const [isSharedSceneOpen, setIsSharedSceneOpen] = useState(false);
   const [vaultPulse, setVaultPulse] = useState({ bass: 0, mids: 0, highs: 0, energy: 0, spin: 0, stamp: 'AETHER-PULSE' });
   const vaultPulseRef = useRef(vaultPulse);
   const lastVaultStateUpdateRef = useRef(0);
-  const [vaultSpectrum, setVaultSpectrum] = useState(() => Array(8).fill(0.12));
+  const [vaultSpectrum, setVaultSpectrum] = useState(() => Array(48).fill(0.12));
   const [playlists, setPlaylists] = useState({});
   const [playlistOrder, setPlaylistOrder] = useState([]);
   const [favoriteTracks, setFavoriteTracks] = useState({});
   const playlistOrderHydratedRef = useRef(false);
   const [viewingPlaylist, setViewingPlaylist] = useState(null);
   const [newPlaylistName, setNewPlaylistName] = useState('');
-    const [isViewingFullQueue, setIsViewingFullQueue] = useState(false);
-    const [isViewingFullDiscovery, setIsViewingFullDiscovery] = useState(false);
-    const [isViewingFullPlaylist, setIsViewingFullPlaylist] = useState(null);
-    const [isFullQueueContentReady, setIsFullQueueContentReady] = useState(false);
-    const [isFullDiscoveryContentReady, setIsFullDiscoveryContentReady] = useState(false);
-    const [isFullPlaylistContentReady, setIsFullPlaylistContentReady] = useState(false);
-    const [isMixtapeVaultContentReady, setIsMixtapeVaultContentReady] = useState(false);
+  const [isViewingFullQueue, setIsViewingFullQueue] = useState(false);
+  const [isViewingFullDiscovery, setIsViewingFullDiscovery] = useState(false);
+  const [isViewingFullPlaylist, setIsViewingFullPlaylist] = useState(null);
+  const [isFullQueueContentReady, setIsFullQueueContentReady] = useState(false);
+  const [isFullDiscoveryContentReady, setIsFullDiscoveryContentReady] = useState(false);
+  const [isFullPlaylistContentReady, setIsFullPlaylistContentReady] = useState(false);
+  const [isMixtapeVaultContentReady, setIsMixtapeVaultContentReady] = useState(false);
+  const [isLibraryOverlayContentReady, setIsLibraryOverlayContentReady] = useState(false);
   const [isLibraryOverlayOpen, setIsLibraryOverlayOpen] = useState(false);
   const [isSoundCapsuleOpen, setIsSoundCapsuleOpen] = useState(false);
   const [soundCapsuleData, setSoundCapsuleData] = useState(null);
@@ -2799,12 +3991,12 @@ function App() {
   const [engineStatus, setEngineStatus] = useState(null);
   const [offlineDownloads, setOfflineDownloads] = useState([]);
   const [isOfflineDownloadsBusy, setIsOfflineDownloadsBusy] = useState(false);
-  
+
   const isStandalone = !!window.aether;
   const [videoMode, setVideoMode] = useState(null); // null | 'dual' | 'cinema'
   const currentTrack = queue?.[0];
 
-  
+
   const fileInputRef = useRef(null);
   const [isAutoplayEnabled, setIsAutoplayEnabled] = useState(true);
   const [autoplayMoodMode, setAutoplayMoodMode] = useState('flow');
@@ -2838,6 +4030,7 @@ function App() {
     auraPreset: 'balanced',
     isMixtapeVaultOpen: false,
     performanceMode: 'high',
+    isHeavyOverlayOpen: false,
   });
   const visualizerErrorCountRef = useRef(0);
   const visualizerFrameBudgetRef = useRef({ lastDrawAt: 0, lastStyleAt: 0, lastMixtapeCssAt: 0, brandAccent: '#00ffbf', brandContrast: '#ff00ff', canvas: null, ctx: null, pulseCanvas: null, pulseCtx: null });
@@ -2846,14 +4039,60 @@ function App() {
   const beatRingsRef = useRef(null);
   const lastBeatRingTimeRef = useRef(0);
   const vaultTelemetryRef = useRef({ lastStateAt: 0 });
+  const uiInteractionCooldownUntilRef = useRef(0);
 
   const isAuraMode = visualizerMode === 'pulse';
-  
+
   const liveBeatIntensity = useMemo(() => clamp01(
     (vaultPulse.energy * 0.9) + (vaultPulse.bass * 0.45) + (vaultPulse.highs * 0.12)
   ), [vaultPulse.energy, vaultPulse.bass, vaultPulse.highs]);
   const immersiveBeatIntensity = useMemo(() => isAuraMode ? liveBeatIntensity : 0, [isAuraMode, liveBeatIntensity]);
-  const livePulseReadout = isPlaying ? Math.max(liveBeatIntensity, 0.08) : liveBeatIntensity;
+
+  // Pulse smoothing: keep high-frequency RAF updates in refs (no re-render),
+  // and only update React state at a modest rate to avoid heavy re-renders.
+  const pulseReadoutRef = useRef(0);
+  const pulseTargetRef = useRef(0);
+  const [pulseDisplay, setPulseDisplay] = useState(0); // low-frequency UI state (updates ~10Hz)
+
+  useEffect(() => {
+    pulseTargetRef.current = isPlaying ? Math.max(liveBeatIntensity, 0) : 0;
+  }, [liveBeatIntensity, isPlaying]);
+
+  useEffect(() => {
+    let raf = null;
+    const ease = 0.15;
+    const decay = 0.96;
+
+    const step = () => {
+      const target = pulseTargetRef.current;
+      let prev = pulseReadoutRef.current;
+      let next = prev;
+      if (target > prev) next = prev + (target - prev) * ease;
+      else next = prev * decay;
+      next = Math.max(0, Math.min(1, next));
+      pulseReadoutRef.current = Math.abs(next) < 0.0005 ? 0 : next;
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  // Sync ref -> state at low frequency to reduce renders
+  useEffect(() => {
+    let interval = null;
+    const fps = 10; // update UI ~10 times per second
+    interval = setInterval(() => {
+      setPulseDisplay((prev) => {
+        const next = pulseReadoutRef.current;
+        // small clamp to avoid unnecessary updates
+        if (Math.abs(next - prev) < 0.003) return prev;
+        return next;
+      });
+    }, 1000 / fps);
+    return () => clearInterval(interval);
+  }, []);
+
+  const livePulseReadout = pulseDisplay;
 
   const auraCardShadow = useMemo(() => isAuraMode
     ? `0 24px 60px rgba(0,0,0,0.30), inset 0 0 ${10 + immersiveBeatIntensity * 30}px rgba(0,255,191,${0.06 + immersiveBeatIntensity * 0.24})`
@@ -3026,6 +4265,17 @@ function App() {
   const queueRef = useRef([]);
   const currentTimeRef = useRef(0);   // live mirror of currentTime for video handler closures
   const currentTimeCommitRef = useRef({ committed: 0, at: 0 });
+  const isAppLockedRef = useRef(isAppLocked);
+  const lockIdleMinutesRef = useRef(lockIdleMinutes);
+  const lockIdleListenersActiveRef = useRef(false);
+  const deviceSyncIntervalRef = useRef(0);
+  const discordQueuePollIntervalRef = useRef(0);
+  const remoteHeartbeatIntervalRef = useRef(0);
+  const soundCapsuleLiveIntervalRef = useRef(0);
+  const soundCapsuleWarmupTimeoutRef = useRef(0);
+  const volumeToastTimeoutRef = useRef(0);
+  const effectiveGuildIdRef = useRef(DEFAULT_GUILD_ID);
+  const handleControlRef = useRef(null);
   const ledgerSessionRef = useRef({ id: '', trackKey: '', counted: false, lastLoggedMs: 0 });
   const liveStreamStartOffsetMsRef = useRef(0);
   const [cinemaControlsVisible, setCinemaControlsVisible] = useState(true);
@@ -3034,6 +4284,31 @@ function App() {
   const [showVisualLyrics, setShowVisualLyrics] = useState(true);
   const [visualControlsPinned, setVisualControlsPinned] = useState(false);
   const [visualVideoFit, setVisualVideoFit] = useState('contain');
+
+  const clearTrackedInterval = useCallback((timerRef, label) => {
+    if (!timerRef?.current) return;
+    console.warn(`[Aether/Perf] Clearing stale ${label} interval before creating another.`);
+    window.clearInterval(timerRef.current);
+    timerRef.current = 0;
+  }, []);
+
+  const clearTrackedTimeout = useCallback((timerRef, label) => {
+    if (!timerRef?.current) return;
+    console.warn(`[Aether/Perf] Clearing stale ${label} timeout before creating another.`);
+    window.clearTimeout(timerRef.current);
+    timerRef.current = 0;
+  }, []);
+
+  const showVolumeToastFor = useCallback((durationMs = 2000) => {
+    setVolumeToast(true);
+    if (volumeToastTimeoutRef.current) {
+      window.clearTimeout(volumeToastTimeoutRef.current);
+    }
+    volumeToastTimeoutRef.current = window.setTimeout(() => {
+      volumeToastTimeoutRef.current = 0;
+      setVolumeToast(false);
+    }, durationMs);
+  }, []);
 
   const setCurrentTime = useCallback((nextValue) => {
     const previous = Math.max(0, Number(currentTimeRef.current) || 0);
@@ -3046,9 +4321,10 @@ function App() {
     currentTimeRef.current = nextMs;
 
     const isReset = nextMs === 0;
-    const isLargeJump = Math.abs(nextMs - previousCommitted) >= 900;
+    const isUiTick = now - last.at >= 900;
+    const isLargeJump = Math.abs(nextMs - previousCommitted) >= 4000;
     const isStaleCommit = now - last.at >= 8000;
-    if (!isReset && !isLargeJump && !isStaleCommit) return;
+    if (!isReset && !isUiTick && !isLargeJump && !isStaleCommit) return;
 
     last.committed = nextMs;
     last.at = now;
@@ -3090,14 +4366,21 @@ function App() {
         vid.removeAttribute('src');
         vid.load();
       }
-    } catch {}
+    } catch { }
   }, []);
 
   const exitVideoMode = useCallback((options = {}) => {
-    const { preservePosition = true } = options;
+    const { preservePosition = true, reason = 'unspecified' } = options;
     const vid = localVideoRef.current;
     const shouldRestoreVerticalStack = restoreVerticalStackAfterVideoRef.current;
     restoreVerticalStackAfterVideoRef.current = false;
+
+    console.log('[Aether/Video] Exiting video mode', {
+      reason,
+      preservePosition,
+      title: currentTrackRef.current?.title,
+      youtubeId: currentTrackRef.current?.youtubeId,
+    });
 
     // Step 1: Capture handoff timestamp BEFORE touching anything
     const handoffMs = vid?.currentTime > 0
@@ -3149,7 +4432,7 @@ function App() {
         localAudioRef.current.removeAttribute('src');
         localAudioRef.current.load();
         localAudioRef.current.muted = false;
-      } catch {}
+      } catch { }
     }
     standaloneTrackLoadKeyRef.current = '';
     setPlaybackResetNonce((prev) => prev + 1);
@@ -3164,10 +4447,7 @@ function App() {
   // Reset isVideoReady on track change
   useEffect(() => {
     setIsVideoReady(false);
-    if (!queue || queue.length === 0) {
-      if (videoModeRef.current) exitVideoMode();
-    }
-  }, [queue?.[0]?.url, queue?.[0]?.youtubeId, queue?.length, exitVideoMode]);
+  }, [queue?.[0]?.url, queue?.[0]?.youtubeId]);
 
   const switchVideoMode = useCallback((nextMode) => {
     const next = nextMode || null;
@@ -3175,7 +4455,7 @@ function App() {
     if (next === currentMode) return;
     if (next === null) {
       if (!currentMode) return;
-      exitVideoMode();
+      exitVideoMode({ reason: 'user_switch_to_audio' });
       return;
     }
 
@@ -3220,6 +4500,71 @@ function App() {
     setVideoMode(next);
   }, [exitVideoMode, getActivePlaybackPositionMs, isVerticalStack, stopVideoElement]);
 
+  // Resolve missing YouTube ID when user enters video mode from vault/playlist tracks.
+  useEffect(() => {
+    if (!isStandalone || !videoMode || !queue?.[0] || !window.aether?.search) return;
+
+    const track = queue[0];
+    if (track.youtubeId || track.videoResolveAttempted) return;
+
+    const searchQuery = [track.author, track.title].filter(Boolean).join(' ').trim() || track.title || '';
+    if (!searchQuery) return;
+
+    setQueue((current) => {
+      if (!Array.isArray(current) || current.length === 0) return current;
+      const head = current[0];
+      if (head.queueNonce !== track.queueNonce) return current;
+      if (head.youtubeId || head.videoResolveAttempted) return current;
+      return [{ ...head, videoResolveAttempted: true }, ...current.slice(1)];
+    });
+
+    console.log('[Aether/Video] Resolving missing YouTube ID for video mode', {
+      title: track.title,
+      author: track.author,
+      searchQuery,
+    });
+
+    (async () => {
+      try {
+        const results = await window.aether.search(searchQuery);
+        const candidates = Array.isArray(results) ? results : [];
+        const best = candidates.find((item) => {
+          const idFromResult = item?.youtubeId || extractYouTubeId(item?.actualUrl || item?.url || item?.id);
+          return Boolean(idFromResult);
+        });
+        const resolvedYoutubeId = best?.youtubeId || extractYouTubeId(best?.actualUrl || best?.url || best?.id);
+        if (!resolvedYoutubeId) return;
+
+        setQueue((current) => {
+          if (!Array.isArray(current) || current.length === 0) return current;
+          const head = current[0];
+          if (head.queueNonce !== track.queueNonce) return current;
+          if (head.youtubeId) return current;
+          return [
+            {
+              ...head,
+              youtubeId: resolvedYoutubeId,
+              actualUrl: `https://www.youtube.com/watch?v=${resolvedYoutubeId}`,
+              url: `https://www.youtube.com/watch?v=${resolvedYoutubeId}`,
+              thumbnail: head.thumbnail || `https://i.ytimg.com/vi/${resolvedYoutubeId}/hqdefault.jpg`,
+            },
+            ...current.slice(1),
+          ];
+        });
+
+        console.log('[Aether/Video] Resolved YouTube ID for queued track', {
+          title: track.title,
+          youtubeId: resolvedYoutubeId,
+        });
+      } catch (err) {
+        console.warn('[Aether/Video] Failed to resolve YouTube ID for queued track', {
+          title: track.title,
+          error: err?.message || err,
+        });
+      }
+    })();
+  }, [isStandalone, videoMode, queue]);
+
   useEffect(() => {
     if (!isStandalone || !window.aether?.onYouTubeAuthRequired) return;
     const unsub = window.aether.onYouTubeAuthRequired((data) => {
@@ -3228,11 +4573,20 @@ function App() {
     return unsub;
   }, [isStandalone]);
 
+  useEffect(() => () => {
+    if (volumeToastTimeoutRef.current) {
+      window.clearTimeout(volumeToastTimeoutRef.current);
+      volumeToastTimeoutRef.current = 0;
+    }
+  }, []);
+
   // Keep videoModeRef in sync with videoMode state (synchronous for closure callbacks)
   useEffect(() => { videoModeRef.current = videoMode; }, [videoMode]);
   // Live mirrors so video handler closures never go stale on isPlaying / currentTime
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
   useEffect(() => { queueRef.current = Array.isArray(queue) ? queue : []; }, [queue]);
+  useEffect(() => { isAppLockedRef.current = isAppLocked; }, [isAppLocked]);
+  useEffect(() => { lockIdleMinutesRef.current = lockIdleMinutes; }, [lockIdleMinutes]);
   useEffect(() => {
     if (currentTime === 0 || Math.abs(currentTime - currentTimeRef.current) > 1200) {
       currentTimeRef.current = currentTime;
@@ -3281,6 +4635,22 @@ function App() {
     return undefined;
   }, [isMixtapeVaultOpen]);
   useEffect(() => {
+    let raf1 = 0;
+    let raf2 = 0;
+    if (isLibraryOverlayOpen) {
+      setIsLibraryOverlayContentReady(false);
+      raf1 = requestAnimationFrame(() => {
+        raf2 = requestAnimationFrame(() => setIsLibraryOverlayContentReady(true));
+      });
+      return () => {
+        cancelAnimationFrame(raf1);
+        cancelAnimationFrame(raf2);
+      };
+    }
+    setIsLibraryOverlayContentReady(false);
+    return undefined;
+  }, [isLibraryOverlayOpen]);
+  useEffect(() => {
     visualizerStateRef.current = {
       visualizerMode,
       themeColor,
@@ -3288,9 +4658,36 @@ function App() {
       isMixtapeVaultOpen,
       isAuraStageOpen,
       isSharedSceneOpen,
+      isHeavyOverlayOpen: Boolean(
+        isMixtapeVaultOpen ||
+        isLibraryOverlayOpen ||
+        isViewingFullQueue ||
+        isViewingFullDiscovery ||
+        isViewingFullPlaylist ||
+        isPlayerOverlayOpen ||
+        isLyricsExpanded ||
+        isManualLyricsEditorOpen ||
+        isSpotifyImportOpen
+      ),
       performanceMode,
     };
-  }, [visualizerMode, themeColor, auraPreset, isMixtapeVaultOpen, isAuraStageOpen, isSharedSceneOpen, performanceMode]);
+  }, [
+    visualizerMode,
+    themeColor,
+    auraPreset,
+    isMixtapeVaultOpen,
+    isAuraStageOpen,
+    isSharedSceneOpen,
+    isLibraryOverlayOpen,
+    isViewingFullQueue,
+    isViewingFullDiscovery,
+    isViewingFullPlaylist,
+    isPlayerOverlayOpen,
+    isLyricsExpanded,
+    isManualLyricsEditorOpen,
+    isSpotifyImportOpen,
+    performanceMode,
+  ]);
 
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
@@ -3305,7 +4702,7 @@ function App() {
   useEffect(() => {
     if (videoMode && !queue?.[0]) {
       console.log('[Aether/Video] Queue empty — exiting video mode');
-      exitVideoMode({ preservePosition: false });
+      exitVideoMode({ preservePosition: false, reason: 'queue_empty' });
     }
   }, [queue, videoMode, exitVideoMode]);
 
@@ -3323,7 +4720,7 @@ function App() {
           savedAt: Date.now(),
           closedAt: Date.now(),
         });
-      } catch {}
+      } catch { }
 
       stopVideoElement(localVideoRef.current);
       localVideoRef.current = null;
@@ -3342,7 +4739,7 @@ function App() {
           localAudioRef.current.muted = true;
           localAudioRef.current.removeAttribute('src');
           localAudioRef.current.load();
-        } catch {}
+        } catch { }
       }
     };
 
@@ -3386,25 +4783,46 @@ function App() {
 
     const track = queue[0];
     const trackActionKey = getTrackActionKey(track);
-    const youtubeUrl = track?.youtubeId
+
+    // Build YouTube URL - use youtubeId if available, otherwise fall back to URL
+    let youtubeUrl = track?.youtubeId
       ? `https://www.youtube.com/watch?v=${track.youtubeId}`
       : track?.actualUrl || track?.url || '';
-    
-    if (!youtubeUrl) return;
+
+    // If we don't yet have a resolvable URL, allow the resolver effect to run first.
+    // Only fall back after a resolve attempt has already been made.
+    if (!youtubeUrl) {
+      if (!track?.videoResolveAttempted) {
+        console.log('[Aether/Video] Waiting for YouTube ID resolution before fallback', {
+          title: track?.title,
+          author: track?.author,
+        });
+        setIsAudioBuffering(true);
+        return;
+      }
+
+      console.warn('[Aether/Video] No video source after resolution attempt; falling back to audio', {
+        title: track?.title,
+        author: track?.author,
+      });
+      if (videoModeRef.current) exitVideoMode({ reason: 'no_video_source_after_resolve' });
+      return;
+    }
 
     const streamBase = `http://localhost:${streamPort}`;
     const targetSrc = `${streamBase}/videostream?url=${encodeURIComponent(youtubeUrl)}&quality=${videoQuality}&_r=${playbackResetNonce}`;
+    let videoRetryCount = 0;
 
     // Mute / pause the audio element — video owns output now
     if (localAudioRef.current) {
-        localAudioRef.current.muted = true;
-        localAudioRef.current.pause();
+      localAudioRef.current.muted = true;
+      localAudioRef.current.pause();
     }
 
     // Only reload src if actually changed (don't disrupt a playing video on re-render)
     if (vid && vid.src !== targetSrc) {
-        vid.src = targetSrc;
-        setIsAudioBuffering(true);
+      vid.src = targetSrc;
+      setIsAudioBuffering(true);
     }
 
     videoEndGuardRef.current = {
@@ -3435,42 +4853,59 @@ function App() {
 
     // Handlers — re-attach every time track/mode changes, not on play/pause
     vid.oncanplay = () => {
-        // Sync video position to where audio was (one-time on initial load only)
-        const targetSec = Math.floor(currentTimeRef.current / 1000);
-        if (vid.currentTime === 0 && targetSec > 2) vid.currentTime = targetSec;
-        if (isPlayingRef.current) vid.play().catch(() => {});
-        setIsAudioBuffering(false);
-        setIsVideoReady(true);
+      // Sync video position to where audio was (one-time on initial load only)
+      const targetSec = Math.floor(currentTimeRef.current / 1000);
+      if (vid.currentTime === 0 && targetSec > 2) vid.currentTime = targetSec;
+      if (isPlayingRef.current) vid.play().catch(() => { });
+      setIsAudioBuffering(false);
+      setIsVideoReady(true);
     };
     vid.onwaiting = () => setIsAudioBuffering(true);
     vid.onplaying = () => setIsAudioBuffering(false);
     vid.ontimeupdate = () => {
-        const currentMs = Math.max(0, Math.floor((vid.currentTime || 0) * 1000));
-        const guard = videoEndGuardRef.current;
-        if (guard?.trackKey === trackActionKey) {
-          if (currentMs > guard.lastObservedMs + 120) {
-            guard.lastObservedMs = currentMs;
-            guard.lastProgressAt = Date.now();
-          }
-          const durationMs = getResolvedVideoDurationMs();
-          const nearEndThresholdMs = durationMs > 0 ? Math.max(450, Math.min(1500, durationMs * 0.02)) : 0;
-          const remainingMs = durationMs > 0 ? Math.max(0, durationMs - currentMs) : Infinity;
-          if (durationMs > 0 && remainingMs <= nearEndThresholdMs) {
-            guard.lastNearEndAt ||= Date.now();
-          } else {
-            guard.lastNearEndAt = 0;
-          }
+      const currentMs = Math.max(0, Math.floor((vid.currentTime || 0) * 1000));
+      const guard = videoEndGuardRef.current;
+      if (guard?.trackKey === trackActionKey) {
+        if (currentMs > guard.lastObservedMs + 120) {
+          guard.lastObservedMs = currentMs;
+          guard.lastProgressAt = Date.now();
         }
-        if (currentMs > 0) setCurrentTime(currentMs);
+        const durationMs = getResolvedVideoDurationMs();
+        const nearEndThresholdMs = durationMs > 0 ? Math.max(450, Math.min(1500, durationMs * 0.02)) : 0;
+        const remainingMs = durationMs > 0 ? Math.max(0, durationMs - currentMs) : Infinity;
+        if (durationMs > 0 && remainingMs <= nearEndThresholdMs) {
+          guard.lastNearEndAt ||= Date.now();
+        } else {
+          guard.lastNearEndAt = 0;
+        }
+      }
+      if (currentMs > 0) setCurrentTime(currentMs);
     };
     vid.onended = () => settleVideoNaturalEnd();
     vid.onerror = () => {
-      console.warn('[Aether/Video] Video playback error, falling back to audio mode', {
+      if (videoRetryCount < 1) {
+        videoRetryCount += 1;
+        const retrySrc = `${targetSrc}&vr=${Date.now()}`;
+        console.warn('[Aether/Video] Video playback error, retrying source before fallback', {
+          title: track?.title,
+          url: youtubeUrl,
+          retry: videoRetryCount,
+        });
+        try {
+          vid.src = retrySrc;
+          setIsAudioBuffering(true);
+          return;
+        } catch (err) {
+          console.warn('[Aether/Video] Retry source assignment failed', err);
+        }
+      }
+
+      console.warn('[Aether/Video] Video playback error after retry, falling back to audio mode', {
         title: track?.title,
         url: youtubeUrl,
       });
       setIsAudioBuffering(false);
-      exitVideoMode();
+      exitVideoMode({ reason: 'video_element_error' });
     };
 
     const nearEndWatchdog = window.setInterval(() => {
@@ -3499,25 +4934,25 @@ function App() {
     }, 260);
 
     return () => {
-        window.clearInterval(nearEndWatchdog);
-        if (vid) {
-            vid.oncanplay = null;
-            vid.onwaiting = null;
-            vid.onplaying = null;
-            vid.ontimeupdate = null;
-            vid.onended = null;
-            vid.onerror = null;
-        }
-        videoEndGuardRef.current = { trackKey: '', settled: false, lastNearEndAt: 0, lastObservedMs: 0, lastProgressAt: 0 };
+      window.clearInterval(nearEndWatchdog);
+      if (vid) {
+        vid.oncanplay = null;
+        vid.onwaiting = null;
+        vid.onplaying = null;
+        vid.ontimeupdate = null;
+        vid.onended = null;
+        vid.onerror = null;
+      }
+      videoEndGuardRef.current = { trackKey: '', settled: false, lastNearEndAt: 0, lastObservedMs: 0, lastProgressAt: 0 };
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queue?.[0]?.id, queue?.[0]?.queueNonce, videoMode, streamPort, playbackResetNonce, videoQuality]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queue?.[0]?.id, queue?.[0]?.queueNonce, queue?.[0]?.youtubeId, queue?.[0]?.videoResolveAttempted, queue?.[0]?.url, queue?.[0]?.actualUrl, videoMode, streamPort, playbackResetNonce, videoQuality]);
 
   // Video play/pause sync — separate effect so it doesn't re-run src/seek logic
   useEffect(() => {
     if (!videoMode || !localVideoRef.current) return;
     if (isPlaying) {
-      localVideoRef.current.play().catch(() => {});
+      localVideoRef.current.play().catch(() => { });
     } else {
       localVideoRef.current.pause();
     }
@@ -3639,16 +5074,16 @@ function App() {
     let toast = '';
     if (nextStatus === 'checking') {
       toast = 'Checking for updates…';
-    } else 
-    if (nextStatus === 'available') {
-      toast = `Update available${updateInfo?.version ? ` • v${updateInfo.version}` : ''}`;
-    } else if (nextStatus === 'up-to-date') {
-      toast = 'You are on the latest version';
-    } else if (nextStatus === 'downloaded') {
-      toast = `Update ready${updateInfo?.version ? ` • v${updateInfo.version}` : ''} • restart to install`;
-    } else if (nextStatus === 'error') {
-      toast = `Updater issue${updateInfo?.message ? `: ${String(updateInfo.message).slice(0, 58)}` : ''}`;
-    }
+    } else
+      if (nextStatus === 'available') {
+        toast = `Update available${updateInfo?.version ? ` • v${updateInfo.version}` : ''}`;
+      } else if (nextStatus === 'up-to-date') {
+        toast = 'You are on the latest version';
+      } else if (nextStatus === 'downloaded') {
+        toast = `Update ready${updateInfo?.version ? ` • v${updateInfo.version}` : ''} • restart to install`;
+      } else if (nextStatus === 'error') {
+        toast = `Updater issue${updateInfo?.message ? `: ${String(updateInfo.message).slice(0, 58)}` : ''}`;
+      }
 
     if (!toast) return;
     setUpdateToast(toast);
@@ -3896,7 +5331,16 @@ function App() {
     if (except !== 'sleep') setIsSleepTimerMenuOpen(false);
   }, []);
 
+  const markUiInteraction = useCallback((durationMs = 900) => {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    uiInteractionCooldownUntilRef.current = Math.max(
+      uiInteractionCooldownUntilRef.current || 0,
+      now + durationMs
+    );
+  }, []);
+
   const runAfterInputPaint = useCallback((fn) => {
+    markUiInteraction(1100);
     if (typeof window === 'undefined') {
       startTransition(fn);
       return;
@@ -3904,7 +5348,7 @@ function App() {
     window.requestAnimationFrame(() => {
       window.setTimeout(() => startTransition(fn), 0);
     });
-  }, []);
+  }, [markUiInteraction]);
 
   const openLibraryOverlay = useCallback((target = null) => {
     runAfterInputPaint(() => {
@@ -3912,13 +5356,18 @@ function App() {
       const fallbackPlaylist = viewingPlaylist === FAVORITES_PLAYLIST_ID && favoriteCount > 0
         ? FAVORITES_PLAYLIST_ID
         : (viewingPlaylist && playlists[viewingPlaylist])
-        ? viewingPlaylist
-        : (favoriteCount > 0 ? FAVORITES_PLAYLIST_ID : (playlistOrder.find((name) => Array.isArray(playlists[name])) || Object.keys(playlists)[0] || null));
+          ? viewingPlaylist
+          : (favoriteCount > 0 ? FAVORITES_PLAYLIST_ID : (playlistOrder.find((name) => Array.isArray(playlists[name])) || Object.keys(playlists)[0] || null));
       if (fallbackPlaylist) setViewingPlaylist(fallbackPlaylist);
       setLibraryActionTarget(target);
       setIsLibraryOverlayOpen(true);
     });
   }, [favoriteTracks, playlistOrder, playlists, runAfterInputPaint, viewingPlaylist]);
+
+  const closeLibraryOverlay = useCallback(() => {
+    setIsLibraryOverlayOpen(false);
+    setLibraryActionTarget(null);
+  }, []);
 
   const openFeedbackPanel = useCallback(() => {
     runAfterInputPaint(() => {
@@ -4411,14 +5860,14 @@ function App() {
     if (!lockStatus.enabled) return;
 
     const lockNow = () => {
-      if (!isAppLocked) setIsAppLocked(true);
+      if (!isAppLockedRef.current) setIsAppLocked(true);
     };
 
     let idleTimer = null;
-    const idleMs = Math.max(1, lockIdleMinutes || 1) * 60 * 1000;
     const resetIdle = () => {
       if (idleTimer) clearTimeout(idleTimer);
-      if (isAppLocked) return;
+      if (isAppLockedRef.current) return;
+      const idleMs = Math.max(1, Number(lockIdleMinutesRef.current) || 1) * 60 * 1000;
       idleTimer = setTimeout(() => {
         console.log('[Aether/Lock] Idle timeout lock triggered');
         lockNow();
@@ -4426,14 +5875,19 @@ function App() {
     };
 
     const activityEvents = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
+    if (lockIdleListenersActiveRef.current) {
+      console.warn('[Aether/Perf] App Lock idle listeners were already active; replacing stale listener set.');
+    }
+    lockIdleListenersActiveRef.current = true;
     activityEvents.forEach((eventName) => window.addEventListener(eventName, resetIdle, { passive: true }));
     resetIdle();
 
     return () => {
       activityEvents.forEach((eventName) => window.removeEventListener(eventName, resetIdle));
+      lockIdleListenersActiveRef.current = false;
       if (idleTimer) clearTimeout(idleTimer);
     };
-  }, [isAppLocked, lockIdleMinutes, lockStatus.enabled]);
+  }, [lockStatus.enabled]);
 
   const getProxyUrl = (url) => {
     if (!url) return null;
@@ -4448,32 +5902,42 @@ function App() {
         parsed.pathname = parsed.pathname.replace(/maxresdefault\.(jpg|webp)$/i, 'hqdefault.jpg');
         processed = parsed.toString();
       }
-    } catch {}
+    } catch { }
     if (processed.startsWith('http://localhost') || processed.startsWith('http://127.0.0.1')) return processed;
-    
+
     if (isStandalone) {
-        return `http://localhost:${streamPort}/api/proxy?url=${encodeURIComponent(processed)}`;
+      return `http://localhost:${streamPort}/api/proxy?url=${encodeURIComponent(processed)}`;
     }
     return `${API_BASE}/api/proxy?url=${encodeURIComponent(processed)}`;
   };
 
   useEffect(() => {
-     if (!isStandalone) return;
-     const int = setInterval(() => {
-        axios.post(`http://localhost:${streamPort}/api/device/sync`, {
-           isPlaying: isPlayingRef.current,
-           currentTime: Math.max(0, Math.floor(currentTimeRef.current || 0)),
-           track: currentTrackRef.current
-        }).catch(()=>{});
-     }, 1000);
-     return () => clearInterval(int);
-  }, [isStandalone, streamPort]);
+    if (!isStandalone) return;
+    clearTrackedInterval(deviceSyncIntervalRef, 'device sync');
+    deviceSyncIntervalRef.current = window.setInterval(() => {
+      axios.post(`http://localhost:${streamPort}/api/device/sync`, {
+        isPlaying: isPlayingRef.current,
+        currentTime: Math.max(0, Math.floor(currentTimeRef.current || 0)),
+        track: currentTrackRef.current
+      }).catch(() => { });
+    }, 1000);
+    return () => {
+      if (deviceSyncIntervalRef.current) {
+        window.clearInterval(deviceSyncIntervalRef.current);
+        deviceSyncIntervalRef.current = 0;
+      }
+    };
+  }, [clearTrackedInterval, isStandalone, streamPort]);
 
 
   const getEffectiveGuildId = useCallback(() => {
     const guildId = auth?.guild_id || new URLSearchParams(window.location.search).get('guild_id');
     return guildId && guildId !== '0' ? guildId : DEFAULT_GUILD_ID;
   }, [auth]);
+
+  useEffect(() => {
+    effectiveGuildIdRef.current = getEffectiveGuildId();
+  }, [getEffectiveGuildId]);
 
   const getTrackPresetKey = useCallback((track) => {
     if (!track) return '';
@@ -4527,17 +5991,17 @@ function App() {
       : (Array.isArray(lyrics) ? sortManualLyricsLines(lyrics) : []);
     const draftLines = sourceLines.length > 0
       ? sourceLines.map((line, index) => ({
-          id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
-          time: Number.isFinite(Number(line?.time)) ? Math.max(0, Math.trunc(Number(line.time))) : 0,
-          timestamp: formatManualLyricsTimestamp(Number.isFinite(Number(line?.time)) ? Math.max(0, Math.trunc(Number(line.time))) : 0).slice(1, -1),
-          text: String(line?.text || ''),
-        }))
+        id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+        time: Number.isFinite(Number(line?.time)) ? Math.max(0, Math.trunc(Number(line.time))) : 0,
+        timestamp: formatManualLyricsTimestamp(Number.isFinite(Number(line?.time)) ? Math.max(0, Math.trunc(Number(line.time))) : 0).slice(1, -1),
+        text: String(line?.text || ''),
+      }))
       : [{
-          id: `${Date.now()}-0-${Math.random().toString(36).slice(2, 8)}`,
-          time: Math.max(0, Math.trunc(Number(getActivePlaybackPositionMs()) || 0)),
-          timestamp: formatManualLyricsTimestamp(Math.max(0, Math.trunc(Number(getActivePlaybackPositionMs()) || 0))).slice(1, -1),
-          text: '',
-        }];
+        id: `${Date.now()}-0-${Math.random().toString(36).slice(2, 8)}`,
+        time: Math.max(0, Math.trunc(Number(getActivePlaybackPositionMs()) || 0)),
+        timestamp: formatManualLyricsTimestamp(Math.max(0, Math.trunc(Number(getActivePlaybackPositionMs()) || 0))).slice(1, -1),
+        text: '',
+      }];
 
     setManualLyricsDraft(draftLines);
     setManualLyricsRawText(manualLyricsLinesToLrc(draftLines));
@@ -4641,10 +6105,10 @@ function App() {
     setManualLyricsDraftAndSync((prev) => prev.map((line, lineIndex) => (
       lineIndex === index
         ? {
-            ...line,
-            time: nextTimestamp,
-            timestamp: formatManualLyricsTimestamp(nextTimestamp).slice(1, -1),
-          }
+          ...line,
+          time: nextTimestamp,
+          timestamp: formatManualLyricsTimestamp(nextTimestamp).slice(1, -1),
+        }
         : line
     )));
   }, [getActivePlaybackPositionMs, setManualLyricsDraftAndSync]);
@@ -4659,10 +6123,10 @@ function App() {
       return prev.map((line, lineIndex) => (
         lineIndex === index
           ? {
-              ...line,
-              time: nextTimestamp,
-              timestamp: formatManualLyricsTimestamp(nextTimestamp).slice(1, -1),
-            }
+            ...line,
+            time: nextTimestamp,
+            timestamp: formatManualLyricsTimestamp(nextTimestamp).slice(1, -1),
+          }
           : line
       ));
     });
@@ -4829,9 +6293,9 @@ function App() {
   }, []);
 
   useEffect(() => {
-     if (isStandalone && window.aether?.getLocalIp) {
-         window.aether.getLocalIp().then(setLocalIp);
-     }
+    if (isStandalone && window.aether?.getLocalIp) {
+      window.aether.getLocalIp().then(setLocalIp);
+    }
   }, [isStandalone]);
 
   useEffect(() => {
@@ -4937,7 +6401,7 @@ function App() {
     if (!currentTrack?.title) {
       webTrackLoadKeyRef.current = '';
       if (player?.stopVideo) {
-        try { player.stopVideo(); } catch {}
+        try { player.stopVideo(); } catch { }
       }
       setCurrentTime(0);
       return;
@@ -4994,7 +6458,7 @@ function App() {
           setIsAudioBuffering(false);
           return true;
         }
-      } catch {}
+      } catch { }
       return false;
     };
 
@@ -5016,7 +6480,7 @@ function App() {
           const nextMs = Math.max(0, Math.floor(ytPlayer.getCurrentTime() * 1000));
           setCurrentTime(nextMs);
           if (nextMs > 0) clearWebBufferingIfAudible(ytPlayer);
-        } catch {}
+        } catch { }
       }, 500);
     };
 
@@ -5136,7 +6600,7 @@ function App() {
       } else {
         player.pauseVideo?.();
       }
-    } catch {}
+    } catch { }
   }, [isStandalone, isPlaying, volume, webAudioUnlocked]);
 
 
@@ -5208,8 +6672,9 @@ function App() {
   }, [isStandalone]);
 
   useEffect(() => {
-    let pollInterval;
-    
+    let unsubscribeMaximized = null;
+    let unsubscribeLibraryUpdate = null;
+
     if (isStandalone) {
       setAuth({ guild_id: 'LOCAL', user: { id: 'Standalone', username: 'DESKTOP_USER' } });
       setLoading(false);
@@ -5275,23 +6740,23 @@ function App() {
 
         const savedPlaylists = await window.aether?.store?.get('playlists');
         if (savedPlaylists && typeof savedPlaylists === 'object' && !Array.isArray(savedPlaylists)) {
-           const normalizedPlaylists = Object.fromEntries(
-             Object.entries(savedPlaylists).map(([playlistName, tracks]) => {
-               const normalizedTracks = (Array.isArray(tracks) ? tracks : [])
-                 .map((track) => normalizeQueueTrack(track))
-                 .filter(Boolean);
-               return [playlistName, normalizedTracks];
-             })
-           );
+          const normalizedPlaylists = Object.fromEntries(
+            Object.entries(savedPlaylists).map(([playlistName, tracks]) => {
+              const normalizedTracks = (Array.isArray(tracks) ? tracks : [])
+                .map((track) => normalizeQueueTrack(track))
+                .filter(Boolean);
+              return [playlistName, normalizedTracks];
+            })
+          );
 
-           setPlaylists(normalizedPlaylists);
-           window.aether?.store?.set('playlists', normalizedPlaylists);
-           const savedOrder = await window.aether?.store?.get(PLAYLIST_ORDER_STORAGE_KEY);
-           if (Array.isArray(savedOrder)) {
-             setPlaylistOrder(savedOrder.filter((name) => typeof name === 'string' && name.trim()));
-           } else {
-             setPlaylistOrder(Object.keys(normalizedPlaylists));
-           }
+          setPlaylists(normalizedPlaylists);
+          window.aether?.store?.set('playlists', normalizedPlaylists);
+          const savedOrder = await window.aether?.store?.get(PLAYLIST_ORDER_STORAGE_KEY);
+          if (Array.isArray(savedOrder)) {
+            setPlaylistOrder(savedOrder.filter((name) => typeof name === 'string' && name.trim()));
+          } else {
+            setPlaylistOrder(Object.keys(normalizedPlaylists));
+          }
         }
         const savedFavorites = await window.aether?.store?.get(FAVORITES_STORAGE_KEY);
         if (savedFavorites && typeof savedFavorites === 'object' && !Array.isArray(savedFavorites)) {
@@ -5314,8 +6779,8 @@ function App() {
         }
         const savedDownloaded = await window.aether?.getOfflineTracks();
         if (savedDownloaded) {
-            console.log(`[Aether] Loaded ${savedDownloaded.length} downloaded tracks:`, savedDownloaded);
-            setDownloadedTracks(savedDownloaded);
+          console.log(`[Aether] Loaded ${savedDownloaded.length} downloaded tracks:`, savedDownloaded);
+          setDownloadedTracks(savedDownloaded);
         }
         if (window.aether?.getOfflineDownloads) {
           try {
@@ -5323,7 +6788,7 @@ function App() {
             if (details?.success && Array.isArray(details.downloads)) {
               setOfflineDownloads(details.downloads);
             }
-          } catch {}
+          } catch { }
         }
 
         const savedPlayback = await window.aether?.store?.get(SESSION_PLAYBACK_STORAGE_KEY);
@@ -5442,10 +6907,14 @@ function App() {
           if (sdk) {
             if (authData) setAuth(authData);
             else setAuth({ guild_id: sdk.guildId, user: { id: 'Guest', username: 'GUEST' } });
-            
+
             if (sdk.guildId) {
               fetchQueue(sdk.guildId);
-              pollInterval = setInterval(() => fetchQueue(sdk.guildId), 5000);
+              if (discordQueuePollIntervalRef.current) {
+                console.warn('[Aether/Perf] Clearing stale Discord queue poll interval before creating another.');
+                window.clearInterval(discordQueuePollIntervalRef.current);
+              }
+              discordQueuePollIntervalRef.current = window.setInterval(() => fetchQueueRef.current?.(sdk.guildId), 5000);
             }
           }
         } catch (err) {
@@ -5459,15 +6928,18 @@ function App() {
 
     // Maximized State Listener (NOVA - Fixed bridge + Height fail-safe
     if (window.aether?.onMaximized) {
-      window.aether.onMaximized((state) => {
+      unsubscribeMaximized = window.aether.onMaximized((state) => {
         lastWindowModeChangeRef.current = Date.now();
         setIsMaximized(!!state);
       });
+      if (typeof unsubscribeMaximized !== 'function') {
+        console.warn('[Aether/Perf] onMaximized did not provide an unsubscribe; IPC listener may accumulate.');
+      }
     }
 
     // Library update listener for downloaded tracks
     if (window.aether?.onLibraryUpdate) {
-      window.aether.onLibraryUpdate((data) => {
+      unsubscribeLibraryUpdate = window.aether.onLibraryUpdate((data) => {
         console.log(`[Aether] Library update received:`, data);
         setDownloadedTracks(data);
         if (window.aether?.getOfflineDownloads) {
@@ -5475,9 +6947,12 @@ function App() {
             if (res?.success && Array.isArray(res.downloads)) {
               setOfflineDownloads(res.downloads);
             }
-          }).catch(() => {});
+          }).catch(() => { });
         }
       });
+      if (typeof unsubscribeLibraryUpdate !== 'function') {
+        console.warn('[Aether/Perf] onLibraryUpdate did not provide an unsubscribe; IPC listener may accumulate.');
+      }
     }
 
     let unsubscribeUpdateStatus = null;
@@ -5488,7 +6963,7 @@ function App() {
             setUpdateInfo((prev) => ({ ...prev, ...state }));
           }
         })
-        .catch(() => {});
+        .catch(() => { });
     }
     if (window.aether?.onUpdateStatus) {
       unsubscribeUpdateStatus = window.aether.onUpdateStatus((state) => {
@@ -5514,8 +6989,13 @@ function App() {
     window.addEventListener('resize', handleResize);
     handleResize(); // Initial check
 
-    return () => { 
-      if (pollInterval) clearInterval(pollInterval); 
+    return () => {
+      if (discordQueuePollIntervalRef.current) {
+        window.clearInterval(discordQueuePollIntervalRef.current);
+        discordQueuePollIntervalRef.current = 0;
+      }
+      if (typeof unsubscribeMaximized === 'function') unsubscribeMaximized();
+      if (typeof unsubscribeLibraryUpdate === 'function') unsubscribeLibraryUpdate();
       if (typeof unsubscribeUpdateStatus === 'function') unsubscribeUpdateStatus();
       window.removeEventListener('resize', handleResize);
       if (resizeRaf) window.cancelAnimationFrame(resizeRaf);
@@ -5526,7 +7006,7 @@ function App() {
 
   // --- AETHER: STANDALONE PLAYBACK LOOP (NOVA ---
   useEffect(() => {
-    console.log("[Aether/Audio] Queue effect fired", { queueLength: queue?.length, currentTrack: queue?.[0]?.title, isPlaying, isStandalone });
+    console.log("[Aether/Audio] Queue effect fired", { queueLength: queue?.length, currentTrack: queue?.[0]?.title, isPlaying: isPlayingRef.current, isStandalone });
     if (!isStandalone) {
       return undefined;
     }
@@ -5562,7 +7042,7 @@ function App() {
       actualUrl: track.actualUrl,
       url: track.url,
       trackUrl,
-      isPlaying,
+      isPlaying: isPlayingRef.current,
       downloaded: isHeadDownloaded,
     });
 
@@ -5574,256 +7054,262 @@ function App() {
       }
     });
 
-    
+
     if (track && standaloneTrackLoadKeyRef.current !== trackLoadKey) {
       standaloneTrackLoadKeyRef.current = trackLoadKey;
-        setCurrentTrackTitle(track.title);
-        setIsAudioBuffering(!!isPlaying);
-        
-        if (!localAudioRef.current) {
-            localAudioRef.current = new Audio();
-            localAudioRef.current.volume = volume;
-        }
+      setCurrentTrackTitle(track.title);
+      setIsAudioBuffering(!!isPlayingRef.current);
 
-        const isLocalDownloaded = downloadedTracks.includes(track.id);
-        const streamNonce = encodeURIComponent(String(track.queueNonce || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`));
-        const resetQuery = `&_r=${playbackResetNonce}`;
-        // Reconstruct YouTube URL if we have the ID (avoids expired direct URLs)
-        const youtubeUrl = track.youtubeId
-          ? `https://www.youtube.com/watch?v=${track.youtubeId}`
-          : track.actualUrl || track.url;
-        const streamBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
-        let didOfflineFallback = false;
-        const fallbackToOnlineStream = () => {
-          if (!isPlaying || !isLocalDownloaded || didOfflineFallback) return;
-          didOfflineFallback = true;
-          const onlineUrl = `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&_q=${streamNonce}${resetQuery}`;
-          console.warn('[Aether/Audio] Offline source stalled, switching to live stream', {
-            trackId: track.id,
-            title: track.title,
-            onlineUrl,
-          });
-          localAudioRef.current.src = onlineUrl;
-          if (!videoModeRef.current) localAudioRef.current.play().catch(() => {});
-        };
+      if (!localAudioRef.current) {
+        localAudioRef.current = new Audio();
+        localAudioRef.current.volume = volume;
+      }
 
-        // Neural Flow Bridge (NOVA) - High-Fidelity Signal Acquisition
-        localAudioRef.current.onloadstart = () => {
-            console.log(`[Aether/Audio] loadstart at ${Date.now() - loadStartTime}ms`);
-        };
-        localAudioRef.current.oncanplay = () => {
-            if (videoModeRef.current) return; // still in video mode — stay silent
-            // Apply pending resume time only once (from video exit handoff)
-            if (resumeMs > 0) {
-              const resumeSec = resumeMs / 1000;
-              // We trust HTML5's seek capability to trigger Range headers or native fast-forward
-              // dropping strict buffer limits allows continuous streaming if the backend allows it.
-              localAudioRef.current.currentTime = resumeSec;
-              setCurrentTime(Math.floor(resumeSec * 1000));
-              currentTimeRef.current = Math.floor(resumeSec * 1000);
-              pendingResumeTimeRef.current = null;
-              setPendingResumeTime(null);
-              setIsAudioBuffering(false);
-              // Resume playback after seek
-              if (isPlaying) localAudioRef.current.play().catch(() => {});
-            } else {
-              setIsAudioBuffering(false);
-            }
-        };
-        localAudioRef.current.ontimeupdate = () => {
-            if (videoModeRef.current) return;
-            const nextMs = Math.max(0, liveStreamStartOffsetMsRef.current + Math.floor((localAudioRef.current?.currentTime || 0) * 1000));
-            currentTimeRef.current = nextMs;
-            setCurrentTime(nextMs);
-            if (isPlayingRef.current && nextMs >= 0) {
-              setIsAudioBuffering(false);
-            }
-        };
-        localAudioRef.current.onplaying = () => {
-            // In video mode the video element owns audio output — don't un-mute here
-            if (videoModeRef.current) return;
-            console.log(`[Aether/Audio] playing after ${Date.now() - loadStartTime}ms`);
-            if (localAudioRef.current) localAudioRef.current.muted = false;
-            setIsAudioBuffering(false);
-            bufferingRescueRef.current = { trackKey: trackLoadKey, lastAttemptAt: 0, attempts: 0 };
-            setDiagnostics(prev => ({
-              ...prev,
-              lastSongFetchMs: Math.max(0, Date.now() - loadStartTime),
-              lastSongFetchAt: Date.now(),
-              lastSongSource: downloadedTracks.includes(track.id) ? 'offline-cache' : 'local-stream',
-            }));
-        };
-        localAudioRef.current.onwaiting = () => {
-            if (videoModeRef.current) return;
-            // Do NOT mute here — muting causes an oscillation loop.
-            // Browser naturally outputs silence while buffering.
-            if (isPlaying) setIsAudioBuffering(true);
-        };
-        localAudioRef.current.onstalled = () => {
-            if (videoModeRef.current) return;
-            if (isPlaying) {
-              setIsAudioBuffering(true);
-              fallbackToOnlineStream();
-            }
-        };
-        localAudioRef.current.onended = () => {
-            // In video mode the video element owns queue advance — audio ended while muted, ignore
-            if (videoModeRef.current) {
-              console.log('[Aether/Audio] onended suppressed — video mode active');
-              return;
-            }
-            
-            const playedMs = Math.floor((localAudioRef.current?.currentTime || 0) * 1000);
-            const durationMs = Number(track.totalDurationMs || track.duration || 0);
-            const completion = durationMs > 0 ? playedMs / durationMs : 1;
-            
-            if (completion > 0 && completion < 0.9 && !prematureEndGuardRef.current.retried) {
-                prematureEndGuardRef.current = { trackId: track.id, retried: true };
-                const youtubeUrl = track.youtubeId
-                  ? `https://www.youtube.com/watch?v=${track.youtubeId}`
-                  : track.actualUrl || track.url;
-                const streamBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
-                const recoveryUrl = `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&_r=${Date.now()}`;
-                console.warn('[Aether/Audio] Premature end detected, attempting recovery', {
-                  title: track.title,
-                  playedMs, durationMs, recoveryUrl,
-                });
-                setIsAudioBuffering(true);
-                localAudioRef.current.src = recoveryUrl;
-                if (!videoModeRef.current) localAudioRef.current.play().catch((e) => {
-                  console.error('[Aether/Audio] Recovery failed', e);
-                  advanceQueueRef.current('premature_recover_failed');
-                });
-                return;
-            }
-            console.log("[Aether/Audio] Terminated Naturally. Handing to Shared Advance.");
-            advanceQueueRef.current('natural_end');
-        };
-        localAudioRef.current.onerror = (e) => {
-            if (videoModeRef.current) {
-              console.log('[Aether/Audio] onerror suppressed — video mode active');
-              return;
-            }
-            // HIGH-FIDELITY FAULT TOLERANCE: Do not skip on initial connection fault
-          console.error("[Aether/Audio] Signal Disturbance Detected:", e, {
-            src: localAudioRef.current?.src,
-            networkState: localAudioRef.current?.networkState,
-            readyState: localAudioRef.current?.readyState,
-            currentTime: localAudioRef.current?.currentTime,
-            paused: localAudioRef.current?.paused,
-          });
-            console.log("[Aether/Audio] Attempting signal recovery. Skip suppressed.");
-            // Maintain buffering state instead of skipping to Standby
-            if (localAudioRef.current) localAudioRef.current.muted = true;
-            if (isPlaying) {
-              setIsAudioBuffering(true);
-              fallbackToOnlineStream();
-            }
-        };
-        
-        // VIDEO MODE GUARD: If video is active, audio player MUST stay dead to prevent echo/waste
-        if (videoModeRef.current) {
-          console.log("[Aether/Audio] Suppression Active: Video mode driving session");
-          if (localAudioRef.current) {
-            localAudioRef.current.pause();
-            localAudioRef.current.src = '';
+      const isLocalDownloaded = downloadedTracks.includes(track.id);
+      let resumeApplied = false;
+      const streamNonce = encodeURIComponent(String(track.queueNonce || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`));
+      const resetQuery = `&_r=${playbackResetNonce}`;
+      // Reconstruct YouTube URL if we have the ID (avoids expired direct URLs)
+      const youtubeUrl = track.youtubeId
+        ? `https://www.youtube.com/watch?v=${track.youtubeId}`
+        : track.actualUrl || track.url;
+      const streamBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
+      let didOfflineFallback = false;
+      const fallbackToOnlineStream = () => {
+        if (!isPlayingRef.current || !isLocalDownloaded || didOfflineFallback) return;
+        didOfflineFallback = true;
+        const onlineUrl = `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&_q=${streamNonce}${resetQuery}`;
+        console.warn('[Aether/Audio] Offline source stalled, switching to live stream', {
+          trackId: track.id,
+          title: track.title,
+          onlineUrl,
+        });
+        localAudioRef.current.src = onlineUrl;
+        if (!videoModeRef.current) localAudioRef.current.play().catch(() => { });
+      };
+
+      // Neural Flow Bridge (NOVA) - High-Fidelity Signal Acquisition
+      localAudioRef.current.onloadstart = () => {
+        console.log(`[Aether/Audio] loadstart at ${Date.now() - loadStartTime}ms`);
+      };
+      localAudioRef.current.oncanplay = () => {
+        if (videoModeRef.current) return; // still in video mode — stay silent
+        // Apply pending resume handoff only once to avoid seek oscillation loops.
+        if (resumeMs > 0 && !resumeApplied) {
+          resumeApplied = true;
+          const resumeSec = resumeMs / 1000;
+
+          // For offline/local files we seek client-side.
+          // For streamed tracks we already pass t= in URL, so avoid duplicate seek here.
+          if (isLocalDownloaded) {
+            localAudioRef.current.currentTime = resumeSec;
           }
+
+          setCurrentTime(Math.floor(resumeSec * 1000));
+          currentTimeRef.current = Math.floor(resumeSec * 1000);
+          pendingResumeTimeRef.current = null;
+          setPendingResumeTime(null);
+          setIsAudioBuffering(false);
+          if (isPlayingRef.current) localAudioRef.current.play().catch(() => { });
           return;
         }
 
-        const streamUrl = isLocalDownloaded
-          ? `${streamBase}/offline/${track.id}.m4a?_q=${streamNonce}${resetQuery}`
-          : `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&_q=${streamNonce}${resetQuery}${startSec > 0 ? `&t=${startSec}` : ''}`;
-        prematureEndGuardRef.current = { trackId: track.id, retried: false };
-        
-        console.log("[Aether/Audio] Initializing Stream:", streamUrl, {
-            isLocalDownloaded,
-            startSec,
-            trackId: track.id,
+        setIsAudioBuffering(false);
+      };
+      localAudioRef.current.ontimeupdate = () => {
+        if (videoModeRef.current) return;
+        const nextMs = Math.max(0, liveStreamStartOffsetMsRef.current + Math.floor((localAudioRef.current?.currentTime || 0) * 1000));
+        currentTimeRef.current = nextMs;
+        setCurrentTime(nextMs);
+        if (isPlayingRef.current && nextMs >= 0) {
+          setIsAudioBuffering(false);
+        }
+      };
+      localAudioRef.current.onplaying = () => {
+        // In video mode the video element owns audio output — don't un-mute here
+        if (videoModeRef.current) return;
+        console.log(`[Aether/Audio] playing after ${Date.now() - loadStartTime}ms`);
+        if (localAudioRef.current) localAudioRef.current.muted = false;
+        setIsAudioBuffering(false);
+        bufferingRescueRef.current = { trackKey: trackLoadKey, lastAttemptAt: 0, attempts: 0 };
+        setDiagnostics(prev => ({
+          ...prev,
+          lastSongFetchMs: Math.max(0, Date.now() - loadStartTime),
+          lastSongFetchAt: Date.now(),
+          lastSongSource: downloadedTracks.includes(track.id) ? 'offline-cache' : 'local-stream',
+        }));
+      };
+      localAudioRef.current.onwaiting = () => {
+        if (videoModeRef.current) return;
+        // Do NOT mute here — muting causes an oscillation loop.
+        // Browser naturally outputs silence while buffering.
+        if (isPlayingRef.current) setIsAudioBuffering(true);
+      };
+      localAudioRef.current.onstalled = () => {
+        if (videoModeRef.current) return;
+        if (isPlayingRef.current) {
+          setIsAudioBuffering(true);
+          fallbackToOnlineStream();
+        }
+      };
+      localAudioRef.current.onended = () => {
+        // In video mode the video element owns queue advance — audio ended while muted, ignore
+        if (videoModeRef.current) {
+          console.log('[Aether/Audio] onended suppressed — video mode active');
+          return;
+        }
+
+        const playedMs = Math.floor((localAudioRef.current?.currentTime || 0) * 1000);
+        const durationMs = Number(track.totalDurationMs || track.duration || 0);
+        const completion = durationMs > 0 ? playedMs / durationMs : 1;
+
+        if (completion > 0 && completion < 0.9 && !prematureEndGuardRef.current.retried) {
+          prematureEndGuardRef.current = { trackId: track.id, retried: true };
+          const youtubeUrl = track.youtubeId
+            ? `https://www.youtube.com/watch?v=${track.youtubeId}`
+            : track.actualUrl || track.url;
+          const streamBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
+          const recoveryUrl = `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&_r=${Date.now()}`;
+          console.warn('[Aether/Audio] Premature end detected, attempting recovery', {
+            title: track.title,
+            playedMs, durationMs, recoveryUrl,
+          });
+          setIsAudioBuffering(true);
+          localAudioRef.current.src = recoveryUrl;
+          if (!videoModeRef.current) localAudioRef.current.play().catch((e) => {
+            console.error('[Aether/Audio] Recovery failed', e);
+            advanceQueueRef.current('premature_recover_failed');
+          });
+          return;
+        }
+        console.log("[Aether/Audio] Terminated Naturally. Handing to Shared Advance.");
+        advanceQueueRef.current('natural_end');
+      };
+      localAudioRef.current.onerror = (e) => {
+        if (videoModeRef.current) {
+          console.log('[Aether/Audio] onerror suppressed — video mode active');
+          return;
+        }
+        // HIGH-FIDELITY FAULT TOLERANCE: Do not skip on initial connection fault
+        console.error("[Aether/Audio] Signal Disturbance Detected:", e, {
+          src: localAudioRef.current?.src,
+          networkState: localAudioRef.current?.networkState,
+          readyState: localAudioRef.current?.readyState,
+          currentTime: localAudioRef.current?.currentTime,
+          paused: localAudioRef.current?.paused,
         });
-        
-        liveStreamStartOffsetMsRef.current = isLocalDownloaded ? 0 : Math.floor(startSec * 1000);
-        
-        localAudioRef.current.crossOrigin = "anonymous";
-        localAudioRef.current.src = streamUrl;
-        
-        // New tracks always start clean unless an explicit handoff/session resume asked otherwise.
-        if (startSec > 0 && isLocalDownloaded) {
-            localAudioRef.current.currentTime = startSec;
+        console.log("[Aether/Audio] Attempting signal recovery. Skip suppressed.");
+        // Maintain buffering state instead of skipping to Standby
+        if (localAudioRef.current) localAudioRef.current.muted = true;
+        if (isPlayingRef.current) {
+          setIsAudioBuffering(true);
+          fallbackToOnlineStream();
+        }
+      };
+
+      // VIDEO MODE GUARD: If video is active, audio player MUST stay dead to prevent echo/waste
+      if (videoModeRef.current) {
+        console.log("[Aether/Audio] Suppression Active: Video mode driving session");
+        if (localAudioRef.current) {
+          localAudioRef.current.pause();
+          localAudioRef.current.src = '';
+        }
+        return;
+      }
+
+      const streamUrl = isLocalDownloaded
+        ? `${streamBase}/offline/${track.id}.m4a?_q=${streamNonce}${resetQuery}`
+        : `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&_q=${streamNonce}${resetQuery}${startSec > 0 ? `&t=${startSec}` : ''}`;
+      prematureEndGuardRef.current = { trackId: track.id, retried: false };
+
+      console.log("[Aether/Audio] Initializing Stream:", streamUrl, {
+        isLocalDownloaded,
+        startSec,
+        trackId: track.id,
+      });
+
+      liveStreamStartOffsetMsRef.current = isLocalDownloaded ? 0 : Math.floor(startSec * 1000);
+
+      localAudioRef.current.crossOrigin = "anonymous";
+      localAudioRef.current.src = streamUrl;
+
+      // New tracks always start clean unless an explicit handoff/session resume asked otherwise.
+      if (startSec > 0 && isLocalDownloaded) {
+        localAudioRef.current.currentTime = startSec;
+      } else {
+        try {
+          localAudioRef.current.currentTime = 0;
+        } catch { }
+        if (startSec === 0) {
+          currentTimeRef.current = 0;
+          setCurrentTime(0);
         } else {
-            try {
-              localAudioRef.current.currentTime = 0;
-            } catch {}
-            if (startSec === 0) {
-              currentTimeRef.current = 0;
-              setCurrentTime(0);
-            } else {
-              currentTimeRef.current = Math.floor(startSec * 1000);
-              setCurrentTime(Math.floor(startSec * 1000));
-            }
+          currentTimeRef.current = Math.floor(startSec * 1000);
+          setCurrentTime(Math.floor(startSec * 1000));
         }
-        const startupWatchdog = setTimeout(() => {
-          const audio = localAudioRef.current;
-          if (!audio || !isPlaying) return;
-          const stuckAtStart = (audio.currentTime || 0) < 1 && audio.readyState < 2;
-          if (stuckAtStart) {
-            console.warn('[Aether/Audio] Startup watchdog triggered', {
-              trackId: track.id,
-              title: track.title,
-              src: audio.src,
-              readyState: audio.readyState,
-              currentTime: audio.currentTime,
-            });
-            fallbackToOnlineStream();
+      }
+      const startupWatchdog = setTimeout(() => {
+        const audio = localAudioRef.current;
+        if (!audio || !isPlayingRef.current) return;
+        const stuckAtStart = (audio.currentTime || 0) < 1 && audio.readyState < 2;
+        if (stuckAtStart) {
+          console.warn('[Aether/Audio] Startup watchdog triggered', {
+            trackId: track.id,
+            title: track.title,
+            src: audio.src,
+            readyState: audio.readyState,
+            currentTime: audio.currentTime,
+          });
+          fallbackToOnlineStream();
+        }
+      }, 12000);
+
+      // Trigger background download if not already cached / warming
+      if (window.aether?.download && !downloadedTracks.includes(track.id) && !warmingTrackIds.has(track.id)) {
+        console.log(`[Aether] Triggering background download for track ${track.id}`);
+        warmupTrack(track);
+      }
+
+      if (isPlayingRef.current && !videoModeRef.current) {
+        console.log("[Aether/Audio] Attempting play()", {
+          src: localAudioRef.current?.src,
+          readyState: localAudioRef.current?.readyState,
+          networkState: localAudioRef.current?.networkState,
+        });
+        if (!videoModeRef.current) localAudioRef.current.play().catch(e => {
+          if (e?.name === 'AbortError') {
+            console.warn('[Aether/Audio] play() interrupted by source refresh (non-fatal)');
+            return;
           }
-        }, 12000);
-        
-        // Trigger background download if not already cached / warming
-        if (window.aether?.download && !downloadedTracks.includes(track.id) && !warmingTrackIds.has(track.id)) {
-            console.log(`[Aether] Triggering background download for track ${track.id}`);
-            warmupTrack(track);
-        }
-        
-        if (isPlaying && !videoModeRef.current) {
-          console.log("[Aether/Audio] Attempting play()", {
+          console.error("[Aether/Audio] Autoplay Blocked or Failed:", e, {
             src: localAudioRef.current?.src,
             readyState: localAudioRef.current?.readyState,
             networkState: localAudioRef.current?.networkState,
+            paused: localAudioRef.current?.paused,
           });
-            if (!videoModeRef.current) localAudioRef.current.play().catch(e => {
-            if (e?.name === 'AbortError') {
-              console.warn('[Aether/Audio] play() interrupted by source refresh (non-fatal)');
-              return;
-            }
-            console.error("[Aether/Audio] Autoplay Blocked or Failed:", e, {
-              src: localAudioRef.current?.src,
-              readyState: localAudioRef.current?.readyState,
-              networkState: localAudioRef.current?.networkState,
-              paused: localAudioRef.current?.paused,
-            });
-                setIsAudioBuffering(true);
-            });
-        } else {
-          setIsAudioBuffering(false);
+          setIsAudioBuffering(true);
+        });
+      } else {
+        setIsAudioBuffering(false);
+      }
+      const clearWatchdog = () => clearTimeout(startupWatchdog);
+
+      // Return cleanup function to clear state before next effect run
+      return () => {
+        clearWatchdog();
+        if (localAudioRef.current) {
+          localAudioRef.current.oncanplay = null;
+          localAudioRef.current.onplaying = null;
+          localAudioRef.current.ontimeupdate = null;
+          localAudioRef.current.onwaiting = null;
+          localAudioRef.current.onstalled = null;
+          localAudioRef.current.onended = null;
+          localAudioRef.current.onerror = null;
+          localAudioRef.current.onloadstart = null;
         }
-        const clearWatchdog = () => clearTimeout(startupWatchdog);
-        
-        // Return cleanup function to clear state before next effect run
-        return () => {
-          clearWatchdog();
-          if (localAudioRef.current) {
-            localAudioRef.current.oncanplay = null;
-            localAudioRef.current.onplaying = null;
-            localAudioRef.current.ontimeupdate = null;
-            localAudioRef.current.onwaiting = null;
-            localAudioRef.current.onstalled = null;
-            localAudioRef.current.onended = null;
-            localAudioRef.current.onerror = null;
-            localAudioRef.current.onloadstart = null;
-          }
-        };
+      };
     }
-  }, [queue?.[0]?.title, queue?.[0]?.id, queue?.[0]?.queueNonce, isPlaying, isStandalone, streamPort, API_BASE, pendingResumeTime, videoMode, playbackResetNonce]);
+  }, [queue?.[0]?.title, queue?.[0]?.id, queue?.[0]?.youtubeId, queue?.[0]?.queueNonce, queue?.[0]?.actualUrl, queue?.[0]?.url, isStandalone, streamPort, playbackResetNonce]);
 
   useEffect(() => {
     if (!isStandalone || !isPlaying || !isAudioBuffering || !currentTrack || !localAudioRef.current || videoModeRef.current) return;
@@ -5940,6 +7426,24 @@ function App() {
     return () => window.clearInterval(interval);
   }, [isStandalone, videoMode, isPlaying, currentTrack?.id, currentTrack?.queueNonce, isAudioBuffering]);
 
+  useEffect(() => {
+    if (visualizerMode !== 'off') return;
+    if (visualizerCanvasRef.current) {
+      const canvas = visualizerCanvasRef.current;
+      canvas.getContext('2d', { alpha: true })?.clearRect(0, 0, canvas.width || 0, canvas.height || 0);
+    }
+    if (pulseCanvasRef.current) {
+      const canvas = pulseCanvasRef.current;
+      canvas.getContext('2d', { alpha: true })?.clearRect(0, 0, canvas.width || 0, canvas.height || 0);
+    }
+    if (document.documentElement) {
+      document.documentElement.style.setProperty('--aura-beat-pulse', '0');
+      document.documentElement.style.setProperty('--aura-edge-glow', '0');
+      document.documentElement.style.setProperty('--aura-kick-shift', '0deg');
+      document.documentElement.style.setProperty('--aura-kick-glow', '0');
+    }
+  }, [visualizerMode]);
+
   // --- AETHER: UNIFIED DISCORD RPC ENGINE (NOVA ---
   useEffect(() => {
     if (!isStandalone || !window.aether?.updateRPC) return;
@@ -5947,88 +7451,88 @@ function App() {
     let cycleInterval;
 
     const updateRPC = () => {
-        const track = queue?.[0];
+      const track = queue?.[0];
       const hasValidTrack = !!(track && typeof track === 'object');
-        
+
       if (hasValidTrack) {
-            const rpcTrackId = String(track.id || track.youtubeId || `${track.title || ''}|${track.author || ''}`);
-            const sameTrack = lastRPCTrackIdRef.current === rpcTrackId;
-            const samePlayState = lastRPCPlayingRef.current === isPlaying;
-            if (sameTrack && samePlayState) return;
+        const rpcTrackId = String(track.id || track.youtubeId || `${track.title || ''}|${track.author || ''}`);
+        const sameTrack = lastRPCTrackIdRef.current === rpcTrackId;
+        const samePlayState = lastRPCPlayingRef.current === isPlaying;
+        if (sameTrack && samePlayState) return;
 
-            const durationMs = Number(track.totalDurationMs || track.duration || 0);
-            const shouldRecalculateClock =
-              !sameTrack ||
-              (sameTrack && !samePlayState && isPlaying) ||
-              !lastRPCStartRef.current ||
-              !lastRPCEndRef.current;
+        const durationMs = Number(track.totalDurationMs || track.duration || 0);
+        const shouldRecalculateClock =
+          !sameTrack ||
+          (sameTrack && !samePlayState && isPlaying) ||
+          !lastRPCStartRef.current ||
+          !lastRPCEndRef.current;
 
-            if (shouldRecalculateClock) {
-              const liveCurrentTime = Math.max(0, Math.floor(currentTimeRef.current || 0));
-              lastRPCStartRef.current = Date.now() - liveCurrentTime;
-              const computedEnd = Date.now() + Math.max(0, durationMs - liveCurrentTime);
-              lastRPCEndRef.current = Number.isFinite(durationMs) && durationMs > liveCurrentTime + 1000
-                ? computedEnd
-                : null;
-            }
-
-            lastRPCTrackIdRef.current = rpcTrackId;
-            lastRPCPlayingRef.current = isPlaying;
-            idleStartTimeRef.current = null;
-            idlePhraseRef.current = null;
-            
-            window.aether.updateRPC({
-                title: track.title,
-                artist: track.author,
-                thumbnail: track.thumbnail,
-                isPlaying: isPlaying,
-              url: track.actualUrl || track.url || '',
-                startTime: lastRPCStartRef.current,
-                endTime: lastRPCEndRef.current
-            });
-        } else {
-            // Idle Lobby State
-            lastRPCTrackIdRef.current = null;
-            lastRPCPlayingRef.current = null;
-            lastRPCStartRef.current = null;
-            lastRPCEndRef.current = null;
-            if (!idleStartTimeRef.current) {
-                idleStartTimeRef.current = Date.now();
-                idlePhraseRef.current = IDLE_PHRASES[Math.floor(Math.random() * IDLE_PHRASES.length)];
-            }
-            
-            window.aether.updateRPC({
-                title: "Music Lobby",
-                artist: idlePhraseRef.current,
-                startTime: idleStartTimeRef.current
-            });
-
-            // Start cycler if not already running
-            if (!cycleInterval) {
-                cycleInterval = setInterval(() => {
-                    if (queue && queue.length > 0) return; // Guard for async race
-                    
-                    let next;
-                    do { next = IDLE_PHRASES[Math.floor(Math.random() * IDLE_PHRASES.length)]; } while (next === idlePhraseRef.current);
-                    idlePhraseRef.current = next;
-                    
-                    window.aether.updateRPC({
-                        title: "Music Lobby",
-                        artist: idlePhraseRef.current,
-                        startTime: idleStartTimeRef.current
-                    });
-                }, 20000); 
-            }
+        if (shouldRecalculateClock) {
+          const liveCurrentTime = Math.max(0, Math.floor(currentTimeRef.current || 0));
+          lastRPCStartRef.current = Date.now() - liveCurrentTime;
+          const computedEnd = Date.now() + Math.max(0, durationMs - liveCurrentTime);
+          lastRPCEndRef.current = Number.isFinite(durationMs) && durationMs > liveCurrentTime + 1000
+            ? computedEnd
+            : null;
         }
+
+        lastRPCTrackIdRef.current = rpcTrackId;
+        lastRPCPlayingRef.current = isPlaying;
+        idleStartTimeRef.current = null;
+        idlePhraseRef.current = null;
+
+        window.aether.updateRPC({
+          title: track.title,
+          artist: track.author,
+          thumbnail: track.thumbnail,
+          isPlaying: isPlaying,
+          url: track.actualUrl || track.url || '',
+          startTime: lastRPCStartRef.current,
+          endTime: lastRPCEndRef.current
+        });
+      } else {
+        // Idle Lobby State
+        lastRPCTrackIdRef.current = null;
+        lastRPCPlayingRef.current = null;
+        lastRPCStartRef.current = null;
+        lastRPCEndRef.current = null;
+        if (!idleStartTimeRef.current) {
+          idleStartTimeRef.current = Date.now();
+          idlePhraseRef.current = IDLE_PHRASES[Math.floor(Math.random() * IDLE_PHRASES.length)];
+        }
+
+        window.aether.updateRPC({
+          title: "Music Lobby",
+          artist: idlePhraseRef.current,
+          startTime: idleStartTimeRef.current
+        });
+
+        // Start cycler if not already running
+        if (!cycleInterval) {
+          cycleInterval = setInterval(() => {
+            if (queue && queue.length > 0) return; // Guard for async race
+
+            let next;
+            do { next = IDLE_PHRASES[Math.floor(Math.random() * IDLE_PHRASES.length)]; } while (next === idlePhraseRef.current);
+            idlePhraseRef.current = next;
+
+            window.aether.updateRPC({
+              title: "Music Lobby",
+              artist: idlePhraseRef.current,
+              startTime: idleStartTimeRef.current
+            });
+          }, 20000);
+        }
+      }
     };
 
     updateRPC();
 
     return () => {
-        if (cycleInterval) {
-            clearInterval(cycleInterval);
-            cycleInterval = null;
-        }
+      if (cycleInterval) {
+        clearInterval(cycleInterval);
+        cycleInterval = null;
+      }
     };
   }, [queue, isPlaying, isStandalone]);
 
@@ -6038,14 +7542,14 @@ function App() {
   useEffect(() => {
     if (!isStandalone || !localAudioRef.current) return;
     if (isPlaying) {
-       if (localAudioRef.current && !videoModeRef.current) localAudioRef.current.play().catch(() => {});
-       if (audioCtxRef.current?.state === 'suspended') audioCtxRef.current.resume();
+      if (localAudioRef.current && !videoModeRef.current) localAudioRef.current.play().catch(() => { });
+      if (audioCtxRef.current?.state === 'suspended') audioCtxRef.current.resume();
     } else {
-       localAudioRef.current.pause();
-       setIsAudioBuffering(false);
-       if (audioCtxRef.current?.state === 'running') {
-        audioCtxRef.current.suspend().catch(() => {});
-       }
+      localAudioRef.current.pause();
+      setIsAudioBuffering(false);
+      if (audioCtxRef.current?.state === 'running') {
+        audioCtxRef.current.suspend().catch(() => { });
+      }
     }
   }, [isPlaying, isStandalone, videoMode]);
 
@@ -6080,8 +7584,8 @@ function App() {
         }
         if (!analyserRef.current) {
           analyserRef.current = audioCtxRef.current.createAnalyser();
-          analyserRef.current.fftSize = 256; 
-          analyserRef.current.smoothingTimeConstant = 0.65;
+          analyserRef.current.fftSize = 1024;
+          analyserRef.current.smoothingTimeConstant = 0.7;
         }
         if (!sourceRef.current && localAudioRef.current) {
           sourceRef.current = audioCtxRef.current.createMediaElementSource(localAudioRef.current);
@@ -6101,26 +7605,42 @@ function App() {
       if (!analyserRef.current || !auraEnergyRef.current) return;
       const bufferLength = analyserRef.current.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
-      
+
       const draw = () => {
         try {
           if (cancelled) return;
           const frameNow = performance.now();
           const frameBudget = visualizerFrameBudgetRef.current;
+          if (typeof document !== 'undefined' && document.hidden) {
+            frameBudget.lastDrawAt = frameNow;
+            return;
+          }
 
-	          const visualizerState = visualizerStateRef.current;
-	          const liveVisualizerMode = visualizerState.visualizerMode;
-	          const liveThemeColor = visualizerState.themeColor;
-	          const liveAuraPreset = visualizerState.auraPreset;
-	          const isVaultOpen = visualizerState.isMixtapeVaultOpen;
+          const visualizerState = visualizerStateRef.current;
+          const liveVisualizerMode = visualizerState.visualizerMode;
+          const liveThemeColor = visualizerState.themeColor;
+          const liveAuraPreset = visualizerState.auraPreset;
+          const isVaultOpen = visualizerState.isMixtapeVaultOpen;
           const needsPulseTelemetry = isVaultOpen || visualizerState.isAuraStageOpen || visualizerState.isSharedSceneOpen;
           const livePerformanceMode = visualizerState.performanceMode || 'high';
-          const minFrameGap = livePerformanceMode === 'medium' ? 66 : 0;
+          const isHeavyOverlayOpen = Boolean(visualizerState.isHeavyOverlayOpen);
+          const inUiInteractionCooldown = frameNow < (uiInteractionCooldownUntilRef.current || 0);
+          const isPlaybackActive = Boolean(isPlayingRef.current && localAudioRef.current && !localAudioRef.current.paused);
+          const minFrameGap = !isPlaybackActive
+            ? 1000
+            : isHeavyOverlayOpen
+              ? (needsPulseTelemetry ? 140 : 220)
+              : inUiInteractionCooldown
+                ? 120
+                : livePerformanceMode === 'medium'
+                  ? 66
+                  : 0;
           if (minFrameGap > 0 && frameNow - frameBudget.lastDrawAt < minFrameGap) return;
           frameBudget.lastDrawAt = frameNow;
-	          const auraModeActive = liveVisualizerMode === 'pulse';
-          const canvas = liveVisualizerMode === 'bars' ? visualizerCanvasRef.current : null;
-          const pulseCanvas = liveVisualizerMode === 'pulse' ? pulseCanvasRef.current : null;
+          const shouldDrawVisualizerCanvas = !isHeavyOverlayOpen && !inUiInteractionCooldown;
+          const auraModeActive = liveVisualizerMode === 'pulse' && shouldDrawVisualizerCanvas;
+          const canvas = shouldDrawVisualizerCanvas && liveVisualizerMode === 'bars' ? visualizerCanvasRef.current : null;
+          const pulseCanvas = shouldDrawVisualizerCanvas && liveVisualizerMode === 'pulse' ? pulseCanvasRef.current : null;
           if (!canvas && !pulseCanvas && !needsPulseTelemetry) return;
 
           if (canvas && frameBudget.canvas !== canvas) {
@@ -6145,173 +7665,193 @@ function App() {
             frameBudget.brandContrast = rootStyle.getPropertyValue('--brand-contrast')?.trim() || '#ff00ff';
             frameBudget.lastStyleAt = frameNow;
           }
-          
+
           const width = canvas?.width || 800;
           const height = canvas?.height || 40;
           const pWidth = pulseCanvas?.width || 800;
           const pHeight = pulseCanvas?.height || 400;
 
-        if (liveVisualizerMode === 'bars' && ctx) ctx.clearRect(0, 0, width, height);
-        if (liveVisualizerMode === 'pulse' && pCtx) pCtx.clearRect(0, 0, pWidth, pHeight);
+          if (liveVisualizerMode === 'bars' && ctx) ctx.clearRect(0, 0, width, height);
+          if (liveVisualizerMode === 'pulse' && pCtx) pCtx.clearRect(0, 0, pWidth, pHeight);
 
-        if (!analyserRef.current) return;
-        analyserRef.current.getByteFrequencyData(dataArray);
+          if (!analyserRef.current) return;
+          analyserRef.current.getByteFrequencyData(dataArray);
 
-        const bassRaw = (dataArray[1] + dataArray[2] + dataArray[3]) / (3 * 255);
-        let midsRawSum = 0;
-        for (let i = 8; i < 28; i++) midsRawSum += dataArray[i];
-        const midsRaw = midsRawSum / (20 * 255);
+          const bassRaw = (dataArray[1] + dataArray[2] + dataArray[3]) / (3 * 255);
+          let midsRawSum = 0;
+          for (let i = 8; i < 28; i++) midsRawSum += dataArray[i];
+          const midsRaw = midsRawSum / (20 * 255);
 
-        let highsRawSum = 0;
-        for (let i = 30; i < 70; i++) highsRawSum += dataArray[i];
-        const highsRaw = highsRawSum / (40 * 255);
+          let highsRawSum = 0;
+          for (let i = 30; i < 70; i++) highsRawSum += dataArray[i];
+          const highsRaw = highsRawSum / (40 * 255);
 
-        if (!auraEnergyRef.current) return;
-        auraEnergyRef.current.bass = lerp(auraEnergyRef.current.bass, bassRaw, 0.22);
-        auraEnergyRef.current.mids = lerp(auraEnergyRef.current.mids, midsRaw, 0.18);
-        auraEnergyRef.current.highs = lerp(auraEnergyRef.current.highs, highsRaw, 0.14);
-        auraEnergyRef.current.phase += 0.01 + auraEnergyRef.current.highs * 0.05;
+          if (!auraEnergyRef.current) return;
+          auraEnergyRef.current.bass = lerp(auraEnergyRef.current.bass, bassRaw, 0.22);
+          auraEnergyRef.current.mids = lerp(auraEnergyRef.current.mids, midsRaw, 0.18);
+          auraEnergyRef.current.highs = lerp(auraEnergyRef.current.highs, highsRaw, 0.14);
+          auraEnergyRef.current.phase += 0.01 + auraEnergyRef.current.highs * 0.05;
 
-        const bass = auraEnergyRef.current.bass;
-        const mids = auraEnergyRef.current.mids;
-        const highs = auraEnergyRef.current.highs;
-        const drift = Math.sin(auraEnergyRef.current.phase) * 0.03;
-        const auraScale = 0.92 + bass * 0.45 + drift;
-        const spinDeg = (auraEnergyRef.current.phase * 180) / Math.PI;
-        const energy = clamp01((bass * 0.46) + (mids * 0.34) + (highs * 0.20));
+          const bass = auraEnergyRef.current.bass;
+          const mids = auraEnergyRef.current.mids;
+          const highs = auraEnergyRef.current.highs;
+          const drift = Math.sin(auraEnergyRef.current.phase) * 0.03;
+          const auraScale = 0.92 + bass * 0.45 + drift;
+          const spinDeg = (auraEnergyRef.current.phase * 180) / Math.PI;
+          const energy = clamp01((bass * 0.46) + (mids * 0.34) + (highs * 0.20));
 
-        uiPulseRef.current = auraModeActive ? auraScale : 1;
+          uiPulseRef.current = auraModeActive ? auraScale : 1;
 
-        if (mixtapeVaultRef.current && frameNow - frameBudget.lastMixtapeCssAt > (livePerformanceMode === 'high' ? 33 : 80)) {
-          mixtapeVaultRef.current.style.setProperty('--vault-bass', String(bass));
-          mixtapeVaultRef.current.style.setProperty('--vault-mids', String(mids));
-          mixtapeVaultRef.current.style.setProperty('--vault-highs', String(highs));
-          mixtapeVaultRef.current.style.setProperty('--vault-energy', String(energy));
-          mixtapeVaultRef.current.style.setProperty('--vault-scale', String(auraScale));
-          mixtapeVaultRef.current.style.setProperty('--vault-spin', `${spinDeg}deg`);
-          mixtapeVaultRef.current.style.setProperty('--vault-glow', String(clamp01(0.18 + bass * 0.42 + highs * 0.22)));
-          frameBudget.lastMixtapeCssAt = frameNow;
-        }
+          if (mixtapeVaultRef.current && frameNow - frameBudget.lastMixtapeCssAt > (livePerformanceMode === 'high' ? 33 : 80)) {
+            mixtapeVaultRef.current.style.setProperty('--vault-bass', String(bass));
+            mixtapeVaultRef.current.style.setProperty('--vault-mids', String(mids));
+            mixtapeVaultRef.current.style.setProperty('--vault-highs', String(highs));
+            mixtapeVaultRef.current.style.setProperty('--vault-energy', String(energy));
+            mixtapeVaultRef.current.style.setProperty('--vault-scale', String(auraScale));
+            mixtapeVaultRef.current.style.setProperty('--vault-spin', `${spinDeg}deg`);
+            mixtapeVaultRef.current.style.setProperty('--vault-glow', String(clamp01(0.18 + bass * 0.42 + highs * 0.22)));
+            frameBudget.lastMixtapeCssAt = frameNow;
+          }
 
-        // AURA MODE: Propagate beat energy to transport & lyric underline
-        if (auraModeActive && document.documentElement) {
-          const selectedAuraPreset = AURA_PRESETS_MAP[liveAuraPreset] || AURA_PRESETS[1];
-          const kickTransient = clamp01(Math.max(0, (bassRaw - bass) * 3.8) + Math.max(0, (bass - 0.66) * 1.9));
-          const auraShiftDeg = ((kickTransient * 13.5) + (energy * 1.8)) * selectedAuraPreset.hueShift;
-          document.documentElement.style.setProperty('--aura-beat-pulse', String(bass * 0.8 + energy * 0.3));
-          document.documentElement.style.setProperty('--aura-edge-glow', String(bass * 0.6 + mids * 0.4));
-          document.documentElement.style.setProperty('--aura-kick-shift', `${auraShiftDeg.toFixed(2)}deg`);
-          document.documentElement.style.setProperty('--aura-kick-glow', String(clamp01((0.22 + kickTransient * 0.78) * selectedAuraPreset.kickGlow)));
+          // AURA MODE: Propagate beat energy to transport & lyric underline
+          if (auraModeActive && document.documentElement) {
+            const selectedAuraPreset = AURA_PRESETS_MAP[liveAuraPreset] || AURA_PRESETS[1];
+            const kickTransient = clamp01(Math.max(0, (bassRaw - bass) * 3.8) + Math.max(0, (bass - 0.66) * 1.9));
+            const auraShiftDeg = ((kickTransient * 13.5) + (energy * 1.8)) * selectedAuraPreset.hueShift;
+            document.documentElement.style.setProperty('--aura-beat-pulse', String(bass * 0.8 + energy * 0.3));
+            document.documentElement.style.setProperty('--aura-edge-glow', String(bass * 0.6 + mids * 0.4));
+            document.documentElement.style.setProperty('--aura-kick-shift', `${auraShiftDeg.toFixed(2)}deg`);
+            document.documentElement.style.setProperty('--aura-kick-glow', String(clamp01((0.22 + kickTransient * 0.78) * selectedAuraPreset.kickGlow)));
 
-          // AURA MODE: Trigger beat rings on kick peaks (bass spikes)
-          if (lastBeatRingTimeRef.current !== undefined && bass > selectedAuraPreset.ringThreshold && performance.now() - lastBeatRingTimeRef.current > selectedAuraPreset.ringCooldownMs) {
-            lastBeatRingTimeRef.current = performance.now();
-            if (beatRingsRef.current) {
-              const ringScale = selectedAuraPreset.ringScale;
-              const ringDuration = selectedAuraPreset.ringDurationMs;
-              const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-              svg.setAttribute('viewBox', '0 0 100 100');
-              svg.setAttribute('width', '100');
-              svg.setAttribute('height', '100');
-              svg.setAttribute('class', 'beat-ring');
-              svg.style.position = 'absolute';
-              svg.style.pointerEvents = 'none';
-              svg.style.top = '50%';
-              svg.style.left = '50%';
-              svg.style.transform = 'translate(-50%, -50%)';
-              svg.style.opacity = '0.55';
+            // AURA MODE: Trigger beat rings on kick peaks (bass spikes)
+            if (lastBeatRingTimeRef.current !== undefined && bass > selectedAuraPreset.ringThreshold && performance.now() - lastBeatRingTimeRef.current > selectedAuraPreset.ringCooldownMs) {
+              lastBeatRingTimeRef.current = performance.now();
+              if (beatRingsRef.current) {
+                const ringScale = selectedAuraPreset.ringScale;
+                const ringDuration = selectedAuraPreset.ringDurationMs;
+                const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                svg.setAttribute('viewBox', '0 0 100 100');
+                svg.setAttribute('width', '100');
+                svg.setAttribute('height', '100');
+                svg.setAttribute('class', 'beat-ring');
+                svg.style.position = 'absolute';
+                svg.style.pointerEvents = 'none';
+                svg.style.top = '50%';
+                svg.style.left = '50%';
+                svg.style.transform = 'translate(-50%, -50%)';
+                svg.style.opacity = '0.55';
 
-              const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-              circle.setAttribute('cx', '50');
-              circle.setAttribute('cy', '50');
-              circle.setAttribute('r', String(14 * ringScale));
-              circle.style.strokeWidth = '1.1';
-              svg.appendChild(circle);
+                const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                circle.setAttribute('cx', '50');
+                circle.setAttribute('cy', '50');
+                circle.setAttribute('r', String(14 * ringScale));
+                circle.style.strokeWidth = '1.1';
+                svg.appendChild(circle);
 
-              beatRingsRef.current.appendChild(svg);
+                beatRingsRef.current.appendChild(svg);
 
-              // Animate the circle
-              let startTime = performance.now();
-              const animateBeat = (now) => {
-                const elapsed = now - startTime;
-                const progress = Math.min(elapsed / ringDuration, 1);
-                const r = (14 * ringScale) + progress * (22 * ringScale);
-                const opacity = 0.55 * (1 - progress);
-                
-                circle.setAttribute('r', String(r));
-                circle.style.opacity = String(opacity);
-                
-                if (progress < 1) {
-                  requestAnimationFrame(animateBeat);
-                } else {
-                  svg.remove();
-                }
-              };
-              requestAnimationFrame(animateBeat);
+                // Animate the circle
+                let startTime = performance.now();
+                const animateBeat = (now) => {
+                  const elapsed = now - startTime;
+                  const progress = Math.min(elapsed / ringDuration, 1);
+                  const r = (14 * ringScale) + progress * (22 * ringScale);
+                  const opacity = 0.55 * (1 - progress);
+
+                  circle.setAttribute('r', String(r));
+                  circle.style.opacity = String(opacity);
+
+                  if (progress < 1) {
+                    requestAnimationFrame(animateBeat);
+                  } else {
+                    svg.remove();
+                  }
+                };
+                requestAnimationFrame(animateBeat);
+              }
+            }
+          } else if (document.documentElement) {
+            document.documentElement.style.setProperty('--aura-kick-shift', '0deg');
+            document.documentElement.style.setProperty('--aura-kick-glow', '0');
+          }
+
+          const now = performance.now();
+          if (needsPulseTelemetry && now - vaultTelemetryRef.current.lastStateAt > 120) {
+            vaultTelemetryRef.current.lastStateAt = now;
+            const liveTrack = currentTrackRef.current;
+            const liveTime = currentTimeRef.current;
+            const sampledBars = Array.from({ length: 48 }, (_, i) => {
+              // Less aggressive curve so high frequencies aren't squashed together as much
+              const normStart = Math.pow(i / 48, 1.15);
+              const normEnd = Math.pow((i + 1) / 48, 1.15);
+              // Max bin reduced to 35% to avoid empty bars even on low-fidelity audio that rolls off early
+              const maxBin = Math.floor(bufferLength * 0.35);
+
+              let start = Math.floor(normStart * maxBin);
+              let end = Math.floor(normEnd * maxBin);
+              if (end <= start) end = start + 1;
+
+              let total = 0;
+              let count = 0;
+              let peak = 0;
+              for (let b = start; b < end; b++) {
+                const val = dataArray[b] || 0;
+                total += val;
+                if (val > peak) peak = val;
+                count += 1;
+              }
+              // Mix average and peak to give dynamic "highs and lows" rather than a flat average block
+              const value = (total / Math.max(count, 1)) * 0.4 + peak * 0.6;
+              return clamp01(value / 255);
+            });
+
+            const pulseData = {
+              bass,
+              mids,
+              highs,
+              energy,
+              spin: spinDeg,
+              stamp: [
+                'AETHER-PULSE',
+                liveTrack?.title || 'Aether Secret Session',
+                `t=${Math.floor((liveTime || 0) / 1000)}s`,
+                `b=${Math.round(bass * 100)}`,
+                `m=${Math.round(mids * 100)}`,
+                `h=${Math.round(highs * 100)}`,
+              ].join(' · '),
+            };
+
+            vaultPulseRef.current = pulseData;
+
+            // High-frequency CSS variable updates for smooth Aura effects without React re-renders
+            if (auraModeActive || isVaultOpen || visualizerState.isAuraStageOpen || visualizerState.isSharedSceneOpen) {
+              const root = document.documentElement;
+              root.style.setProperty('--vault-bass', String(bass));
+              root.style.setProperty('--vault-mids', String(mids));
+              root.style.setProperty('--vault-highs', String(highs));
+              root.style.setProperty('--vault-energy', String(energy));
+              root.style.setProperty('--vault-scale', String(1 + energy * 0.1));
+              root.style.setProperty('--vault-spin', `${spinDeg}deg`);
+            }
+
+            // Throttle React state updates; CSS variables carry the smoother beat response.
+            const stateNow = Date.now();
+            const vaultUiGap = livePerformanceMode === 'high' ? 260 : 520;
+            if (stateNow - lastVaultStateUpdateRef.current > vaultUiGap) {
+              setVaultPulse(pulseData);
+              setVaultSpectrum((prev) => sampledBars.map((v, idx) => lerp(prev[idx] ?? 0, v, 0.45)));
+              lastVaultStateUpdateRef.current = stateNow;
+
+              // DEV LOGGING
+              if (window.AETHER_DEV_PROFILE) {
+                const root = document.documentElement;
+                const cssEnergy = root.style.getPropertyValue('--vault-energy');
+                console.log(`[Pulse Debug] liveBeatIntensity: ${clamp01((pulseData.energy * 0.9) + (pulseData.bass * 0.45) + (pulseData.highs * 0.12)).toFixed(3)} | vaultEnergy: ${pulseData.energy?.toFixed(3)} | CSS--vault-energy: ${cssEnergy}`);
+              }
             }
           }
-        } else if (document.documentElement) {
-          document.documentElement.style.setProperty('--aura-kick-shift', '0deg');
-          document.documentElement.style.setProperty('--aura-kick-glow', '0');
-        }
 
-        const now = performance.now();
-        if (needsPulseTelemetry && now - vaultTelemetryRef.current.lastStateAt > 120) {
-          vaultTelemetryRef.current.lastStateAt = now;
-          const liveTrack = currentTrackRef.current;
-          const liveTime = currentTimeRef.current;
-          const sampledBars = Array.from({ length: 8 }, (_, i) => {
-            const start = Math.floor((i / 8) * bufferLength);
-            const end = Math.max(start + 1, Math.floor(((i + 1) / 8) * bufferLength));
-            let total = 0;
-            let count = 0;
-            for (let b = start; b < end; b++) {
-              total += dataArray[b] || 0;
-              count += 1;
-            }
-            return clamp01((total / Math.max(count, 1)) / 255);
-          });
-
-          const pulseData = {
-            bass,
-            mids,
-            highs,
-            energy,
-            spin: spinDeg,
-            stamp: [
-              'AETHER-PULSE',
-              liveTrack?.title || 'Aether Secret Session',
-              `t=${Math.floor((liveTime || 0) / 1000)}s`,
-              `b=${Math.round(bass * 100)}`,
-              `m=${Math.round(mids * 100)}`,
-              `h=${Math.round(highs * 100)}`,
-            ].join(' · '),
-          };
-
-          vaultPulseRef.current = pulseData;
-
-          // High-frequency CSS variable updates for smooth Aura effects without React re-renders
-          if (auraModeActive || isVaultOpen || visualizerState.isAuraStageOpen || visualizerState.isSharedSceneOpen) {
-            const root = document.documentElement;
-            root.style.setProperty('--vault-bass', String(bass));
-            root.style.setProperty('--vault-mids', String(mids));
-            root.style.setProperty('--vault-highs', String(highs));
-            root.style.setProperty('--vault-energy', String(energy));
-            root.style.setProperty('--vault-scale', String(1 + energy * 0.1));
-            root.style.setProperty('--vault-spin', `${spinDeg}deg`);
-          }
-
-          // Throttle React state updates; CSS variables carry the smoother beat response.
-          const stateNow = Date.now();
-          const vaultUiGap = livePerformanceMode === 'high' ? 260 : 520;
-          if (stateNow - lastVaultStateUpdateRef.current > vaultUiGap) {
-            setVaultPulse(pulseData);
-            setVaultSpectrum((prev) => sampledBars.map((v, idx) => lerp(prev[idx] ?? 0, v, 0.45)));
-            lastVaultStateUpdateRef.current = stateNow;
-          }
-        }
-
-        if (liveVisualizerMode === 'bars' && ctx) {
+          if (liveVisualizerMode === 'bars' && ctx) {
             const barWidth = (width / bufferLength) * 2.5;
             let x = 0;
             ctx.fillStyle = frameBudget.brandContrast || '#ff00ff';
@@ -6320,76 +7860,76 @@ function App() {
             }
             const smoothedBars = visualizerBarsRef.current;
             for (let i = 0; i < bufferLength; i++) {
-                const targetHeight = (dataArray[i] / 255) * height;
-                smoothedBars[i] = lerp(smoothedBars[i] || 0, targetHeight, targetHeight > smoothedBars[i] ? 0.42 : 0.24);
-                const barHeight = smoothedBars[i];
-                ctx.fillRect(x, height - barHeight, barWidth, barHeight);
-                x += barWidth + 2;
+              const targetHeight = (dataArray[i] / 255) * height;
+              smoothedBars[i] = lerp(smoothedBars[i] || 0, targetHeight, targetHeight > smoothedBars[i] ? 0.42 : 0.24);
+              const barHeight = smoothedBars[i];
+              ctx.fillRect(x, height - barHeight, barWidth, barHeight);
+              x += barWidth + 2;
             }
-        } else if (liveVisualizerMode === 'pulse' && pCtx) {
-          const accent = frameBudget.brandAccent || liveThemeColor || '#00ffbf';
-          const contrast = frameBudget.brandContrast || '#ff00ff';
+          } else if (liveVisualizerMode === 'pulse' && pCtx) {
+            const accent = frameBudget.brandAccent || liveThemeColor || '#00ffbf';
+            const contrast = frameBudget.brandContrast || '#ff00ff';
 
-          const centerX = pWidth / 2;
-          const centerY = pHeight / 2;
-          const baseRadius = Math.min(pWidth, pHeight) * 0.26;
+            const centerX = pWidth / 2;
+            const centerY = pHeight / 2;
+            const baseRadius = Math.min(pWidth, pHeight) * 0.26;
 
-          // Layer 1: soft ambient bloom
-          const outer = pCtx.createRadialGradient(centerX, centerY, 0, centerX, centerY, baseRadius * 2.8 * auraScale);
-          outer.addColorStop(0, `${accent}${alphaHex(0.22 + bass * 0.20)}`);
-          outer.addColorStop(0.45, `${contrast}${alphaHex(0.10 + mids * 0.14)}`);
-          outer.addColorStop(1, 'transparent');
-          pCtx.fillStyle = outer;
-          pCtx.beginPath();
-          pCtx.arc(centerX, centerY, baseRadius * 2.7 * auraScale, 0, Math.PI * 2);
-          pCtx.fill();
-
-          // Layer 2: liquid rings
-          pCtx.lineCap = 'round';
-          for (let ring = 0; ring < 3; ring++) {
-            const ringAlpha = 0.55 - ring * 0.15;
-            const ringBoost = 1 - ring * 0.2;
+            // Layer 1: soft ambient bloom
+            const outer = pCtx.createRadialGradient(centerX, centerY, 0, centerX, centerY, baseRadius * 2.8 * auraScale);
+            outer.addColorStop(0, `${accent}${alphaHex(0.22 + bass * 0.20)}`);
+            outer.addColorStop(0.45, `${contrast}${alphaHex(0.10 + mids * 0.14)}`);
+            outer.addColorStop(1, 'transparent');
+            pCtx.fillStyle = outer;
             pCtx.beginPath();
-            pCtx.strokeStyle = `${ring % 2 === 0 ? accent : contrast}${alphaHex(ringAlpha)}`;
-            pCtx.lineWidth = 3 - ring * 0.7;
-            pCtx.shadowBlur = 24 + bass * 32;
-            pCtx.shadowColor = ring % 2 === 0 ? accent : contrast;
+            pCtx.arc(centerX, centerY, baseRadius * 2.7 * auraScale, 0, Math.PI * 2);
+            pCtx.fill();
 
-            for (let i = 0; i <= 140; i++) {
-              const t = i / 140;
-              const angle = t * Math.PI * 2;
-              const bin = Math.floor((t * (bufferLength - 1) + ring * 13) % (bufferLength - 1));
-              const val = (dataArray[bin] || 0) / 255;
-              const ripple = Math.sin(angle * 3 + auraEnergyRef.current.phase * 2) * highs * 9;
-              const radius = baseRadius + val * (54 * ringBoost) + ripple;
-              const x = centerX + Math.cos(angle) * radius;
-              const y = centerY + Math.sin(angle) * radius;
-              if (i === 0) pCtx.moveTo(x, y); else pCtx.lineTo(x, y);
+            // Layer 2: liquid rings
+            pCtx.lineCap = 'round';
+            for (let ring = 0; ring < 3; ring++) {
+              const ringAlpha = 0.55 - ring * 0.15;
+              const ringBoost = 1 - ring * 0.2;
+              pCtx.beginPath();
+              pCtx.strokeStyle = `${ring % 2 === 0 ? accent : contrast}${alphaHex(ringAlpha)}`;
+              pCtx.lineWidth = 3 - ring * 0.7;
+              pCtx.shadowBlur = 24 + bass * 32;
+              pCtx.shadowColor = ring % 2 === 0 ? accent : contrast;
+
+              for (let i = 0; i <= 140; i++) {
+                const t = i / 140;
+                const angle = t * Math.PI * 2;
+                const bin = Math.floor((t * (bufferLength - 1) + ring * 13) % (bufferLength - 1));
+                const val = (dataArray[bin] || 0) / 255;
+                const ripple = Math.sin(angle * 3 + auraEnergyRef.current.phase * 2) * highs * 9;
+                const radius = baseRadius + val * (54 * ringBoost) + ripple;
+                const x = centerX + Math.cos(angle) * radius;
+                const y = centerY + Math.sin(angle) * radius;
+                if (i === 0) pCtx.moveTo(x, y); else pCtx.lineTo(x, y);
+              }
+              pCtx.closePath();
+              pCtx.stroke();
             }
-            pCtx.closePath();
-            pCtx.stroke();
-          }
 
-          // Layer 3: perimeter ticks
-          pCtx.shadowBlur = 0;
-          pCtx.lineWidth = 1.6;
-          for (let i = 0; i < 56; i += 2) {
-            const angle = (i / 56) * Math.PI * 2;
-            const val = (dataArray[(i * 2) % bufferLength] || 0) / 255;
-            const len = 5 + val * (14 + highs * 10);
-            const radius = baseRadius - 12;
-            const x1 = centerX + Math.cos(angle) * radius;
-            const y1 = centerY + Math.sin(angle) * radius;
-            const x2 = centerX + Math.cos(angle) * (radius - len);
-            const y2 = centerY + Math.sin(angle) * (radius - len);
-            pCtx.strokeStyle = `${accent}${alphaHex(0.35 + val * 0.45)}`;
-            pCtx.beginPath();
-            pCtx.moveTo(x1, y1);
-            pCtx.lineTo(x2, y2);
-            pCtx.stroke();
+            // Layer 3: perimeter ticks
+            pCtx.shadowBlur = 0;
+            pCtx.lineWidth = 1.6;
+            for (let i = 0; i < 56; i += 2) {
+              const angle = (i / 56) * Math.PI * 2;
+              const val = (dataArray[(i * 2) % bufferLength] || 0) / 255;
+              const len = 5 + val * (14 + highs * 10);
+              const radius = baseRadius - 12;
+              const x1 = centerX + Math.cos(angle) * radius;
+              const y1 = centerY + Math.sin(angle) * radius;
+              const x2 = centerX + Math.cos(angle) * (radius - len);
+              const y2 = centerY + Math.sin(angle) * (radius - len);
+              pCtx.strokeStyle = `${accent}${alphaHex(0.35 + val * 0.45)}`;
+              pCtx.beginPath();
+              pCtx.moveTo(x1, y1);
+              pCtx.lineTo(x2, y2);
+              pCtx.stroke();
+            }
           }
-        }
-        visualizerErrorCountRef.current = 0;
+          visualizerErrorCountRef.current = 0;
         } catch (e) {
           visualizerErrorCountRef.current += 1;
           const shouldLog = visualizerErrorCountRef.current <= 3 || visualizerErrorCountRef.current % 60 === 0;
@@ -6402,7 +7942,7 @@ function App() {
           }
         }
       };
-      
+
       animationFrameRef.current = requestAnimationFrame(draw);
     };
 
@@ -6420,16 +7960,16 @@ function App() {
     };
   }, [isStandalone, currentTrack?.id, currentTrack?.queueNonce, playbackResetNonce, performanceMode]);
 
-  const handleVolumeChange = (val) => {
+  const handleVolumeChange = useCallback((val) => {
     const v = parseFloat(val);
     if (!isFinite(v)) return;
     const finalV = Math.max(0, Math.min(1, v));
     setVolume(finalV);
     if (localAudioRef.current) localAudioRef.current.volume = finalV;
     window.aether?.store?.set('volume', finalV);
-  };
-
+  }, []);
   const orderedPlaylistNames = useMemo(() => {
+
     const seen = new Set();
     const ordered = [];
     playlistOrder.forEach((name) => {
@@ -6520,7 +8060,7 @@ function App() {
     }
   }, [playlists, playlistOrder]);
 
-  const handleAddToPlaylist = (name, data) => {
+  const handleAddToPlaylist = useCallback((name, data) => {
     if (!data) return;
     const newPlaylists = { ...playlists };
     const addedAt = new Date().toISOString();
@@ -6529,32 +8069,32 @@ function App() {
     if (!playlistOrder.includes(name)) {
       persistPlaylistOrder([...playlistOrder, name]);
     }
-    
+
     if (Array.isArray(data)) {
-        let addedCount = 0;
-        data.forEach(t => {
-          const normalizedTrack = markAdded(normalizeQueueTrack(t) || t);
-          if (!hasTrackInList(newPlaylists[name], normalizedTrack)) {
-                newPlaylists[name].push(normalizedTrack);
-                addedCount++;
-            }
-        });
-        setPlaylists(newPlaylists);
-        window.aether?.store?.set('playlists', newPlaylists);
-        setLastAdded(`Vaulted ${addedCount} Node(s)`);
-        setTimeout(() => setLastAdded(null), 3000);
-    } else {
-        const normalizedTrack = markAdded(normalizeQueueTrack(data) || data);
+      let addedCount = 0;
+      data.forEach(t => {
+        const normalizedTrack = markAdded(normalizeQueueTrack(t) || t);
         if (!hasTrackInList(newPlaylists[name], normalizedTrack)) {
           newPlaylists[name].push(normalizedTrack);
-          setPlaylists(newPlaylists);
-          window.aether?.store?.set('playlists', newPlaylists);
-          setLastAdded(`Vaulted: ${normalizedTrack.title}`);
-          setTimeout(() => setLastAdded(null), 3000);
+          addedCount++;
         }
+      });
+      setPlaylists(newPlaylists);
+      window.aether?.store?.set('playlists', newPlaylists);
+      setLastAdded(`Vaulted ${addedCount} Node(s)`);
+      setTimeout(() => setLastAdded(null), 3000);
+    } else {
+      const normalizedTrack = markAdded(normalizeQueueTrack(data) || data);
+      if (!hasTrackInList(newPlaylists[name], normalizedTrack)) {
+        newPlaylists[name].push(normalizedTrack);
+        setPlaylists(newPlaylists);
+        window.aether?.store?.set('playlists', newPlaylists);
+        setLastAdded(`Vaulted: ${normalizedTrack.title}`);
+        setTimeout(() => setLastAdded(null), 3000);
+      }
     }
     setActiveMenuTrack(null);
-  };
+  }, [playlists, playlistOrder, persistPlaylistOrder, hasTrackInList]);
 
   const libraryInsights = useMemo(() => {
     const allTracks = Object.values(playlists).flat();
@@ -6670,12 +8210,12 @@ function App() {
           const baseUrl = original?.actualUrl || original?.url || (original?.youtubeId ? `https://www.youtube.com/watch?v=${original.youtubeId}` : '');
           let track = baseUrl
             ? {
-                ...original,
-                id: original?.id || original?.youtubeId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                youtubeId: original?.youtubeId || extractYouTubeId(baseUrl),
-                actualUrl: original?.actualUrl || baseUrl,
-                url: original?.url || baseUrl,
-              }
+              ...original,
+              id: original?.id || original?.youtubeId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              youtubeId: original?.youtubeId || extractYouTubeId(baseUrl),
+              actualUrl: original?.actualUrl || baseUrl,
+              url: original?.url || baseUrl,
+            }
             : null;
           if (!track) {
             removedUnavailable += 1;
@@ -6740,44 +8280,7 @@ function App() {
     }
   }, [isStandalone, isVaultCleaning, normalizeTrackIdentity, playlists]);
 
-  const handleRemoveFromPlaylist = (name, index) => {
-    if (name === FAVORITES_PLAYLIST_ID) {
-      const track = favoriteTracksList[index];
-      if (track) toggleFavoriteTrack(track);
-      return;
-    }
-    const newPlaylists = { ...playlists };
-    newPlaylists[name] = [...(newPlaylists[name] || [])]; 
-    newPlaylists[name].splice(index, 1);
-    setLastAdded(`Purged node from ${name}`);
-    setTimeout(() => setLastAdded(null), 2000);
-    setPlaylists(newPlaylists);
-    window.aether?.store?.set('playlists', newPlaylists);
-  };
 
-  const handlePlaylistAddAll = (name) => {
-    if (name === FAVORITES_PLAYLIST_ID) {
-      handleFavoriteAddAll();
-      return;
-    }
-    const tracks = playlists[name];
-    if (tracks && tracks.length > 0) {
-      const normalized = (tracks || []).map(normalizeQueueTrack).filter(Boolean);
-      if (normalized.length === 0) {
-        setLastAdded(`No playable tracks in ${name}`);
-        setTimeout(() => setLastAdded(null), 2600);
-        return;
-      }
-      setQueue(prev => {
-        const next = [...prev, ...normalized];
-        if (prev.length === 0) setIsPlaying(true);
-        return next;
-      });
-      setIsManualStop(false);
-      setLastAdded(`Queued Entire Vault: ${name} (${normalized.length})`);
-      setTimeout(() => setLastAdded(null), 3000);
-    }
-  };
 
   const activeLyric = useMemo(() => {
     if (!lyrics || lyrics.length === 0 || activeLyricIndex < 0) return null;
@@ -6796,50 +8299,7 @@ function App() {
     return candidate;
   }, [lyrics, activeLyricIndex, compactLyric]);
 
-  const handleRenamePlaylist = (oldName, newName) => {
-    if (oldName === FAVORITES_PLAYLIST_ID) {
-      setIsRenamingPlaylist(null);
-      setLastAdded('Favorites is a built-in library');
-      setTimeout(() => setLastAdded(null), 2200);
-      return;
-    }
-    const cleanName = String(newName || '').trim();
-    if (!cleanName || oldName === cleanName) { setIsRenamingPlaylist(null); return; }
-    if (playlists[cleanName] && cleanName !== oldName) {
-      setLastAdded('Vault name already exists');
-      setTimeout(() => setLastAdded(null), 2200);
-      return;
-    }
-    const newPlaylists = { ...playlists };
-    newPlaylists[cleanName] = newPlaylists[oldName];
-    delete newPlaylists[oldName];
-    setPlaylists(newPlaylists);
-    window.aether?.store?.set('playlists', newPlaylists);
-    persistPlaylistOrder(playlistOrder.map((name) => (name === oldName ? cleanName : name)));
-    setIsRenamingPlaylist(null);
-    if (viewingPlaylist === oldName) setViewingPlaylist(cleanName);
-    setLastAdded(`Renamed vault: ${cleanName}`);
-    setTimeout(() => setLastAdded(null), 2200);
-  };
 
-  const handleDeletePlaylist = (name) => {
-    if (name === FAVORITES_PLAYLIST_ID) {
-      persistFavoriteTracks({});
-      setViewingPlaylist(Object.keys(playlists)[0] || null);
-      setLastAdded('Cleared favorites');
-      setTimeout(() => setLastAdded(null), 2200);
-      return;
-    }
-    const newPlaylists = { ...playlists };
-    delete newPlaylists[name];
-    setPlaylists(newPlaylists);
-    window.aether?.store?.set('playlists', newPlaylists);
-    const nextOrder = playlistOrder.filter((playlistName) => playlistName !== name);
-    persistPlaylistOrder(nextOrder);
-    if (viewingPlaylist === name) {
-      setViewingPlaylist(nextOrder.find((playlistName) => Array.isArray(newPlaylists[playlistName])) || Object.keys(newPlaylists)[0] || null);
-    }
-  };
 
   const triggerAutoplay = async (seedTrack = null) => {
     if (!isAutoplayEnabled || !isStandalone) return;
@@ -6891,14 +8351,14 @@ function App() {
 
     try {
       setIsAutoplaySeeking(true);
-      
+
       // Primary Discovery Path: Recommendations
-      const fetchPromise = window.aether.getRecommendations({ 
-        title: seed.title, 
-        author: seed.author, 
-        url: seed.actualUrl || seed.url 
+      const fetchPromise = window.aether.getRecommendations({
+        title: seed.title,
+        author: seed.author,
+        url: seed.actualUrl || seed.url
       });
-      
+
       // 10s Timeout Guard
       const recs = await Promise.race([
         fetchPromise,
@@ -6994,32 +8454,38 @@ function App() {
 
   useEffect(() => {
     if (isStandalone) return undefined;
-    const interval = window.setInterval(() => {
-        const hasRemoteQueue = Boolean(discordSdkRef.current?.guildId);
-        if (hasRemoteQueue) fetchQueueRef.current?.();
-        if (hasRemoteQueue && isPlayingRef.current) {
-            // Heartbeat Sync (NOVA)
-            axios.post(`${API_BASE}/api/heartbeat/${getEffectiveGuildId()}`, {
-                currentTime: Math.max(0, Math.floor(currentTimeRef.current || 0)),
-                isPlaying: true
-            }).catch(() => {});
-        }
+    clearTrackedInterval(remoteHeartbeatIntervalRef, 'remote heartbeat');
+    remoteHeartbeatIntervalRef.current = window.setInterval(() => {
+      const hasRemoteQueue = Boolean(discordSdkRef.current?.guildId);
+      if (hasRemoteQueue) fetchQueueRef.current?.();
+      if (hasRemoteQueue && isPlayingRef.current) {
+        // Heartbeat Sync (NOVA)
+        axios.post(`${API_BASE}/api/heartbeat/${effectiveGuildIdRef.current || DEFAULT_GUILD_ID}`, {
+          currentTime: Math.max(0, Math.floor(currentTimeRef.current || 0)),
+          isPlaying: true
+        }).catch(() => { });
+      }
     }, 3000);
-    return () => window.clearInterval(interval);
-  }, [API_BASE, getEffectiveGuildId, isStandalone]);
+    return () => {
+      if (remoteHeartbeatIntervalRef.current) {
+        window.clearInterval(remoteHeartbeatIntervalRef.current);
+        remoteHeartbeatIntervalRef.current = 0;
+      }
+    };
+  }, [clearTrackedInterval, isStandalone]);
 
   // Autoplay Trigger Logic
   useEffect(() => {
     if (isStandalone && isAutoplayEnabled && queue.length === 0 && !isManualStop && !isAutoplaySeeking) {
-        const seed = currentTrack || history[0] || prevTrackRef.current;
-        if (seed) {
-          console.log('[Aether/Autoplay] Queue empty, triggering autoplay', {
-            seedTitle: seed.title,
-            seedId: seed.id,
-            from: currentTrack ? 'current' : history[0] ? 'history' : 'previous-ref',
-          });
-          triggerAutoplay(seed);
-        }
+      const seed = currentTrack || history[0] || prevTrackRef.current;
+      if (seed) {
+        console.log('[Aether/Autoplay] Queue empty, triggering autoplay', {
+          seedTitle: seed.title,
+          seedId: seed.id,
+          from: currentTrack ? 'current' : history[0] ? 'history' : 'previous-ref',
+        });
+        triggerAutoplay(seed);
+      }
     }
   }, [queue.length, isAutoplayEnabled, isStandalone, isManualStop, isAutoplaySeeking, currentTrack, history, autoplayMoodMode, skipEvents]);
 
@@ -7175,75 +8641,91 @@ function App() {
   useEffect(() => {
     if (!('mediaSession' in navigator) || !currentTrack) return;
     try {
-        navigator.mediaSession.metadata = new MediaMetadata({
-            title: currentTrack.title,
-            artist: currentTrack.author,
-            album: 'Aether Studio',
-            artwork: [{ src: getProxyUrl(currentTrack.thumbnail), sizes: '512x512', type: 'image/png' }]
-        });
-        navigator.mediaSession.setActionHandler('play', () => { handleControl('resume'); });
-        navigator.mediaSession.setActionHandler('pause', () => { handleControl('pause'); });
-        navigator.mediaSession.setActionHandler('nexttrack', () => { handleControl('skip'); });
-        navigator.mediaSession.setActionHandler('previoustrack', () => { handleControl('previous'); });
-        navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
-    } catch (e) {}
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: currentTrack.title,
+        artist: currentTrack.author,
+        album: 'Aether Studio',
+        artwork: [{ src: getProxyUrl(currentTrack.thumbnail), sizes: '512x512', type: 'image/png' }]
+      });
+      navigator.mediaSession.setActionHandler('play', () => { handleControl('resume'); });
+      navigator.mediaSession.setActionHandler('pause', () => { handleControl('pause'); });
+      navigator.mediaSession.setActionHandler('nexttrack', () => { handleControl('skip'); });
+      navigator.mediaSession.setActionHandler('previoustrack', () => { handleControl('previous'); });
+      navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+    } catch (e) { }
   }, [currentTrack, isPlaying]);
 
   useEffect(() => {
+    let cancelled = false;
+    let unsubscribeLibraryUpdate = null;
+    let unsubscribeControl = null;
+
     if (isStandalone && window.aether?.getStreamPort) {
-        window.aether.getStreamPort().then(port => {
-            console.log('[Aether] Neural Streamer linked to port:', port);
-            setStreamPort(port);
-        });
+      window.aether.getStreamPort().then(port => {
+        if (cancelled) return;
+        console.log('[Aether] Neural Streamer linked to port:', port);
+        setStreamPort(port);
+      });
     }
 
     // --- NEURAL WATCHER LISTENER (NOVA ---
     if (isStandalone && window.aether?.onLibraryUpdate) {
-        window.aether.onLibraryUpdate((event) => {
-            console.log("[Aether] Neural Sync detected change:", event);
-            // Library refresh logic...
-        });
+      unsubscribeLibraryUpdate = window.aether.onLibraryUpdate((event) => {
+        console.log("[Aether] Neural Sync detected change:", event);
+        // Library refresh logic...
+      });
+      if (typeof unsubscribeLibraryUpdate !== 'function') {
+        console.warn('[Aether/Perf] Standalone library watcher did not provide an unsubscribe; IPC listener may accumulate.');
+      }
     }
 
     // --- UNIVERSAL CONTROL RECEIVER (NOVA ---
     if (isStandalone && window.aether?.onControl) {
-        window.aether.onControl((action) => {
-            console.log("[Aether/Hardware] Action Received:", action);
-            if (action === 'volume-up') {
-                setVolume(prev => {
-                    const nextV = Math.min(1, prev + 0.1);
-                    setVolumeToast(true); setTimeout(() => setVolumeToast(false), 2000);
-                    if (localAudioRef.current) localAudioRef.current.volume = nextV;
-                    window.aether?.store?.set('volume', nextV);
-                    return nextV;
-                });
-            } else if (action === 'volume-down') {
-                setVolume(prev => {
-                    const nextV = Math.max(0, prev - 0.1);
-                    if (localAudioRef.current) localAudioRef.current.volume = nextV;
-                    setVolumeToast(true); setTimeout(() => setVolumeToast(false), 2000);
-                    window.aether?.store?.set('volume', nextV);
-                    return nextV;
-                });
-            } else if (action === 'mute') {
-                setVolume(prev => {
-                    const nextV = prev > 0 ? 0 : 0.5;
-                    if (localAudioRef.current) localAudioRef.current.volume = nextV;
-                    return nextV;
-                });
-            } else {
-                handleControl(action);
-            }
-        });
+      unsubscribeControl = window.aether.onControl((action) => {
+        console.log("[Aether/Hardware] Action Received:", action);
+        if (action === 'volume-up') {
+          setVolume(prev => {
+            const nextV = Math.min(1, prev + 0.1);
+            showVolumeToastFor(2000);
+            if (localAudioRef.current) localAudioRef.current.volume = nextV;
+            window.aether?.store?.set('volume', nextV);
+            return nextV;
+          });
+        } else if (action === 'volume-down') {
+          setVolume(prev => {
+            const nextV = Math.max(0, prev - 0.1);
+            if (localAudioRef.current) localAudioRef.current.volume = nextV;
+            showVolumeToastFor(2000);
+            window.aether?.store?.set('volume', nextV);
+            return nextV;
+          });
+        } else if (action === 'mute') {
+          setVolume(prev => {
+            const nextV = prev > 0 ? 0 : 0.5;
+            if (localAudioRef.current) localAudioRef.current.volume = nextV;
+            return nextV;
+          });
+        } else {
+          handleControlRef.current?.(action);
+        }
+      });
+      if (typeof unsubscribeControl !== 'function') {
+        console.warn('[Aether/Perf] Hardware control bridge did not provide an unsubscribe; IPC listener may accumulate.');
+      }
     }
-  }, [defaultGlobalMediaShortcutsEnabled, isMacPlatform, isStandalone]);
+    return () => {
+      cancelled = true;
+      if (typeof unsubscribeLibraryUpdate === 'function') unsubscribeLibraryUpdate();
+      if (typeof unsubscribeControl === 'function') unsubscribeControl();
+    };
+  }, [isStandalone, showVolumeToastFor]);
 
   const fetchQueue = async () => {
     const startedAt = performance.now();
     try {
       const guildId = getEffectiveGuildId();
       const resp = await axios.get(`${API_BASE}/api/queue/${guildId}`);
-      
+
       // Only pull remote queue if acting as Discord client (Standalone manages its own state)
       if (resp.data.songs && !isStandalone) setQueue(resp.data.songs);
 
@@ -7255,7 +8737,7 @@ function App() {
         setIsAudioBuffering(false);
         webTrackLoadKeyRef.current = '';
         if (youtubePlayerRef.current?.stopVideo) {
-          try { youtubePlayerRef.current.stopVideo(); } catch {}
+          try { youtubePlayerRef.current.stopVideo(); } catch { }
         }
         if (localAudioRef.current) {
           localAudioRef.current.pause();
@@ -7263,7 +8745,7 @@ function App() {
           localAudioRef.current.load();
         }
       }
-      
+
       const serverMs = resp.data.currentMs || 0;
       const liveCurrentTime = currentTimeRef.current;
       const liveIsPlaying = isPlayingRef.current;
@@ -7320,28 +8802,29 @@ function App() {
       typedBufferRef.current = next;
       if (next === SEQUENCE) {
         typedBufferRef.current = '';
-        startTransition(() => setIsMixtapeVaultOpen(true));
+        markUiInteraction(1100);
+        setIsMixtapeVaultOpen(true);
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [markUiInteraction]);
 
   const updateDiscordRichPresence = async (track, playbackMs = 0) => {
     if (!discordSdkRef.current) return;
     try {
       if (!track) {
-         await discordSdkRef.current.commands.setActivity({
-            activity: {
-              name: "AH Music",
-              type: 0,
-              details: "In Music Lobby",
-              state: "Searching for Nodes...",
-              assets: { large_image: "https://i.imgur.com/8Q8W8Xn.png", large_text: "Aether // Studio" }
-            }
-         });
-         return;
+        await discordSdkRef.current.commands.setActivity({
+          activity: {
+            name: "AH Music",
+            type: 0,
+            details: "In Music Lobby",
+            state: "Searching for Nodes...",
+            assets: { large_image: "https://i.imgur.com/8Q8W8Xn.png", large_text: "Aether // Studio" }
+          }
+        });
+        return;
       }
       await discordSdkRef.current.commands.setActivity({
         activity: {
@@ -7367,11 +8850,11 @@ function App() {
     const startedAt = performance.now();
     try {
       if (isStandalone) {
-          const stats = await window.aether.getStats();
-          setSystemStats(stats);
+        const stats = await window.aether.getStats();
+        setSystemStats(stats);
       } else {
-          const resp = await axios.get(`${API_BASE}/api/system`);
-          setSystemStats(resp.data);
+        const resp = await axios.get(`${API_BASE}/api/system`);
+        setSystemStats(resp.data);
       }
       setDiagnostics(prev => ({
         ...prev,
@@ -7451,6 +8934,46 @@ function App() {
       }
     } catch (e) {
       console.warn('[Aether/Diagnostics] engine status fetch failed', e);
+    }
+  }, [isStandalone]);
+
+  const handleRepairEnvironment = useCallback(async () => {
+    if (!isStandalone || !window.aether?.repairEnvironment) return;
+    setRepairResult({ status: 'running' });
+    try {
+      const res = await window.aether.repairEnvironment();
+      setRepairResult({ status: 'done', result: res });
+      // refresh engine status after repair attempt
+      await refreshEngineStatus();
+    } catch (e) {
+      setRepairResult({ status: 'error', error: e?.message || String(e) });
+    }
+  }, [isStandalone, refreshEngineStatus]);
+
+  const handleAttemptFixes = useCallback(async () => {
+    if (!isStandalone || !window.aether?.repairEnvironment) return;
+    setRepairResult({ status: 'running' });
+    try {
+      const res = await window.aether.repairEnvironment({ runFixes: true });
+      setRepairResult({ status: 'done', result: res });
+      await refreshEngineStatus();
+    } catch (e) {
+      setRepairResult({ status: 'error', error: e?.message || String(e) });
+    }
+  }, [isStandalone, refreshEngineStatus]);
+
+  const handleRunInstaller = useCallback(async () => {
+    if (!isStandalone || !window.aether?.runInstaller) return;
+    try {
+      const res = await window.aether.runInstaller();
+      if (!res?.success && res?.releasesUrl) {
+        // Open releases page in default browser
+        window.open(res.releasesUrl, '_blank');
+      }
+      // Save result for user to see
+      setRepairResult((prev) => ({ ...(prev || {}), installerResult: res }));
+    } catch (e) {
+      setRepairResult((prev) => ({ ...(prev || {}), installerResult: { success: false, error: e?.message || String(e) } }));
     }
   }, [isStandalone]);
 
@@ -7599,7 +9122,7 @@ function App() {
   useEffect(() => {
     let interval;
     if (isPlaying && currentTrack && !isAudioBuffering && !videoMode && !localAudioRef.current) {
-        interval = window.setInterval(() => setCurrentTime((prev) => prev + 500), 500);
+      interval = window.setInterval(() => setCurrentTime((prev) => prev + 500), 500);
     }
     return () => {
       if (interval) window.clearInterval(interval);
@@ -7673,17 +9196,17 @@ function App() {
 
     // Normal Sync (Bounded Scroll)
     if (!isAutoScrollPaused && activeLyricRef.current && lyricsContainerRef.current) {
-        centerCompactLyrics('smooth');
+      centerCompactLyrics('smooth');
     }
     // Expanded Sync (Bounded Scroll with Header Offset)
     if ((!isAutoScrollPaused || isLyricsExpanded) && expandedActiveRef.current && expandedContainerRef.current) {
-        // First pass immediately, second pass after animation settles one more frame.
-        centerImmersiveLyrics(activeLyricIndex <= 1 ? 'auto' : 'smooth');
-        raf1 = requestAnimationFrame(() => {
-          raf2 = requestAnimationFrame(() => {
-            centerImmersiveLyrics('auto');
-          });
+      // First pass immediately, second pass after animation settles one more frame.
+      centerImmersiveLyrics(activeLyricIndex <= 1 ? 'auto' : 'smooth');
+      raf1 = requestAnimationFrame(() => {
+        raf2 = requestAnimationFrame(() => {
+          centerImmersiveLyrics('auto');
         });
+      });
     }
 
     return () => {
@@ -7726,7 +9249,7 @@ function App() {
     const lines = lrcString.split('\n');
     const result = [];
     const timeRegex = /\[(\d{2}):(\d{2})[.:](\d{2,3})\]/;
-    
+
     lines.forEach(line => {
       const match = timeRegex.exec(line);
       if (match) {
@@ -7778,31 +9301,31 @@ function App() {
         isStandalone,
       });
       if (isStandalone) {
-          const results = await window.aether.getLyrics(trackTitle, trackAuthor, trackDuration, trackTitle, trackUrl);
-          // Backend returns { lyrics: Array<{time, text}>, source: string } OR Array directly
-          const lyricsArray = Array.isArray(results) ? results : (results?.lyrics || []);
-          if (lyricsFetchRequestRef.current !== requestId) return;
-          if (manualKey && (manualLyricsStoreRef.current?.[manualKey]?.lines || []).length > 0) {
-            setIsLyricsLoading(false);
-            return;
-          }
-          console.log("[Aether/Lyrics] Standalone result", {
-            count: lyricsArray.length,
-            source: results?.source,
-          });
-          setLyrics(lyricsArray);
-          setDiagnostics(prev => ({
-            ...prev,
-            lastLyricsSource: results?.source || 'local',
-            lastLyricsFetchMs: Math.round(performance.now() - startedAt),
-            lastLyricsFetchAt: Date.now(),
-            lastLyricsError: null,
-          }));
+        const results = await window.aether.getLyrics(trackTitle, trackAuthor, trackDuration, trackTitle, trackUrl);
+        // Backend returns { lyrics: Array<{time, text}>, source: string } OR Array directly
+        const lyricsArray = Array.isArray(results) ? results : (results?.lyrics || []);
+        if (lyricsFetchRequestRef.current !== requestId) return;
+        if (manualKey && (manualLyricsStoreRef.current?.[manualKey]?.lines || []).length > 0) {
           setIsLyricsLoading(false);
           return;
+        }
+        console.log("[Aether/Lyrics] Standalone result", {
+          count: lyricsArray.length,
+          source: results?.source,
+        });
+        setLyrics(lyricsArray);
+        setDiagnostics(prev => ({
+          ...prev,
+          lastLyricsSource: results?.source || 'local',
+          lastLyricsFetchMs: Math.round(performance.now() - startedAt),
+          lastLyricsFetchAt: Date.now(),
+          lastLyricsError: null,
+        }));
+        setIsLyricsLoading(false);
+        return;
       }
       const query = `${normalizedTitle || trackTitle} ${trackAuthor || ''}`.trim();
-      const resp = await fetch(`${API_BASE}/api/lyrics?track=${encodeURIComponent(normalizedTitle || trackTitle)}&artist=${encodeURIComponent(trackAuthor || '')}&duration=${(trackDuration || 0)/1000}&url=${encodeURIComponent(trackUrl || '')}&query=${encodeURIComponent(query)}&format=json`);
+      const resp = await fetch(`${API_BASE}/api/lyrics?track=${encodeURIComponent(normalizedTitle || trackTitle)}&artist=${encodeURIComponent(trackAuthor || '')}&duration=${(trackDuration || 0) / 1000}&url=${encodeURIComponent(trackUrl || '')}&query=${encodeURIComponent(query)}&format=json`);
       const data = await resp.json();
       if (lyricsFetchRequestRef.current !== requestId) return;
       if (manualKey && (manualLyricsStoreRef.current?.[manualKey]?.lines || []).length > 0) {
@@ -7963,7 +9486,7 @@ function App() {
       return true;
     }
     if (videoMode === 'cinema') {
-      exitVideoMode();
+      exitVideoMode({ reason: 'escape_from_cinema' });
       return true;
     }
     return false;
@@ -8055,7 +9578,7 @@ function App() {
     const previousKey = getTrackActionKey(prevTrackRef.current);
     if (currentKey !== previousKey) {
       if (prevTrackRef.current) {
-         setHistory(prev => [prevTrackRef.current, ...prev].slice(0, 20)); // Keep last 20
+        setHistory(prev => [prevTrackRef.current, ...prev].slice(0, 20)); // Keep last 20
       }
       setCurrentTime(0);
       setCurrentTrackTitle(currentTrack?.title || "");
@@ -8235,16 +9758,25 @@ function App() {
     });
     return entries;
   }, [favoriteTracksList, normalizeTrackIdentity, playlists]);
-  const librarySearchIndex = useMemo(() => buildLibrarySearchIndex({
-    songEntries: librarySongEntries,
-    playlistNames: orderedPlaylistNames,
-    playlists,
-  }), [librarySongEntries, orderedPlaylistNames, playlists]);
+  const shouldHydrateLibrarySearch = isLibraryOverlayContentReady || Boolean(librarySearchNeedle);
+  const librarySearchIndex = useMemo(() => (
+    shouldHydrateLibrarySearch
+      ? buildLibrarySearchIndex({
+        songEntries: librarySongEntries,
+        playlistNames: orderedPlaylistNames,
+        playlists,
+      })
+      : {
+        docs: [],
+        search: () => null,
+      }
+  ), [librarySongEntries, orderedPlaylistNames, playlists, shouldHydrateLibrarySearch]);
   const librarySearchMatches = useMemo(
     () => librarySearchIndex.search(librarySearchNeedle),
     [librarySearchIndex, librarySearchNeedle]
   );
   useEffect(() => {
+    if (!isLibraryOverlayOpen) return;
     if (!librarySearchIndex.docs.length) return;
     const handle = window.setTimeout(() => {
       persistLibraryIndexSnapshot({
@@ -8255,8 +9787,9 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(handle);
-  }, [librarySearchIndex.docs, librarySongEntries.length, orderedPlaylistNames.length]);
+  }, [isLibraryOverlayOpen, librarySearchIndex.docs, librarySongEntries.length, orderedPlaylistNames.length]);
   const libraryVisibleSongEntries = useMemo(() => {
+    if (!isLibraryOverlayContentReady) return [];
     const matchesSearch = (entry) => {
       if (!librarySearchNeedle) return true;
       return librarySearchMatches?.songKeys?.has(entry.key);
@@ -8280,8 +9813,9 @@ function App() {
       sorted.sort((a, b) => getLibrarySongSortValue(b, librarySongSort) - getLibrarySongSortValue(a, librarySongSort) || byTitle(a, b));
     }
     return sorted;
-  }, [getLibrarySongSortValue, getTrackLastListenedMs, getTrackPlayCount, librarySearchMatches, librarySearchNeedle, librarySongEntries, librarySongFilter, librarySongSort]);
+  }, [getLibrarySongSortValue, getTrackLastListenedMs, getTrackPlayCount, isLibraryOverlayContentReady, librarySearchMatches, librarySearchNeedle, librarySongEntries, librarySongFilter, librarySongSort]);
   const libraryVisiblePlaylistNames = useMemo(() => {
+    if (!isLibraryOverlayContentReady) return [];
     const matchesSearch = (name) => {
       if (!librarySearchNeedle) return true;
       return librarySearchMatches?.playlistNames?.has(name);
@@ -8313,14 +9847,16 @@ function App() {
       sorted.sort((a, b) => getPlaylistLibraryStats(b).playCount - getPlaylistLibraryStats(a).playCount || byName(a, b));
     }
     return sorted;
-  }, [getPlaylistLibraryStats, libraryFilter, librarySearchMatches, librarySearchNeedle, librarySort, orderedPlaylistNames, playlists]);
+  }, [getPlaylistLibraryStats, isLibraryOverlayContentReady, libraryFilter, librarySearchMatches, librarySearchNeedle, librarySort, orderedPlaylistNames, playlists]);
   const showFavoriteLibraryCard = useMemo(() => {
+    if (!isLibraryOverlayContentReady) return false;
     if (libraryFilter === 'empty') return false;
     if (!librarySearchNeedle) return true;
     if (FAVORITES_PLAYLIST_NAME.toLowerCase().includes(librarySearchNeedle)) return true;
     return librarySongEntries.some((entry) => entry.isFavorite && librarySearchMatches?.songKeys?.has(entry.key));
-  }, [libraryFilter, librarySearchMatches, librarySearchNeedle, librarySongEntries]);
+  }, [isLibraryOverlayContentReady, libraryFilter, librarySearchMatches, librarySearchNeedle, librarySongEntries]);
   const focusedVaultVisibleTracks = useMemo(() => {
+    if (!isLibraryOverlayContentReady) return [];
     const focusedNameMatches = String(focusedVaultName || '').toLowerCase().includes(librarySearchNeedle);
     const base = !librarySearchNeedle || focusedNameMatches
       ? focusedVaultTracks
@@ -8344,7 +9880,7 @@ function App() {
       sorted.sort((a, b) => getTrackPlayCount(b) - getTrackPlayCount(a) || String(a?.title || '').localeCompare(String(b?.title || '')));
     }
     return sorted;
-  }, [focusedVaultName, focusedVaultTracks, getTrackAddedMs, getTrackLastListenedMs, getTrackPlayCount, librarySearchNeedle, libraryTrackSort]);
+  }, [focusedVaultName, focusedVaultTracks, getTrackAddedMs, getTrackLastListenedMs, getTrackPlayCount, isLibraryOverlayContentReady, librarySearchNeedle, libraryTrackSort]);
 
   const persistFavoriteTracks = useCallback((nextFavorites) => {
     setFavoriteTracks(nextFavorites);
@@ -8420,6 +9956,90 @@ function App() {
     playLibraryTracks(playlists[name] || [], name || 'Vault', shuffle);
   }, [handleFavoritePlayAll, playLibraryTracks, playlists]);
 
+  const handleRemoveFromPlaylist = useCallback((name, index) => {
+    if (name === FAVORITES_PLAYLIST_ID) {
+      const track = favoriteTracksList[index];
+      if (track) toggleFavoriteTrack(track);
+      return;
+    }
+    const newPlaylists = { ...playlists };
+    newPlaylists[name] = [...(newPlaylists[name] || [])];
+    newPlaylists[name].splice(index, 1);
+    setLastAdded(`Purged node from ${name}`);
+    setTimeout(() => setLastAdded(null), 2000);
+    setPlaylists(newPlaylists);
+    window.aether?.store?.set('playlists', newPlaylists);
+  }, [playlists, favoriteTracksList, toggleFavoriteTrack]);
+
+  const handlePlaylistAddAll = useCallback((name) => {
+    if (name === FAVORITES_PLAYLIST_ID) {
+      handleFavoriteAddAll();
+      return;
+    }
+    const tracks = playlists[name];
+    if (tracks && tracks.length > 0) {
+      const normalized = (tracks || []).map(normalizeQueueTrack).filter(Boolean);
+      if (normalized.length === 0) {
+        setLastAdded(`No playable tracks in ${name}`);
+        setTimeout(() => setLastAdded(null), 2600);
+        return;
+      }
+      setQueue(prev => {
+        const next = [...prev, ...normalized];
+        if (prev.length === 0) setIsPlaying(true);
+        return next;
+      });
+      setIsManualStop(false);
+      setLastAdded(`Queued Entire Vault: ${name} (${normalized.length})`);
+      setTimeout(() => setLastAdded(null), 3000);
+    }
+  }, [playlists, handleFavoriteAddAll]);
+
+  const handleRenamePlaylist = useCallback((oldName, newName) => {
+    if (oldName === FAVORITES_PLAYLIST_ID) {
+      setIsRenamingPlaylist(null);
+      setLastAdded('Favorites is a built-in library');
+      setTimeout(() => setLastAdded(null), 2200);
+      return;
+    }
+    const cleanName = String(newName || '').trim();
+    if (!cleanName || oldName === cleanName) { setIsRenamingPlaylist(null); return; }
+    if (playlists[cleanName] && cleanName !== oldName) {
+      setLastAdded('Vault name already exists');
+      setTimeout(() => setLastAdded(null), 2200);
+      return;
+    }
+    const newPlaylists = { ...playlists };
+    newPlaylists[cleanName] = newPlaylists[oldName];
+    delete newPlaylists[oldName];
+    setPlaylists(newPlaylists);
+    window.aether?.store?.set('playlists', newPlaylists);
+    persistPlaylistOrder(playlistOrder.map((name) => (name === oldName ? cleanName : name)));
+    setIsRenamingPlaylist(null);
+    if (viewingPlaylist === oldName) setViewingPlaylist(cleanName);
+    setLastAdded(`Renamed vault: ${cleanName}`);
+    setTimeout(() => setLastAdded(null), 2200);
+  }, [playlists, playlistOrder, persistPlaylistOrder, viewingPlaylist]);
+
+  const handleDeletePlaylist = useCallback((name) => {
+    if (name === FAVORITES_PLAYLIST_ID) {
+      persistFavoriteTracks({});
+      setViewingPlaylist(Object.keys(playlists)[0] || null);
+      setLastAdded('Cleared favorites');
+      setTimeout(() => setLastAdded(null), 2200);
+      return;
+    }
+    const newPlaylists = { ...playlists };
+    delete newPlaylists[name];
+    setPlaylists(newPlaylists);
+    window.aether?.store?.set('playlists', newPlaylists);
+    const nextOrder = playlistOrder.filter((playlistName) => playlistName !== name);
+    persistPlaylistOrder(nextOrder);
+    if (viewingPlaylist === name) {
+      setViewingPlaylist(nextOrder.find((playlistName) => Array.isArray(newPlaylists[playlistName])) || Object.keys(newPlaylists)[0] || null);
+    }
+  }, [playlists, playlistOrder, persistPlaylistOrder, viewingPlaylist, persistFavoriteTracks]);
+
   const handleRemoveTrackFromPlaylist = useCallback((name, track, fallbackIndex = -1) => {
     if (name === FAVORITES_PLAYLIST_ID) {
       if (track) toggleFavoriteTrack(track);
@@ -8472,18 +10092,18 @@ function App() {
     setHasCompletedSearch(true);
     try {
       if (isStandalone) {
-          const results = await window.aether.search(normalizedQuery);
-          setSearchResults(Array.isArray(results) ? results : []);
+        const results = await window.aether.search(normalizedQuery);
+        setSearchResults(Array.isArray(results) ? results : []);
       } else {
-          const resp = await axios.get(`${API_BASE}/api/search?q=${encodeURIComponent(normalizedQuery)}`);
-          setSearchResults(Array.isArray(resp.data) ? resp.data : []);
+        const resp = await axios.get(`${API_BASE}/api/search?q=${encodeURIComponent(normalizedQuery)}`);
+        setSearchResults(Array.isArray(resp.data) ? resp.data : []);
       }
       if (isMobileSearchOpen) setIsMobileSearchOpen(false);
     } catch (err) {
-        console.error("[Search] Failed:", err);
-        if (isStandalone) {
-            alert(`NEURAL SYSTEM ERROR\n- Message: ${err.message}\n- Status: Binary pathing issue or process blocked.\n- Try: Restarting Aether from Applications.`);
-        }
+      console.error("[Search] Failed:", err);
+      if (isStandalone) {
+        alert(`NEURAL SYSTEM ERROR\n- Message: ${err.message}\n- Status: Binary pathing issue or process blocked.\n- Try: Restarting Aether from Applications.`);
+      }
     } finally { setIsSearching(false); }
   };
 
@@ -8676,37 +10296,37 @@ function App() {
 
   const handleAdd = async (track) => {
     if (isStandalone) {
-        const addStartTime = Date.now();
-        const newTrack = normalizeQueueTrack(track);
-        if (!newTrack) {
-          console.warn('[Aether/Queue] Ignored add: track has no playable URL', track);
-          return;
-        }
-        const url = newTrack.actualUrl || newTrack.url;
-        const stableId = newTrack.id;
-        const queueNonce = newTrack.queueNonce;
-        console.log(`[Aether] Adding standalone track to queue: ${newTrack.title} (${url}) -> id=${stableId}`);
-        setQueue(prev => {
-            const next = [...prev, newTrack];
-            if (next.length === 1) setIsPlaying(true);
-            setIsManualStop(false); // Reset on manual add
-            return next;
-        });
-        console.log(`[Aether] Track queued in ${Date.now() - addStartTime}ms`);
-        setLastAdded(track.title);
-        setTimeout(() => setLastAdded(null), 3000);
-
-        warmupTrack({ ...newTrack, id: stableId, actualUrl: url, url, title: track.title });
-
-        // --- AETHER: NEURAL METADATA SYNC (NOVA ---
-        window.aether.getMetadata(newTrack.actualUrl || newTrack.url).then(fullTrack => {
-            if (fullTrack) {
-                setQueue(current => current.map(item => 
-              item.queueNonce === queueNonce ? mergeTrackMetadata(item, fullTrack) : item
-                ));
-            }
-        });
+      const addStartTime = Date.now();
+      const newTrack = normalizeQueueTrack(track);
+      if (!newTrack) {
+        console.warn('[Aether/Queue] Ignored add: track has no playable URL', track);
         return;
+      }
+      const url = newTrack.actualUrl || newTrack.url;
+      const stableId = newTrack.id;
+      const queueNonce = newTrack.queueNonce;
+      console.log(`[Aether] Adding standalone track to queue: ${newTrack.title} (${url}) -> id=${stableId}`);
+      setQueue(prev => {
+        const next = [...prev, newTrack];
+        if (next.length === 1) setIsPlaying(true);
+        setIsManualStop(false); // Reset on manual add
+        return next;
+      });
+      console.log(`[Aether] Track queued in ${Date.now() - addStartTime}ms`);
+      setLastAdded(track.title);
+      setTimeout(() => setLastAdded(null), 3000);
+
+      warmupTrack({ ...newTrack, id: stableId, actualUrl: url, url, title: track.title });
+
+      // --- AETHER: NEURAL METADATA SYNC (NOVA ---
+      window.aether.getMetadata(newTrack.actualUrl || newTrack.url).then(fullTrack => {
+        if (fullTrack) {
+          setQueue(current => current.map(item =>
+            item.queueNonce === queueNonce ? mergeTrackMetadata(item, fullTrack) : item
+          ));
+        }
+      });
+      return;
     }
 
     const newTrack = normalizeQueueTrack(track);
@@ -8732,176 +10352,176 @@ function App() {
       setIsManualStop(false);
       setLastAdded(track.title);
       setTimeout(() => setLastAdded(null), 3000);
-    } catch (err) {} finally {
+    } catch (err) { } finally {
       setAddingIds(prev => { const next = new Set(prev); next.delete(track.id); return next; });
       setIsAutoplaySeeking(false);
     }
   };
   const handleSetSleepTimer = useCallback((minutes) => {
-      const nextVal = Number(minutes) || 0;
-      setSleepTimerValue(nextVal);
-      if (nextVal <= 0) {
-        setSleepDeadline(null);
-        setSleepRemainingStr('');
-        if (localAudioRef.current) localAudioRef.current.volume = volume;
-        setLastAdded('Sleep timer disabled');
-      } else {
-        setSleepDeadline(Date.now() + nextVal * 60 * 1000);
-        setSleepRemainingStr(`${nextVal}:00`);
-        setLastAdded(`Sleep timer set • ${nextVal}m`);
-      }
-      setTimeout(() => setLastAdded(null), 1800);
-      setIsSleepTimerMenuOpen(false);
-      setIsSleepTimerOverlayOpen(false);
-    }, [volume]);
+    const nextVal = Number(minutes) || 0;
+    setSleepTimerValue(nextVal);
+    if (nextVal <= 0) {
+      setSleepDeadline(null);
+      setSleepRemainingStr('');
+      if (localAudioRef.current) localAudioRef.current.volume = volume;
+      setLastAdded('Sleep timer disabled');
+    } else {
+      setSleepDeadline(Date.now() + nextVal * 60 * 1000);
+      setSleepRemainingStr(`${nextVal}:00`);
+      setLastAdded(`Sleep timer set • ${nextVal}m`);
+    }
+    setTimeout(() => setLastAdded(null), 1800);
+    setIsSleepTimerMenuOpen(false);
+    setIsSleepTimerOverlayOpen(false);
+  }, [volume]);
 
   useEffect(() => {
-      if (!sleepDeadline) return;
-      const int = setInterval(() => {
-          const remainingMs = sleepDeadline - Date.now();
-          if (remainingMs <= 0) {
-              setSleepDeadline(null);
-              setSleepTimerValue(0);
-              setSleepRemainingStr('');
-              handleControl('pause');
-              if (localAudioRef.current) localAudioRef.current.volume = volume;
-          } else if (sleepFadeEnabled && remainingMs <= 10000) {
-              const fadeRatio = remainingMs / 10000;
-              if (localAudioRef.current) localAudioRef.current.volume = volume * fadeRatio;
-              setSleepRemainingStr('FADING...');
-          } else {
-              if (localAudioRef.current && localAudioRef.current.volume !== volume) localAudioRef.current.volume = volume;
-              const m = Math.floor(remainingMs / 60000);
-              const s = Math.floor((remainingMs % 60000) / 1000);
-              setSleepRemainingStr(`${m}:${s.toString().padStart(2, '0')}`);
-          }
-      }, 1000);
-      return () => clearInterval(int);
+    if (!sleepDeadline) return;
+    const int = setInterval(() => {
+      const remainingMs = sleepDeadline - Date.now();
+      if (remainingMs <= 0) {
+        setSleepDeadline(null);
+        setSleepTimerValue(0);
+        setSleepRemainingStr('');
+        handleControl('pause');
+        if (localAudioRef.current) localAudioRef.current.volume = volume;
+      } else if (sleepFadeEnabled && remainingMs <= 10000) {
+        const fadeRatio = remainingMs / 10000;
+        if (localAudioRef.current) localAudioRef.current.volume = volume * fadeRatio;
+        setSleepRemainingStr('FADING...');
+      } else {
+        if (localAudioRef.current && localAudioRef.current.volume !== volume) localAudioRef.current.volume = volume;
+        const m = Math.floor(remainingMs / 60000);
+        const s = Math.floor((remainingMs % 60000) / 1000);
+        setSleepRemainingStr(`${m}:${s.toString().padStart(2, '0')}`);
+      }
+    }, 1000);
+    return () => clearInterval(int);
   }, [sleepDeadline, volume, sleepFadeEnabled]);
 
   const handleExportVault = async (playlistName, overrideTracks = null) => {
-      if (!isStandalone || !window.aether?.exportVault) {
-        setLastAdded('Vault export unavailable');
-        setTimeout(() => setLastAdded(null), 2200);
-        return;
-      }
-      const exportName = playlistName === FAVORITES_PLAYLIST_ID ? FAVORITES_PLAYLIST_NAME : playlistName;
-      const data = Array.isArray(overrideTracks)
-        ? overrideTracks
-        : (playlistName === FAVORITES_PLAYLIST_ID ? favoriteTracksList : (playlists[playlistName] || []));
-      const res = await window.aether.exportVault(exportName, data);
-      if (res?.success) {
-        setLastAdded(`Exported vault: ${exportName}`);
-        setTimeout(() => setLastAdded(null), 2600);
-      } else if (res?.cancel) {
-        setLastAdded('Vault export cancelled');
-        setTimeout(() => setLastAdded(null), 1800);
-      } else {
-        setLastAdded(`Export failed${res?.error ? `: ${String(res.error).slice(0, 36)}` : ''}`);
-        setTimeout(() => setLastAdded(null), 3000);
-      }
+    if (!isStandalone || !window.aether?.exportVault) {
+      setLastAdded('Vault export unavailable');
+      setTimeout(() => setLastAdded(null), 2200);
+      return;
+    }
+    const exportName = playlistName === FAVORITES_PLAYLIST_ID ? FAVORITES_PLAYLIST_NAME : playlistName;
+    const data = Array.isArray(overrideTracks)
+      ? overrideTracks
+      : (playlistName === FAVORITES_PLAYLIST_ID ? favoriteTracksList : (playlists[playlistName] || []));
+    const res = await window.aether.exportVault(exportName, data);
+    if (res?.success) {
+      setLastAdded(`Exported vault: ${exportName}`);
+      setTimeout(() => setLastAdded(null), 2600);
+    } else if (res?.cancel) {
+      setLastAdded('Vault export cancelled');
+      setTimeout(() => setLastAdded(null), 1800);
+    } else {
+      setLastAdded(`Export failed${res?.error ? `: ${String(res.error).slice(0, 36)}` : ''}`);
+      setTimeout(() => setLastAdded(null), 3000);
+    }
   };
 
   const handleImportVault = async () => {
-      if (!isStandalone || !window.aether?.importVault) {
-        setLastAdded('Vault import unavailable');
-        setTimeout(() => setLastAdded(null), 2200);
-        return;
+    if (!isStandalone || !window.aether?.importVault) {
+      setLastAdded('Vault import unavailable');
+      setTimeout(() => setLastAdded(null), 2200);
+      return;
+    }
+    const res = await window.aether.importVault();
+    if (res?.success && res.data && Array.isArray(res.data)) {
+      const normalized = res.data.map(normalizeQueueTrack).filter(Boolean);
+      const importName = buildUniquePlaylistName(res.name || 'Imported Vault', playlists);
+      const p = { ...playlists };
+      p[importName] = normalized;
+      setPlaylists(p);
+      window.aether?.store?.set('playlists', p);
+      if (!playlistOrder.includes(importName)) {
+        persistPlaylistOrder([...playlistOrder, importName]);
       }
-      const res = await window.aether.importVault();
-      if (res?.success && res.data && Array.isArray(res.data)) {
-          const normalized = res.data.map(normalizeQueueTrack).filter(Boolean);
-          const importName = buildUniquePlaylistName(res.name || 'Imported Vault', playlists);
-          const p = { ...playlists };
-          p[importName] = normalized;
-          setPlaylists(p);
-          window.aether?.store?.set('playlists', p);
-          if (!playlistOrder.includes(importName)) {
-            persistPlaylistOrder([...playlistOrder, importName]);
-          }
-          setViewingPlaylist(importName);
-          setLastAdded(`Imported vault: ${importName} (${normalized.length})`);
-          setTimeout(() => setLastAdded(null), 2800);
-      } else if (res?.cancel) {
-          setLastAdded('Vault import cancelled');
-          setTimeout(() => setLastAdded(null), 1800);
-      } else {
-          setLastAdded(`Import failed${res?.error ? `: ${String(res.error).slice(0, 36)}` : ''}`);
-          setTimeout(() => setLastAdded(null), 3000);
-      }
+      setViewingPlaylist(importName);
+      setLastAdded(`Imported vault: ${importName} (${normalized.length})`);
+      setTimeout(() => setLastAdded(null), 2800);
+    } else if (res?.cancel) {
+      setLastAdded('Vault import cancelled');
+      setTimeout(() => setLastAdded(null), 1800);
+    } else {
+      setLastAdded(`Import failed${res?.error ? `: ${String(res.error).slice(0, 36)}` : ''}`);
+      setTimeout(() => setLastAdded(null), 3000);
+    }
   };
 
   const handleImportSpotifyPlaylist = async () => {
-      if (!isStandalone) return;
-      const url = spotifyImportUrl.trim();
-      const provider = musicImportProvider || (url.includes('music.apple.com') ? 'apple' : 'spotify');
-      const importer = provider === 'apple' ? window.aether?.importAppleMusicPlaylist : window.aether?.importSpotifyPlaylist;
-      if (!url || !importer) {
-        setSpotifyImportProgress({
-          stage: 'error',
-          progress: 0,
-          message: provider === 'apple' ? 'Apple Music import is unavailable in this desktop build.' : 'Spotify import is unavailable in this desktop build.',
-        });
+    if (!isStandalone) return;
+    const url = spotifyImportUrl.trim();
+    const provider = musicImportProvider || (url.includes('music.apple.com') ? 'apple' : 'spotify');
+    const importer = provider === 'apple' ? window.aether?.importAppleMusicPlaylist : window.aether?.importSpotifyPlaylist;
+    if (!url || !importer) {
+      setSpotifyImportProgress({
+        stage: 'error',
+        progress: 0,
+        message: provider === 'apple' ? 'Apple Music import is unavailable in this desktop build.' : 'Spotify import is unavailable in this desktop build.',
+      });
+      return;
+    }
+
+    setIsSpotifyImporting(true);
+    setSpotifyImportLogs([]);
+    appendSpotifyImportLog(`start provider=${provider} name=${spotifyImportPlaylistName.trim() || 'auto'} url=${url}`);
+    setSpotifyImportProgress({ stage: 'starting', progress: 1, message: `Preparing ${provider === 'apple' ? 'Apple Music' : 'Spotify'} import...` });
+    try {
+      const res = await importer(url.trim());
+      appendSpotifyImportLog(`result success=${!!res?.success} matched=${res?.matchedTracks ?? 0} total=${res?.totalTracks ?? 0}`);
+      if (res?.debug) {
+        appendSpotifyImportLog(`debug ${JSON.stringify(res.debug).slice(0, 900)}`);
+      }
+      if (!res?.success) {
+        const parserDebug = res?.debug?.parser || res?.debug || {};
+        const debugParts = [
+          res?.debug?.playlistId ? `id=${res.debug.playlistId}` : '',
+          Number.isFinite(res?.debug?.htmlStatus) ? `status=${res.debug.htmlStatus}` : '',
+          Number.isFinite(res?.debug?.htmlLength) ? `bytes=${res.debug.htmlLength}` : '',
+          Number.isFinite(parserDebug.metaSongTags) ? `songTags=${parserDebug.metaSongTags}` : '',
+          Number.isFinite(parserDebug.jsonLdBlocks) ? `jsonLd=${parserDebug.jsonLdBlocks}` : '',
+          Number.isFinite(parserDebug.attributeBlocks) ? `attr=${parserDebug.attributeBlocks}` : '',
+        ].filter(Boolean).join(' ');
+        const debug = debugParts ? ` [${debugParts}]` : '';
+        setSpotifyImportProgress({ stage: 'error', progress: 0, message: `${res?.error || 'Playlist import failed.'}${debug}` });
+        appendSpotifyImportLog(`error ${res?.error || 'Playlist import failed.'}${debug}`);
         return;
       }
 
-      setIsSpotifyImporting(true);
-      setSpotifyImportLogs([]);
-      appendSpotifyImportLog(`start provider=${provider} name=${spotifyImportPlaylistName.trim() || 'auto'} url=${url}`);
-      setSpotifyImportProgress({ stage: 'starting', progress: 1, message: `Preparing ${provider === 'apple' ? 'Apple Music' : 'Spotify'} import...` });
-      try {
-        const res = await importer(url.trim());
-        appendSpotifyImportLog(`result success=${!!res?.success} matched=${res?.matchedTracks ?? 0} total=${res?.totalTracks ?? 0}`);
-        if (res?.debug) {
-          appendSpotifyImportLog(`debug ${JSON.stringify(res.debug).slice(0, 900)}`);
-        }
-        if (!res?.success) {
-          const parserDebug = res?.debug?.parser || res?.debug || {};
-          const debugParts = [
-            res?.debug?.playlistId ? `id=${res.debug.playlistId}` : '',
-            Number.isFinite(res?.debug?.htmlStatus) ? `status=${res.debug.htmlStatus}` : '',
-            Number.isFinite(res?.debug?.htmlLength) ? `bytes=${res.debug.htmlLength}` : '',
-            Number.isFinite(parserDebug.metaSongTags) ? `songTags=${parserDebug.metaSongTags}` : '',
-            Number.isFinite(parserDebug.jsonLdBlocks) ? `jsonLd=${parserDebug.jsonLdBlocks}` : '',
-            Number.isFinite(parserDebug.attributeBlocks) ? `attr=${parserDebug.attributeBlocks}` : '',
-          ].filter(Boolean).join(' ');
-          const debug = debugParts ? ` [${debugParts}]` : '';
-          setSpotifyImportProgress({ stage: 'error', progress: 0, message: `${res?.error || 'Playlist import failed.'}${debug}` });
-          appendSpotifyImportLog(`error ${res?.error || 'Playlist import failed.'}${debug}`);
-          return;
-        }
-
-        if (!Array.isArray(res.tracks) || res.tracks.length === 0) {
-          const debugHint = res?.debug
-            ? ` (${res.debug.matchedTracks}/${res.debug.searchedTracks} matched${res.debug.missedSamples?.length ? ` • sample misses: ${res.debug.missedSamples.slice(0, 2).join(' | ')}` : ''})`
-            : '';
-          setSpotifyImportProgress({ stage: 'complete', progress: 100, message: `Imported the shell for "${res.playlistName}", but no playable matches were found${debugHint}.` });
-          return;
-        }
-
-        const providerLabel = provider === 'apple' ? 'Apple Music' : 'Spotify';
-        const playlistName = spotifyImportPlaylistName.trim() || res.playlistName || `${providerLabel} Playlist`;
-        const uniquePlaylistName = buildUniquePlaylistName(playlistName, playlists);
-        const importedTracks = res.tracks.map(normalizeQueueTrack).filter(Boolean);
-        const nextPlaylists = { ...playlists, [uniquePlaylistName]: importedTracks };
-        setPlaylists(nextPlaylists);
-        persistPlaylistOrder([...playlistOrder.filter((name) => name !== uniquePlaylistName), uniquePlaylistName]);
-        window.aether?.store?.set('playlists', nextPlaylists);
-        setViewingPlaylist(uniquePlaylistName);
-        setLastAdded(`Imported ${importedTracks.length}/${res.totalTracks} ${providerLabel} tracks`);
-        setTimeout(() => setLastAdded(null), 3500);
-        setIsSpotifyImportOpen(false);
-        setSpotifyImportUrl('');
-        setSpotifyImportPlaylistName('');
-        setMusicImportProvider('');
-        setSpotifyImportProgress({ stage: 'complete', progress: 100, message: `Imported ${importedTracks.length}/${res.totalTracks} tracks` });
-      } catch (err) {
-        const message = err?.message || 'Playlist import failed.';
-        appendSpotifyImportLog(`exception ${message}`);
-        setSpotifyImportProgress({ stage: 'error', progress: 0, message });
-      } finally {
-        setIsSpotifyImporting(false);
+      if (!Array.isArray(res.tracks) || res.tracks.length === 0) {
+        const debugHint = res?.debug
+          ? ` (${res.debug.matchedTracks}/${res.debug.searchedTracks} matched${res.debug.missedSamples?.length ? ` • sample misses: ${res.debug.missedSamples.slice(0, 2).join(' | ')}` : ''})`
+          : '';
+        setSpotifyImportProgress({ stage: 'complete', progress: 100, message: `Imported the shell for "${res.playlistName}", but no playable matches were found${debugHint}.` });
+        return;
       }
+
+      const providerLabel = provider === 'apple' ? 'Apple Music' : 'Spotify';
+      const playlistName = spotifyImportPlaylistName.trim() || res.playlistName || `${providerLabel} Playlist`;
+      const uniquePlaylistName = buildUniquePlaylistName(playlistName, playlists);
+      const importedTracks = res.tracks.map(normalizeQueueTrack).filter(Boolean);
+      const nextPlaylists = { ...playlists, [uniquePlaylistName]: importedTracks };
+      setPlaylists(nextPlaylists);
+      persistPlaylistOrder([...playlistOrder.filter((name) => name !== uniquePlaylistName), uniquePlaylistName]);
+      window.aether?.store?.set('playlists', nextPlaylists);
+      setViewingPlaylist(uniquePlaylistName);
+      setLastAdded(`Imported ${importedTracks.length}/${res.totalTracks} ${providerLabel} tracks`);
+      setTimeout(() => setLastAdded(null), 3500);
+      setIsSpotifyImportOpen(false);
+      setSpotifyImportUrl('');
+      setSpotifyImportPlaylistName('');
+      setMusicImportProvider('');
+      setSpotifyImportProgress({ stage: 'complete', progress: 100, message: `Imported ${importedTracks.length}/${res.totalTracks} tracks` });
+    } catch (err) {
+      const message = err?.message || 'Playlist import failed.';
+      appendSpotifyImportLog(`exception ${message}`);
+      setSpotifyImportProgress({ stage: 'error', progress: 0, message });
+    } finally {
+      setIsSpotifyImporting(false);
+    }
   };
 
 
@@ -8941,7 +10561,7 @@ function App() {
         liveStreamStartOffsetMsRef.current = clampedMs;
         localAudioRef.current.src = newSrc;
         if (isPlaying) {
-          localAudioRef.current.play().catch(() => {});
+          localAudioRef.current.play().catch(() => { });
         }
       } else {
         // Native client-side seek for downloaded/local tracks
@@ -9073,18 +10693,31 @@ function App() {
   }, [currentTrack?.actualUrl, currentTrack?.id, currentTrack?.queueNonce, currentTrack?.url, currentTrack?.youtubeId]);
 
   useEffect(() => {
-    if (!isStandalone || !isPlaying || !currentTrack || !window.aether?.store) return;
+    if (!isStandalone || !window.aether?.store) return;
     const flushLiveLedger = () => {
+      const liveTrack = currentTrackRef.current;
+      if (!isPlayingRef.current || !liveTrack) return;
       if (Math.max(0, Math.floor(Number(currentTimeRef.current) || 0)) < 15000) return;
-      logSoundCapsulePlayback(currentTrack, { reason: 'live' });
+      logSoundCapsulePlayback(liveTrack, { reason: 'live' });
     };
-    const interval = window.setInterval(flushLiveLedger, 45000);
-    const warmup = window.setTimeout(flushLiveLedger, 18000);
+    clearTrackedInterval(soundCapsuleLiveIntervalRef, 'sound capsule live flush');
+    clearTrackedTimeout(soundCapsuleWarmupTimeoutRef, 'sound capsule warmup flush');
+    soundCapsuleLiveIntervalRef.current = window.setInterval(flushLiveLedger, 45000);
+    soundCapsuleWarmupTimeoutRef.current = window.setTimeout(() => {
+      soundCapsuleWarmupTimeoutRef.current = 0;
+      flushLiveLedger();
+    }, 18000);
     return () => {
-      window.clearInterval(interval);
-      window.clearTimeout(warmup);
+      if (soundCapsuleLiveIntervalRef.current) {
+        window.clearInterval(soundCapsuleLiveIntervalRef.current);
+        soundCapsuleLiveIntervalRef.current = 0;
+      }
+      if (soundCapsuleWarmupTimeoutRef.current) {
+        window.clearTimeout(soundCapsuleWarmupTimeoutRef.current);
+        soundCapsuleWarmupTimeoutRef.current = 0;
+      }
     };
-  }, [currentTrack, isPlaying, isStandalone, logSoundCapsulePlayback]);
+  }, [clearTrackedInterval, clearTrackedTimeout, isStandalone, logSoundCapsulePlayback]);
 
   // Consolidate queue advancement logic
   const advanceQueue = useCallback((reason) => {
@@ -9137,8 +10770,8 @@ function App() {
       if (localAudioRef.current && !videoModeRef.current) {
         try {
           localAudioRef.current.currentTime = 0;
-          if (isPlaying) localAudioRef.current.play().catch(() => {});
-        } catch {}
+          if (isPlaying) localAudioRef.current.play().catch(() => { });
+        } catch { }
       }
       appendRecentEvent('repeat_track', track.title || 'Current track', { tone: 'neutral' });
       return;
@@ -9153,20 +10786,20 @@ function App() {
       if (localAudioRef.current && !videoModeRef.current) {
         try {
           localAudioRef.current.currentTime = 0;
-          if (isPlaying) localAudioRef.current.play().catch(() => {});
-        } catch {}
+          if (isPlaying) localAudioRef.current.play().catch(() => { });
+        } catch { }
       }
       appendRecentEvent('repeat_queue', `Repeating loop: ${track.title}`, { tone: 'neutral' });
       return;
     }
-    
+
     // Standard Queue Advancement
     setQueue(prev => {
       if (!Array.isArray(prev) || prev.length === 0) return [];
       const removed = prev[0];
       const removedKey = getTrackActionKey(removed);
       let next = prev.slice(1);
-      
+
       if (repeatMode === 'queue' && removed) {
         next = [...next, removed];
       }
@@ -9194,90 +10827,90 @@ function App() {
   const handleControl = useCallback(async (action) => {
     console.log("[Aether/Control] Signal Bridge Active:", action);
     if (isStandalone) {
-        if (action === 'pause') setIsPlaying(false);
-        if (action === 'resume') setIsPlaying(true);
-        if (action === 'toggle') setIsPlaying(prev => !prev);
-        if (action === 'mute') {
-            setVolume(prev => {
-                const nextV = prev > 0 ? 0 : 0.5;
-                if (localAudioRef.current) localAudioRef.current.volume = nextV;
-                return nextV;
-            });
-            return;
-        }
-        
-        // PREVIOUS TRACK: If > 3s into current, restart. Otherwise go to previous track.
-        if (action === 'previous') {
-            if ((currentTimeRef.current || 0) > 3000) {
-                // Restart current track
-                console.log("[Aether/Control] Restarting current track (> 3s in)");
-                seekActivePlaybackTo(0);
-            } else if (history.length > 0) {
-                // Go to actual previous track
-                const prev = history[0];
-                console.log("[Aether/Control] Restoring previous track:", prev?.title);
-                manualTransportAdvanceRef.current = {
-                  trackKey: getTrackActionKey(queue?.[0]),
-                  at: Date.now(),
-                  action: 'previous',
-                };
-                setHistory(h => h.slice(1));
-                setQueue((q) => {
-                  const normalized = Array.isArray(q) ? q.filter(item => item && typeof item === 'object') : [];
-                  const prevKey = getTrackActionKey(prev);
-                  if (!prevKey) return normalized;
-                  const currentHeadKey = getTrackActionKey(normalized[0]);
-                  if (currentHeadKey && currentHeadKey === prevKey) {
-                    return normalized;
-                  }
-                  const deduped = normalized.filter((item) => getTrackActionKey(item) !== prevKey);
-                  return [prev, ...deduped];
-                });
-                pendingResumeTimeRef.current = null;
-                setPendingResumeTime(null);
-                currentTimeRef.current = 0;
-                setCurrentTime(0);
-                setIsPlaying(true);
-            } else {
-                // No history, just restart current
-                console.log("[Aether/Control] No history, restarting current");
-                seekActivePlaybackTo(0);
-            }
-        }
-        
-        // SKIP: Remove current track and play next
-        if (action === 'skip') {
-          console.log("[Aether/Control] Skip triggered");
+      if (action === 'pause') setIsPlaying(false);
+      if (action === 'resume') setIsPlaying(true);
+      if (action === 'toggle') setIsPlaying(prev => !prev);
+      if (action === 'mute') {
+        setVolume(prev => {
+          const nextV = prev > 0 ? 0 : 0.5;
+          if (localAudioRef.current) localAudioRef.current.volume = nextV;
+          return nextV;
+        });
+        return;
+      }
+
+      // PREVIOUS TRACK: If > 3s into current, restart. Otherwise go to previous track.
+      if (action === 'previous') {
+        if ((currentTimeRef.current || 0) > 3000) {
+          // Restart current track
+          console.log("[Aether/Control] Restarting current track (> 3s in)");
+          seekActivePlaybackTo(0);
+        } else if (history.length > 0) {
+          // Go to actual previous track
+          const prev = history[0];
+          console.log("[Aether/Control] Restoring previous track:", prev?.title);
           manualTransportAdvanceRef.current = {
             trackKey: getTrackActionKey(queue?.[0]),
             at: Date.now(),
-            action: 'skip',
+            action: 'previous',
           };
-          advanceQueueRef.current('manual_skip');
-        }
-        
-        // CLEAR/STOP: Empty queue and stop playback
-        if (action === 'clear' || action === 'stop') {
-            console.log("[Aether/Control] Queue cleared");
-            setQueue([]);
-            setHistory([]);
-            setIsPlaying(false);
-            pendingResumeTimeRef.current = null;
-            setPendingResumeTime(null);
-            currentTimeRef.current = 0;
-            setCurrentTime(0);
-            setIsManualStop(true);
-            if (localAudioRef.current) {
-                localAudioRef.current.currentTime = 0;
-                localAudioRef.current.pause();
+          setHistory(h => h.slice(1));
+          setQueue((q) => {
+            const normalized = Array.isArray(q) ? q.filter(item => item && typeof item === 'object') : [];
+            const prevKey = getTrackActionKey(prev);
+            if (!prevKey) return normalized;
+            const currentHeadKey = getTrackActionKey(normalized[0]);
+            if (currentHeadKey && currentHeadKey === prevKey) {
+              return normalized;
             }
+            const deduped = normalized.filter((item) => getTrackActionKey(item) !== prevKey);
+            return [prev, ...deduped];
+          });
+          pendingResumeTimeRef.current = null;
+          setPendingResumeTime(null);
+          currentTimeRef.current = 0;
+          setCurrentTime(0);
+          setIsPlaying(true);
+        } else {
+          // No history, just restart current
+          console.log("[Aether/Control] No history, restarting current");
+          seekActivePlaybackTo(0);
         }
-        return;
+      }
+
+      // SKIP: Remove current track and play next
+      if (action === 'skip') {
+        console.log("[Aether/Control] Skip triggered");
+        manualTransportAdvanceRef.current = {
+          trackKey: getTrackActionKey(queue?.[0]),
+          at: Date.now(),
+          action: 'skip',
+        };
+        advanceQueueRef.current('manual_skip');
+      }
+
+      // CLEAR/STOP: Empty queue and stop playback
+      if (action === 'clear' || action === 'stop') {
+        console.log("[Aether/Control] Queue cleared");
+        setQueue([]);
+        setHistory([]);
+        setIsPlaying(false);
+        pendingResumeTimeRef.current = null;
+        setPendingResumeTime(null);
+        currentTimeRef.current = 0;
+        setCurrentTime(0);
+        setIsManualStop(true);
+        if (localAudioRef.current) {
+          localAudioRef.current.currentTime = 0;
+          localAudioRef.current.pause();
+        }
+      }
+      return;
     }
 
     if (action === 'pause') {
       setIsPlaying(false);
-      try { youtubePlayerRef.current?.pauseVideo?.(); } catch {}
+      try { youtubePlayerRef.current?.pauseVideo?.(); } catch { }
       if (localAudioRef.current) localAudioRef.current.pause();
       return;
     }
@@ -9285,8 +10918,8 @@ function App() {
       setWebAudioUnlocked(true);
       setIsManualStop(false);
       setIsPlaying(true);
-      try { youtubePlayerRef.current?.playVideo?.(); } catch {}
-      if (localAudioRef.current && !videoModeRef.current) localAudioRef.current.play().catch(() => {});
+      try { youtubePlayerRef.current?.playVideo?.(); } catch { }
+      if (localAudioRef.current && !videoModeRef.current) localAudioRef.current.play().catch(() => { });
       return;
     }
     if (action === 'toggle') {
@@ -9304,7 +10937,7 @@ function App() {
             youtubePlayerRef.current?.unMute?.();
             youtubePlayerRef.current?.setVolume?.(Math.round(nextV * 100));
           }
-        } catch {}
+        } catch { }
         return nextV;
       });
       return;
@@ -9369,7 +11002,7 @@ function App() {
       currentTimeRef.current = 0;
       setCurrentTime(0);
       setIsManualStop(true);
-      try { youtubePlayerRef.current?.stopVideo?.(); } catch {}
+      try { youtubePlayerRef.current?.stopVideo?.(); } catch { }
       if (localAudioRef.current) {
         localAudioRef.current.pause();
         localAudioRef.current.removeAttribute('src');
@@ -9377,6 +11010,10 @@ function App() {
       }
     }
   }, [isStandalone, history, queue, getTrackActionKey, seekActivePlaybackTo]);
+
+  useEffect(() => {
+    handleControlRef.current = handleControl;
+  }, [handleControl]);
 
   const [accentColor, setAccentColor] = useState('#00ffbf');
 
@@ -9388,8 +11025,8 @@ function App() {
       return;
     }
     try {
-        await axios.post(`${API_BASE}/api/control/${guildId}`, { action: 'seek', time });
-    } catch (e) {}
+      await axios.post(`${API_BASE}/api/control/${guildId}`, { action: 'seek', time });
+    } catch (e) { }
 
     seekActivePlaybackTo(time);
   }, [API_BASE, getEffectiveGuildId, isStandalone, seekActivePlaybackTo]);
@@ -9397,6 +11034,188 @@ function App() {
   const handleLyricLineSeek = useCallback((lineTime) => {
     handleSeek(lineTime + (currentTrackRef.current?.introOffsetMs || 0) + (lyricOffsetMs || 0));
   }, [handleSeek, lyricOffsetMs]);
+
+  // ─── VOICE CONTROL ENGINE (OFFLINE) ──────────────────────────────────────
+  const [voiceToast, setVoiceToast] = useState(null);
+  const voiceToastTimerRef = useRef(null);
+  const showVoiceToast = useCallback((message, type = "info", duration = 3200) => {
+    if (voiceToastTimerRef.current) clearTimeout(voiceToastTimerRef.current);
+    setVoiceToast({ message, type });
+    voiceToastTimerRef.current = setTimeout(() => setVoiceToast(null), duration);
+  }, []);
+
+  const fuzzyMatchBest = useCallback((needle, candidates) => {
+    const n = needle.toLowerCase().trim();
+    const exact = candidates.find(c => c.toLowerCase().trim() === n);
+    if (exact) return exact;
+    const contains = candidates.find(c => c.toLowerCase().includes(n) || n.includes(c.toLowerCase()));
+    if (contains) return contains;
+    const nWords = n.split(/\s+/).filter(w => w.length > 2);
+    let best = null, bestScore = 0;
+    for (const c of candidates) {
+      const cWords = c.toLowerCase().split(/\s+/);
+      const hits = nWords.filter(w => cWords.some(cw => cw.includes(w) || w.includes(cw))).length;
+      const score = hits / Math.max(nWords.length, 1);
+      if (score > bestScore) { bestScore = score; best = c; }
+    }
+    return bestScore >= 0.4 ? best : null;
+  }, []);
+
+
+  const handleVoiceCommand = useCallback((rawTranscript) => {
+    const t = rawTranscript.toLowerCase().trim();
+    setVoiceTranscript(rawTranscript);
+    setVoiceStatus('processing');
+
+    // ── PAUSE / STOP ───────────────────────────────────────────────────────
+    if (/^(aether\s+)?(pause|stop( music| song| playback)?)$/.test(t)) {
+      handleControl('pause');
+      showVoiceToast('⏸  Paused', 'success'); setVoiceStatus('listening'); return;
+    }
+    // ── RESUME / PLAY (no args) ────────────────────────────────────────────
+    if (/^(aether\s+)?(resume|continue|unpause)( music| playback)?$/.test(t)) {
+      handleControl('resume');
+      showVoiceToast('▶  Resumed', 'success'); setVoiceStatus('listening'); return;
+    }
+    // ── NEXT / PREVIOUS ───────────────────────────────────────────────────
+    if (/^(aether\s+)?(next|skip( (song|track|this))?|next (song|track))$/.test(t)) {
+      handleControl('skip');
+      showVoiceToast('⏭  Next track', 'success'); setVoiceStatus('listening'); return;
+    }
+    if (/^(aether\s+)?(previous|go back|last|prev(ious)?( (song|track))?)$/.test(t)) {
+      handleControl('previous');
+      showVoiceToast('⏮  Previous track', 'success'); setVoiceStatus('listening'); return;
+    }
+    // ── VOLUME ─────────────────────────────────────────────────────────────
+    const volSetMatch = t.match(/^(aether\s+)?(set volume|volume) (to\s+)?(\d{1,3})(%| percent)?$/);
+    if (volSetMatch) {
+      const pct = Math.max(0, Math.min(100, parseInt(volSetMatch[4], 10)));
+      handleVolumeChange(pct / 100);
+      showVoiceToast(`🔊  Volume → ${pct}%`, 'success'); setVoiceStatus('listening'); return;
+    }
+    if (/^(aether\s+)?(volume up|louder|increase volume|turn up)$/.test(t)) {
+      handleVolumeChange(Math.min(1, (volume || 0.5) + 0.15));
+      showVoiceToast('🔊  Volume up', 'success'); setVoiceStatus('listening'); return;
+    }
+    if (/^(aether\s+)?(volume down|quieter|lower|turn down|decrease volume)$/.test(t)) {
+      handleVolumeChange(Math.max(0, (volume || 0.5) - 0.15));
+      showVoiceToast('🔉  Volume down', 'success'); setVoiceStatus('listening'); return;
+    }
+    if (/^(aether\s+)?(mute|silence|shut up|no sound)$/.test(t)) {
+      handleControl('mute');
+      showVoiceToast('🔇  Muted', 'info'); setVoiceStatus('listening'); return;
+    }
+    // ── PLAY FAVORITES ─────────────────────────────────────────────────────
+    if (/^(aether\s+)?play (my\s+)?(favorites?|liked songs?|heart(ed)? songs?|loved songs?)$/.test(t)) {
+      handleFavoritePlayAll(false);
+      showVoiceToast('❤️  Playing Favorites', 'success'); setVoiceStatus('listening'); return;
+    }
+    if (/^(aether\s+)?shuffle (my\s+)?(favorites?|liked songs?|heart(ed)? songs?)$/.test(t)) {
+      handleFavoritePlayAll(true);
+      showVoiceToast('🔀  Shuffling Favorites', 'success'); setVoiceStatus('listening'); return;
+    }
+    // ── TOP PLAYED ─────────────────────────────────────────────────────────
+    if (/^(aether\s+)?play (my\s+)?(top|most) played( songs?)?$/.test(t)) {
+      const sorted = librarySongEntries.map(e => e.track).filter(Boolean)
+        .sort((a, b) => getTrackPlayCount(b) - getTrackPlayCount(a)).slice(0, 25);
+      if (!sorted.length) { showVoiceToast('No play history yet', 'error'); }
+      else { playLibraryTracks(sorted, 'Top Played', false); showVoiceToast(`🏆  Top ${sorted.length} most played`, 'success'); }
+      setVoiceStatus('listening'); return;
+    }
+    // ── RECENTLY PLAYED ────────────────────────────────────────────────────
+    if (/^(aether\s+)?play (my\s+)?(recently|recent( songs?| plays?)|last played)$/.test(t)) {
+      const recent = librarySongEntries
+        .map(e => ({ track: e.track, ts: getTrackLastListenedMs(e.track) }))
+        .filter(e => e.ts > 0).sort((a, b) => b.ts - a.ts).slice(0, 20).map(e => e.track);
+      if (!recent.length) { showVoiceToast('No recent history', 'error'); }
+      else { playLibraryTracks(recent, 'Recently Played', false); showVoiceToast('🕒  Playing Recently Played', 'success'); }
+      setVoiceStatus('listening'); return;
+    }
+    // ── SHUFFLE EVERYTHING ─────────────────────────────────────────────────
+    if (/^(aether\s+)?shuffle (everything|all|my library|the library|all songs?)$/.test(t)) {
+      const allTracks = Object.values(playlists).flat();
+      playLibraryTracks(allTracks, 'Library', true);
+      showVoiceToast('🔀  Shuffling entire library', 'success'); setVoiceStatus('listening'); return;
+    }
+    // ── PLAY A PLAYLIST ────────────────────────────────────────────────────
+    const playlistPlayMatch = t.match(/^(aether\s+)?play (my\s+)?playlist (.+)$/);
+    if (playlistPlayMatch) {
+      const needle = playlistPlayMatch[3].trim();
+      const matched = fuzzyMatchBest(needle, Object.keys(playlists));
+      if (matched) { handlePlaylistPlayAll(matched, false); showVoiceToast(`▶  Playing "${matched}"`, 'success'); }
+      else { showVoiceToast(`Playlist "${needle}" not found`, 'error'); }
+      setVoiceStatus('listening'); return;
+    }
+    const playlistShuffleMatch = t.match(/^(aether\s+)?shuffle (my\s+)?playlist (.+)$/);
+    if (playlistShuffleMatch) {
+      const needle = playlistShuffleMatch[3].trim();
+      const matched = fuzzyMatchBest(needle, Object.keys(playlists));
+      if (matched) { handlePlaylistPlayAll(matched, true); showVoiceToast(`🔀  Shuffling "${matched}"`, 'success'); }
+      else { showVoiceToast(`Playlist "${needle}" not found`, 'error'); }
+      setVoiceStatus('listening'); return;
+    }
+    // ── PLAY A SPECIFIC SONG ("play <song> [by <artist>]") ─────────────────
+    const playSongMatch = t.match(/^(aether\s+)?play (.+?)(\s+by\s+(.+))?$/);
+    if (playSongMatch) {
+      const songNeedle = (playSongMatch[2] || '').trim();
+      const artistNeedle = (playSongMatch[4] || '').trim();
+      const allSongs = librarySongEntries.map(e => e.track).filter(Boolean);
+      let best = null, bestScore = -1;
+      for (const track of allSongs) {
+        const titleWords = (track.title || '').toLowerCase().split(/\s+/);
+        const sWords = songNeedle.toLowerCase().split(/\s+/).filter(w => w.length > 1);
+        const titleHits = sWords.filter(w => titleWords.some(tw => tw.includes(w) || w.includes(tw))).length;
+        const titleScore = titleHits / Math.max(sWords.length, 1);
+        let artistScore = 0;
+        if (artistNeedle) {
+          const aWords = (track.author || '').toLowerCase().split(/\s+/);
+          const arWords = artistNeedle.split(/\s+/).filter(w => w.length > 1);
+          artistScore = arWords.filter(w => aWords.some(aw => aw.includes(w) || w.includes(aw))).length / Math.max(arWords.length, 1);
+        }
+        const total = artistNeedle ? titleScore * 0.6 + artistScore * 0.4 : titleScore;
+        if (total > bestScore) { bestScore = total; best = track; }
+      }
+      if (best && bestScore >= 0.4) {
+        const norm = normalizeQueueTrack(best);
+        if (norm) {
+          setQueue([norm]); setIsPlaying(true); setIsManualStop(false); setCurrentTime(0);
+          showVoiceToast(`▶  "${best.title}"`, 'success', 4000);
+        }
+      } else {
+        showVoiceToast(`"${songNeedle}" not found in library`, 'error');
+      }
+      setVoiceStatus('listening'); return;
+    }
+    // ── UNRECOGNIZED ───────────────────────────────────────────────────────
+    if (t.startsWith('aether')) {
+      showVoiceToast(`Didn't catch that: "${rawTranscript}"`, 'error');
+    }
+    setVoiceStatus('listening');
+  }, [
+    handleControl, handleVolumeChange, volume, handleFavoritePlayAll, handlePlaylistPlayAll,
+    playLibraryTracks, librarySongEntries, getTrackPlayCount, getTrackLastListenedMs, playlists,
+    fuzzyMatchBest, normalizeQueueTrack, showVoiceToast,
+    setQueue, setIsPlaying, setIsManualStop, setCurrentTime,
+  ]);
+
+
+  const { enabled: voiceEnabled, setEnabled: setVoiceEnabled, status: voiceStatus, setStatus: setVoiceStatus, transcript: voiceTranscript, setTranscript: setVoiceTranscript } = useOfflineVoice({ onCommand: handleVoiceCommand, showToast: showVoiceToast });
+
+  // Temporarily disable microphone/voice feature while keeping the UI visible.
+  // Toggle this flag to `false` to re-enable the mic feature later.
+  const micFeatureDisabled = true;
+  const effectiveVoiceEnabled = micFeatureDisabled ? false : voiceEnabled;
+
+  const toggleVoiceControl = useCallback(() => {
+    if (micFeatureDisabled) return; // no-op while disabled
+    setVoiceEnabled(prev => {
+      if (!prev) showVoiceToast("🎙  Loading Offline AI...", "info", 3500);
+      else { setVoiceToast(null); setVoiceTranscript(""); }
+      return !prev;
+    });
+  }, [showVoiceToast, setVoiceEnabled, setVoiceTranscript]);
+  // ─────────────────────────────────────────────────────────────────────────
+
 
   const memoizedLyricsContent = useMemo(() => lyrics.map((line, idx) => {
     const distance = Math.abs(idx - activeLyricIndex);
@@ -9417,43 +11236,43 @@ function App() {
 
   const handleRemove = useCallback(async (index) => {
     if (isStandalone || !discordSdkRef.current?.guildId) {
-        setQueue(prev => {
-            const next = [...prev];
-            next.splice(index, 1);
-            return next;
-        });
-        return;
+      setQueue(prev => {
+        const next = [...prev];
+        next.splice(index, 1);
+        return next;
+      });
+      return;
     }
     const guildId = getEffectiveGuildId();
-    try { await axios.post(`${API_BASE}/api/remove/${guildId}/${index}`); fetchQueue(); } catch (err) {}
+    try { await axios.post(`${API_BASE}/api/remove/${guildId}/${index}`); fetchQueue(); } catch (err) { }
   }, [isStandalone, API_BASE, getEffectiveGuildId]);
 
   const handleSync = async (offset) => {
-      if (isStandalone || !discordSdkRef.current?.guildId) {
-          setLyricOffsetMs(prev => prev + offset);
-          return;
-      }
-        const guildId = getEffectiveGuildId();
-      await axios.post(`${API_BASE}/api/sync/${guildId}`, { offset });
-        fetchQueue();
+    if (isStandalone || !discordSdkRef.current?.guildId) {
+      setLyricOffsetMs(prev => prev + offset);
+      return;
+    }
+    const guildId = getEffectiveGuildId();
+    await axios.post(`${API_BASE}/api/sync/${guildId}`, { offset });
+    fetchQueue();
   }
 
   const toggleMiniPlayer = useCallback(async () => {
-      if (!isStandalone || !window.aether?.resizeWindow) return;
-      if (isMiniPlayer) {
-          await window.aether.resizeWindow(1160, 780, false);
-          setIsMiniPlayer(false);
-          setIsMiniQueuePeekOpen(false);
-          appendRecentEvent('mini_player', 'Returned to studio layout', { tone: 'neutral' });
-      } else {
-          if (videoModeRef.current || localVideoRef.current) {
-            switchVideoMode('dual'); // Compress into album bounding box, don't sever connection
-          }
-          await window.aether.resizeWindow(isMacPlatform ? 664 : 648, isMacPlatform ? 236 : 228, true);
-          setIsMiniPlayer(true);
-          setIsMiniQueuePeekOpen(false);
-          appendRecentEvent('mini_player', 'Dock view enabled', { tone: 'neutral' });
+    if (!isStandalone || !window.aether?.resizeWindow) return;
+    if (isMiniPlayer) {
+      await window.aether.resizeWindow(1160, 780, false);
+      setIsMiniPlayer(false);
+      setIsMiniQueuePeekOpen(false);
+      appendRecentEvent('mini_player', 'Returned to studio layout', { tone: 'neutral' });
+    } else {
+      if (videoModeRef.current || localVideoRef.current) {
+        switchVideoMode('dual'); // Compress into album bounding box, don't sever connection
       }
+      await window.aether.resizeWindow(isMacPlatform ? 664 : 648, isMacPlatform ? 236 : 228, true);
+      setIsMiniPlayer(true);
+      setIsMiniQueuePeekOpen(false);
+      appendRecentEvent('mini_player', 'Dock view enabled', { tone: 'neutral' });
+    }
   }, [appendRecentEvent, exitVideoMode, isMacPlatform, isMiniPlayer, isStandalone]);
 
   const toggleFocusMode = useCallback(() => {
@@ -9816,7 +11635,7 @@ function App() {
         const video = faceVideoRef.current;
         if (video) {
           video.srcObject = stream;
-          await video.play().catch(() => {});
+          await video.play().catch(() => { });
         }
         showGestureNotice(detector ? 'Camera face + hand enabled' : 'Camera hand fallback enabled');
         gestureRuntimeRef.current.appendRecentEvent?.('camera_control', detector ? 'Camera face and hand controls enabled' : 'Camera fallback controls enabled', { tone: 'neutral' });
@@ -9859,9 +11678,22 @@ function App() {
       return Boolean(target.closest('button, input, textarea, select, option, a, [role="button"], [contenteditable="true"], .no-drag'));
     };
 
-    const setHeadPosition = (x, y) => {
+    const applyHeadPosition = (x, y) => {
       document.documentElement.style.setProperty('--aether-head-x', String(clamp01((x + 1) / 2) * 2 - 1));
       document.documentElement.style.setProperty('--aether-head-y', String(clamp01((y + 1) / 2) * 2 - 1));
+    };
+    let headPositionRaf = 0;
+    let pendingHeadPosition = null;
+    const setHeadPosition = (x, y) => {
+      pendingHeadPosition = { x, y };
+      if (headPositionRaf) return;
+      headPositionRaf = window.requestAnimationFrame(() => {
+        headPositionRaf = 0;
+        if (!pendingHeadPosition) return;
+        const next = pendingHeadPosition;
+        pendingHeadPosition = null;
+        applyHeadPosition(next.x, next.y);
+      });
     };
 
     const nudgeVolume = (delta) => {
@@ -9871,8 +11703,7 @@ function App() {
         window.aether?.store?.set('volume', next);
         return next;
       });
-      setVolumeToast(true);
-      setTimeout(() => setVolumeToast(false), 900);
+      showVolumeToastFor(900);
     };
 
     // ── Mouse / single-pointer swipe ─────────────────────────────────
@@ -10083,8 +11914,9 @@ function App() {
       window.removeEventListener('touchend', onTouchEnd);
       window.removeEventListener('touchcancel', onTouchEnd);
       window.removeEventListener('deviceorientation', onDeviceOrientation);
+      if (headPositionRaf) window.cancelAnimationFrame(headPositionRaf);
     };
-  }, [isGestureControlEnabled, showGestureNotice]);
+  }, [isGestureControlEnabled, showGestureNotice, showVolumeToastFor]);
 
   useEffect(() => {
     if (!isMiniPlayer || !currentTrack || queue.length <= 1) {
@@ -10152,7 +11984,7 @@ function App() {
         localAudioRef.current.removeAttribute('src');
         localAudioRef.current.load();
         localAudioRef.current.muted = !!videoModeRef.current;
-      } catch {}
+      } catch { }
     }
     if (videoModeRef.current && localVideoRef.current) {
       stopVideoElement(localVideoRef.current);
@@ -10354,11 +12186,12 @@ function App() {
   const mixtapePulse = hasLivePulseSignal ? vaultPulse : mixtapeFallbackPulse;
   const mixtapePulseReadout = hasLivePulseSignal ? livePulseReadout : Math.max(mixtapeFallbackPulse.energy, isPlaying ? 0.08 : 0);
   const mixtapeSpectrum = useMemo(() => {
+    if (!isPlaying) return vaultSpectrum.map(() => 0);
     if (hasLivePulseSignal) return vaultSpectrum;
     const seed = hashStringToUnit(`${currentTrack?.title || ''}|${currentTrack?.author || ''}`);
     return vaultSpectrum.map((bin, idx) => {
       const phase = (mixtapePositionMs / 1000) * (0.8 + idx * 0.08) + seed * 6 + idx;
-      const fallback = isPlaying ? clamp01(0.18 + mixtapePulseReadout * 0.55 + Math.sin(phase) * 0.1) : 0.08;
+      const fallback = clamp01(0.18 + mixtapePulseReadout * 0.55 + Math.sin(phase) * 0.1);
       return Math.max(bin, fallback);
     });
   }, [currentTrack?.author, currentTrack?.title, hasLivePulseSignal, isPlaying, mixtapePositionMs, mixtapePulseReadout, vaultSpectrum]);
@@ -10551,217 +12384,217 @@ function App() {
     const miniTrackControlGlow = trackPalette.controlGlow || 'rgba(0, 255, 191, 0.38)';
     const miniTrackControlSurface = trackPalette.controlSurface || 'rgba(12, 18, 22, 0.78)';
 
-     return (
-        <div className={`w-[100vw] h-[100vh] bg-[#040607] overflow-hidden drag relative ${windowChromeInsetClass}`}>
-          {/* Ambient glow from album art color */}
-          <div className="absolute -top-20 left-8 h-40 w-40 rounded-full blur-[78px] opacity-28 pointer-events-none" style={{ background: `${themeColor}50` }} />
-          <div className="absolute -bottom-12 right-8 h-36 w-36 rounded-full blur-[72px] opacity-20 pointer-events-none" style={{ background: `${themeColor}32` }} />
+    return (
+      <div className={`w-[100vw] h-[100vh] bg-[#040607] overflow-hidden drag relative ${windowChromeInsetClass}`}>
+        {/* Ambient glow from album art color */}
+        <div className="absolute -top-20 left-8 h-40 w-40 rounded-full blur-[78px] opacity-28 pointer-events-none" style={{ background: `${themeColor}50` }} />
+        <div className="absolute -bottom-12 right-8 h-36 w-36 rounded-full blur-[72px] opacity-20 pointer-events-none" style={{ background: `${themeColor}32` }} />
 
-          <div className="w-full h-full bg-[#090d12]/92 backdrop-blur-2xl flex flex-col relative z-10 overflow-hidden">
-            <div className="flex items-center justify-between gap-2 border-b border-white/[0.07] px-3.5 py-2 no-drag">
-              <div className="flex min-w-0 items-center gap-2.5">
-                <span className={`h-2 w-2 rounded-full transition-all flex-none ${isPlaying ? 'bg-brand-accent shadow-[0_0_10px_rgba(0,255,191,0.88)]' : 'bg-white/25'}`} />
-                <div className="min-w-0">
-                  <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent/80">Aether Dock</div>
-                </div>
-                <button
-                  onClick={() => miniQueueCount > 0 && setIsMiniQueuePeekOpen((prev) => !prev)}
-                  disabled={miniQueueCount === 0}
-                  className={`flex items-center gap-1 rounded-full border px-2 py-1 text-[9px] font-black uppercase tracking-[0.18em] transition-all ${miniQueueCount > 0 ? 'border-white/10 bg-white/[0.04] text-white/55 hover:border-brand-accent/40 hover:text-brand-accent' : 'border-white/6 bg-white/[0.03] text-white/25 cursor-default'}`}
-                  title={miniQueueCount > 0 ? 'Peek upcoming queue' : 'No queued tracks'}
-                >
-                  <ListMusic size={11} />
-                  <span>{miniQueueCount}</span>
-                </button>
+        <div className="w-full h-full bg-[#090d12]/92 backdrop-blur-2xl flex flex-col relative z-10 overflow-hidden">
+          <div className="flex items-center justify-between gap-2 border-b border-white/[0.07] px-3.5 py-2 no-drag">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <span className={`h-2 w-2 rounded-full transition-all flex-none ${isPlaying ? 'bg-brand-accent shadow-[0_0_10px_rgba(0,255,191,0.88)]' : 'bg-white/25'}`} />
+              <div className="min-w-0">
+                <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent/80">Aether Dock</div>
               </div>
-
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => setMiniPlayerInfoMode((prev) => (prev === 'artist' ? 'lyric' : 'artist'))}
-                  className={`flex h-8 w-8 items-center justify-center rounded-xl border transition-all no-drag ${miniShowingLyric ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/50 hover:border-brand-accent/35 hover:text-brand-accent'}`}
-                  title={miniShowingLyric ? 'Show artist details' : 'Show live lyric line'}
-                >
-                  <BookOpen size={13} />
-                </button>
-                <button
-                  onClick={toggleMiniPlayer}
-                  className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.04] px-3 h-8 text-[10px] font-black uppercase tracking-[0.2em] text-white/55 transition-all no-drag hover:border-brand-accent/40 hover:bg-brand-accent/8 hover:text-brand-accent"
-                  title="Expand to full studio"
-                >
-                  <AppWindow size={12} />
-                  <span>Studio</span>
-                </button>
-              </div>
+              <button
+                onClick={() => miniQueueCount > 0 && setIsMiniQueuePeekOpen((prev) => !prev)}
+                disabled={miniQueueCount === 0}
+                className={`flex items-center gap-1 rounded-full border px-2 py-1 text-[9px] font-black uppercase tracking-[0.18em] transition-all ${miniQueueCount > 0 ? 'border-white/10 bg-white/[0.04] text-white/55 hover:border-brand-accent/40 hover:text-brand-accent' : 'border-white/6 bg-white/[0.03] text-white/25 cursor-default'}`}
+                title={miniQueueCount > 0 ? 'Peek upcoming queue' : 'No queued tracks'}
+              >
+                <ListMusic size={11} />
+                <span>{miniQueueCount}</span>
+              </button>
             </div>
 
-            <div className="relative flex-1 min-h-0">
-              {currentTrack ? (
-                <>
-                  {isMiniQueuePeekOpen && (
-                    <div className="absolute inset-x-3 top-3 z-20 rounded-[1.4rem] border border-white/10 bg-[#071015]/96 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-2xl no-drag">
-                      <div className="mb-2 flex items-center justify-between gap-3">
-                        <div>
-                          <div className="text-[9px] font-black uppercase tracking-[0.24em] text-brand-accent/75">Queue Peek</div>
-                          <div className="mt-1 text-[10px] text-white/38">{miniQueueCount} track{miniQueueCount === 1 ? '' : 's'} waiting in line</div>
-                        </div>
-                        <button
-                          onClick={() => setIsMiniQueuePeekOpen(false)}
-                          className="flex h-8 w-8 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-white/45 transition-all hover:border-white/25 hover:text-white"
-                          title="Close queue peek"
-                        >
-                          <X size={13} />
-                        </button>
-                      </div>
-                      <div className="space-y-2">
-                        {miniUpcomingQueue.length > 0 ? miniUpcomingQueue.map((track, index) => (
-                          <div key={`${track.id || track.title}-${index}`} className="flex items-center gap-3 rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-2">
-                            <div className="flex h-7 w-7 items-center justify-center rounded-xl border border-brand-accent/20 bg-brand-accent/10 text-[9px] font-black text-brand-accent">
-                              {index + 1}
-                            </div>
-                            <div className="min-w-0">
-                              <div className="truncate text-[11px] font-black uppercase tracking-tight text-white/86">{track.title}</div>
-                              <div className="truncate text-[9px] uppercase tracking-[0.18em] text-brand-accent/60">{track.author || 'Unknown artist'}</div>
-                            </div>
-                          </div>
-                        )) : (
-                          <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] px-3 py-4 text-center text-[10px] uppercase tracking-[0.2em] text-white/35">
-                            Nothing queued yet
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  <div className={`flex h-full flex-col justify-between px-3.5 py-3 transition-all duration-200 ${isMiniQueuePeekOpen ? 'opacity-35 blur-[2px]' : 'opacity-100'}`}>
-                    <div className="flex min-h-0 items-center gap-3">
-                      <button
-                        onClick={toggleMiniPlayer}
-                        className="relative h-[74px] w-[74px] flex-none overflow-hidden rounded-[1.3rem] border border-white/10 shadow-[0_12px_32px_rgba(0,0,0,0.45)] no-drag"
-                        title="Open in Studio"
-                      >
-                        <img
-                          src={getProxyUrl(currentTrack.thumbnail)}
-                          className="h-full w-full object-cover"
-                          alt=""
-                        />
-                        {isAudioBuffering && (
-                          <div className="absolute inset-0 flex items-center justify-center bg-black/55">
-                            <Loader2 size={18} className="animate-spin text-brand-accent" />
-                          </div>
-                        )}
-                      </button>
-
-                      <div className="flex min-w-0 flex-1 flex-col gap-2">
-                        <button onClick={toggleMiniPlayer} className="min-w-0 text-left no-drag" title="Open in Studio">
-                          {miniTitleMarquee ? (
-                            <div className="overlay-marquee">
-                              <div className="overlay-marquee-track text-[15px] font-black uppercase tracking-tight text-white leading-tight">
-                                <span>{miniTitle}</span>
-                                <span aria-hidden="true">{miniTitle}</span>
-                                <span aria-hidden="true">{miniTitle}</span>
-                                <span aria-hidden="true">{miniTitle}</span>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="truncate text-[15px] font-black uppercase tracking-tight text-white leading-tight">{miniTitle}</div>
-                          )}
-                          <div className="mt-1 flex min-w-0 items-center gap-2">
-                            <span className="rounded-full border border-brand-accent/18 bg-brand-accent/10 px-2 py-0.5 text-[8px] font-black uppercase tracking-[0.18em] text-brand-accent/76">
-                              {miniMetaEyebrow}
-                            </span>
-                            <div className={`min-w-0 truncate text-[11px] ${miniShowingLyric ? 'text-white/58 italic' : 'text-white/46'}`}>
-                              {miniMetaLine}
-                            </div>
-                          </div>
-                        </button>
-
-                        <div className="space-y-1.5 no-drag">
-                          <PlaybackProgressIsland
-                            durationMs={miniDurationMs}
-                            getPositionMs={getActivePlaybackPositionMs}
-                            onSeek={handleSeek}
-                            accent={miniTrackProgressAccent}
-                            glow={miniTrackProgressGlow}
-                            barClassName={`relative h-1.5 overflow-hidden rounded-full bg-white/10 ${miniDurationMs > 0 ? 'cursor-pointer' : 'cursor-default'}`}
-                            fillClassName="absolute inset-y-0 left-0 w-full rounded-full"
-                            timeRowClassName="flex items-center justify-between gap-3 text-[9px] font-mono text-white/36"
-                            middleContent={<span className="truncate uppercase tracking-[0.18em] text-white/22">{miniQueueCount > 0 ? `${miniQueueCount} up next` : 'Live audio'}</span>}
-                          />
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-1.5 rounded-[1.45rem] border border-white/10 px-2 py-1.5 no-drag" style={{ background: miniTrackControlSurface }}>
-                        <button
-                          onClick={() => handleControl('previous')}
-                          className="flex h-9 w-9 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent active:scale-95"
-                          title="Previous"
-                        >
-                          <Rewind size={15} fill="currentColor" />
-                        </button>
-                        <button
-                          onClick={() => handleControl(isPlaying ? 'pause' : 'resume')}
-                          className="flex h-12 w-12 items-center justify-center rounded-[1.1rem] text-black transition-all hover:scale-[1.03] active:scale-95"
-                          style={{ background: miniTrackControlAccent, boxShadow: `0 0 22px ${miniTrackControlGlow}` }}
-                          title={isPlaying ? 'Pause' : 'Play'}
-                        >
-                          {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="ml-0.5" />}
-                        </button>
-                        <button
-                          onClick={() => handleControl('skip')}
-                          className="flex h-9 w-9 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent active:scale-95"
-                          title="Next"
-                        >
-                          <FastForward size={15} fill="currentColor" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="mt-3 flex items-center gap-2 px-0.5 no-drag">
-                      <button onClick={() => handleControl('mute')} className="flex h-8 w-8 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-white/50 transition-all hover:border-brand-accent/35 hover:text-brand-accent" title="Mute">
-                        {volume === 0 ? <VolumeX size={13} /> : <Volume2 size={13} />}
-                      </button>
-                      <input
-                        type="range"
-                        min="0" max="1" step="0.01"
-                        value={volume}
-                        onChange={(e) => {
-                          const next = parseFloat(e.target.value);
-                          setVolume(next);
-                          if (localAudioRef.current) localAudioRef.current.volume = next;
-                          if (isStandalone) window.aether?.store?.set('volume', next);
-                        }}
-                        className="mini-volume-slider h-1 w-full"
-                        title="Volume"
-                      />
-                      <div className="w-10 text-right text-[9px] font-black uppercase tracking-[0.16em] text-brand-accent/70">
-                        {Math.round(volume * 100)}%
-                      </div>
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-white/35">
-                  <Music size={18} className="text-brand-accent/50" />
-                  <div className="text-[10px] font-black uppercase tracking-[0.24em]">No signal</div>
-                  <button
-                    onClick={toggleMiniPlayer}
-                    className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/55 transition-all hover:border-brand-accent/35 hover:text-brand-accent no-drag"
-                  >
-                    Open Studio
-                  </button>
-                </div>
-              )}
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setMiniPlayerInfoMode((prev) => (prev === 'artist' ? 'lyric' : 'artist'))}
+                className={`flex h-8 w-8 items-center justify-center rounded-xl border transition-all no-drag ${miniShowingLyric ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/50 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                title={miniShowingLyric ? 'Show artist details' : 'Show live lyric line'}
+              >
+                <BookOpen size={13} />
+              </button>
+              <button
+                onClick={toggleMiniPlayer}
+                className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.04] px-3 h-8 text-[10px] font-black uppercase tracking-[0.2em] text-white/55 transition-all no-drag hover:border-brand-accent/40 hover:bg-brand-accent/8 hover:text-brand-accent"
+                title="Expand to full studio"
+              >
+                <AppWindow size={12} />
+                <span>Studio</span>
+              </button>
             </div>
           </div>
+
+          <div className="relative flex-1 min-h-0">
+            {currentTrack ? (
+              <>
+                {isMiniQueuePeekOpen && (
+                  <div className="absolute inset-x-3 top-3 z-20 rounded-[1.4rem] border border-white/10 bg-[#071015]/96 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-2xl no-drag">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-[9px] font-black uppercase tracking-[0.24em] text-brand-accent/75">Queue Peek</div>
+                        <div className="mt-1 text-[10px] text-white/38">{miniQueueCount} track{miniQueueCount === 1 ? '' : 's'} waiting in line</div>
+                      </div>
+                      <button
+                        onClick={() => setIsMiniQueuePeekOpen(false)}
+                        className="flex h-8 w-8 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-white/45 transition-all hover:border-white/25 hover:text-white"
+                        title="Close queue peek"
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                    <div className="space-y-2">
+                      {miniUpcomingQueue.length > 0 ? miniUpcomingQueue.map((track, index) => (
+                        <div key={`${track.id || track.title}-${index}`} className="flex items-center gap-3 rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-2">
+                          <div className="flex h-7 w-7 items-center justify-center rounded-xl border border-brand-accent/20 bg-brand-accent/10 text-[9px] font-black text-brand-accent">
+                            {index + 1}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="truncate text-[11px] font-black uppercase tracking-tight text-white/86">{track.title}</div>
+                            <div className="truncate text-[9px] uppercase tracking-[0.18em] text-brand-accent/60">{track.author || 'Unknown artist'}</div>
+                          </div>
+                        </div>
+                      )) : (
+                        <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] px-3 py-4 text-center text-[10px] uppercase tracking-[0.2em] text-white/35">
+                          Nothing queued yet
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <div className={`flex h-full flex-col justify-between px-3.5 py-3 transition-all duration-200 ${isMiniQueuePeekOpen ? 'opacity-35 blur-[2px]' : 'opacity-100'}`}>
+                  <div className="flex min-h-0 items-center gap-3">
+                    <button
+                      onClick={toggleMiniPlayer}
+                      className="relative h-[74px] w-[74px] flex-none overflow-hidden rounded-[1.3rem] border border-white/10 shadow-[0_12px_32px_rgba(0,0,0,0.45)] no-drag"
+                      title="Open in Studio"
+                    >
+                      <img
+                        src={getProxyUrl(currentTrack.thumbnail)}
+                        className="h-full w-full object-cover"
+                        alt=""
+                      />
+                      {isAudioBuffering && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/55">
+                          <Loader2 size={18} className="animate-spin text-brand-accent" />
+                        </div>
+                      )}
+                    </button>
+
+                    <div className="flex min-w-0 flex-1 flex-col gap-2">
+                      <button onClick={toggleMiniPlayer} className="min-w-0 text-left no-drag" title="Open in Studio">
+                        {miniTitleMarquee ? (
+                          <div className="overlay-marquee">
+                            <div className="overlay-marquee-track text-[15px] font-black uppercase tracking-tight text-white leading-tight">
+                              <span>{miniTitle}</span>
+                              <span aria-hidden="true">{miniTitle}</span>
+                              <span aria-hidden="true">{miniTitle}</span>
+                              <span aria-hidden="true">{miniTitle}</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="truncate text-[15px] font-black uppercase tracking-tight text-white leading-tight">{miniTitle}</div>
+                        )}
+                        <div className="mt-1 flex min-w-0 items-center gap-2">
+                          <span className="rounded-full border border-brand-accent/18 bg-brand-accent/10 px-2 py-0.5 text-[8px] font-black uppercase tracking-[0.18em] text-brand-accent/76">
+                            {miniMetaEyebrow}
+                          </span>
+                          <div className={`min-w-0 truncate text-[11px] ${miniShowingLyric ? 'text-white/58 italic' : 'text-white/46'}`}>
+                            {miniMetaLine}
+                          </div>
+                        </div>
+                      </button>
+
+                      <div className="space-y-1.5 no-drag">
+                        <PlaybackProgressIsland
+                          durationMs={miniDurationMs}
+                          getPositionMs={getActivePlaybackPositionMs}
+                          onSeek={handleSeek}
+                          accent={miniTrackProgressAccent}
+                          glow={miniTrackProgressGlow}
+                          barClassName={`relative h-1.5 overflow-hidden rounded-full bg-white/10 ${miniDurationMs > 0 ? 'cursor-pointer' : 'cursor-default'}`}
+                          fillClassName="absolute inset-y-0 left-0 w-full rounded-full"
+                          timeRowClassName="flex items-center justify-between gap-3 text-[9px] font-mono text-white/36"
+                          middleContent={<span className="truncate uppercase tracking-[0.18em] text-white/22">{miniQueueCount > 0 ? `${miniQueueCount} up next` : 'Live audio'}</span>}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 rounded-[1.45rem] border border-white/10 px-2 py-1.5 no-drag" style={{ background: miniTrackControlSurface }}>
+                      <button
+                        onClick={() => handleControl('previous')}
+                        className="flex h-9 w-9 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent active:scale-95"
+                        title="Previous"
+                      >
+                        <Rewind size={15} fill="currentColor" />
+                      </button>
+                      <button
+                        onClick={() => handleControl(isPlaying ? 'pause' : 'resume')}
+                        className="flex h-12 w-12 items-center justify-center rounded-[1.1rem] text-black transition-all hover:scale-[1.03] active:scale-95"
+                        style={{ background: miniTrackControlAccent, boxShadow: `0 0 22px ${miniTrackControlGlow}` }}
+                        title={isPlaying ? 'Pause' : 'Play'}
+                      >
+                        {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="ml-0.5" />}
+                      </button>
+                      <button
+                        onClick={() => handleControl('skip')}
+                        className="flex h-9 w-9 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent active:scale-95"
+                        title="Next"
+                      >
+                        <FastForward size={15} fill="currentColor" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 flex items-center gap-2 px-0.5 no-drag">
+                    <button onClick={() => handleControl('mute')} className="flex h-8 w-8 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-white/50 transition-all hover:border-brand-accent/35 hover:text-brand-accent" title="Mute">
+                      {volume === 0 ? <VolumeX size={13} /> : <Volume2 size={13} />}
+                    </button>
+                    <input
+                      type="range"
+                      min="0" max="1" step="0.01"
+                      value={volume}
+                      onChange={(e) => {
+                        const next = parseFloat(e.target.value);
+                        setVolume(next);
+                        if (localAudioRef.current) localAudioRef.current.volume = next;
+                        if (isStandalone) window.aether?.store?.set('volume', next);
+                      }}
+                      className="mini-volume-slider h-1 w-full"
+                      title="Volume"
+                    />
+                    <div className="w-10 text-right text-[9px] font-black uppercase tracking-[0.16em] text-brand-accent/70">
+                      {Math.round(volume * 100)}%
+                    </div>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-white/35">
+                <Music size={18} className="text-brand-accent/50" />
+                <div className="text-[10px] font-black uppercase tracking-[0.24em]">No signal</div>
+                <button
+                  onClick={toggleMiniPlayer}
+                  className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/55 transition-all hover:border-brand-accent/35 hover:text-brand-accent no-drag"
+                >
+                  Open Studio
+                </button>
+              </div>
+            )}
+          </div>
         </div>
-     );
+      </div>
+    );
   }
 
 
   const headerZClass = videoMode === 'cinema' ? 'z-[120]' : 'z-[220]';
   const headerInsetClass = isMacPlatform ? 'pl-20' : 'pl-4';
   const topHeaderClass = isAuraMode
-    ? `h-[72px] border-b border-white/[0.12] bg-[#07090c]/72 backdrop-blur-3xl shadow-[0_10px_40px_rgba(0,0,0,0.35)] ${headerZClass} px-4 md:px-6 ${headerInsetClass} flex flex-row items-center justify-between gap-4 drag flex-none relative`
+    ? `h-[72px] border-b border-white/[0.15] bg-white/[0.015] backdrop-blur-3xl shadow-[0_8px_32px_rgba(0,255,191,0.08),0_10px_40px_rgba(0,0,0,0.35)] ${headerZClass} px-4 md:px-6 ${headerInsetClass} flex flex-row items-center justify-between gap-4 drag flex-none relative`
     : `h-[72px] border-b border-white/8 bg-[#0a0f12]/86 backdrop-blur-3xl ${headerZClass} px-4 md:px-6 ${headerInsetClass} flex flex-row items-center justify-between gap-4 drag flex-none relative`;
   const headerIconButtonClass = 'no-drag flex h-10 w-10 items-center justify-center rounded-2xl border border-white/12 bg-white/[0.045] text-white/54 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition-all hover:-translate-y-[1px] hover:border-brand-accent/38 hover:bg-brand-accent/[0.08] hover:text-brand-accent';
   const headerAccentButtonClass = 'no-drag flex h-10 w-10 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/[0.08] text-brand-accent shadow-[0_0_18px_rgba(0,255,191,0.14)] transition-all hover:-translate-y-[1px] hover:border-brand-accent/55 hover:bg-brand-accent/[0.14]';
@@ -10775,7 +12608,7 @@ function App() {
     ? 'hover:border-brand-accent/35 hover:shadow-[0_18px_60px_rgba(0,255,191,0.08)] hover:-translate-y-[1px]'
     : 'hover:border-brand-accent/20';
 
-   const doodlePresetConfig = DOODLE_PRESETS.find((preset) => preset.id === doodleIntensity) || DOODLE_PRESETS[1];
+  const doodlePresetConfig = DOODLE_PRESETS.find((preset) => preset.id === doodleIntensity) || DOODLE_PRESETS[1];
   const trackProgressAccent = trackPalette.progressAccent || themeColor;
   const trackProgressGlow = trackPalette.progressGlow || 'rgba(0, 255, 191, 0.42)';
   const trackControlAccent = trackPalette.controlAccent || themeColor;
@@ -10931,9 +12764,9 @@ function App() {
   const lyricsHeaderEyebrow = isDualWorkspaceMode ? 'Split Immersive' : 'Subtitles';
   const sharedModalCloseButtonClass = 'w-10 h-10 rounded-xl border border-white/15 bg-white/[0.03] text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center';
   const inspectPlaylistName = isPlaylistInspect ? String(inspectTarget?.playlistName || 'Playlist') : '';
-   const inspectPlaylistSourceText = inspectPlaylistSourceUrls.join('\n');
-   const inspectQueueIndex = inspectTrack ? queue.findIndex((track) => normalizeTrackIdentity(track) === normalizeTrackIdentity(inspectTrack)) : -1;
-   const inspectDurationMs = inspectTrack?.totalDurationMs || inspectTrack?.duration || 0;
+  const inspectPlaylistSourceText = inspectPlaylistSourceUrls.join('\n');
+  const inspectQueueIndex = inspectTrack ? queue.findIndex((track) => normalizeTrackIdentity(track) === normalizeTrackIdentity(inspectTrack)) : -1;
+  const inspectDurationMs = inspectTrack?.totalDurationMs || inspectTrack?.duration || 0;
   const playInspectPlaylist = (shuffle = false) => {
     const normalized = inspectPlaylistTracks.map(normalizeQueueTrack).filter(Boolean);
     if (normalized.length === 0) {
@@ -10976,2182 +12809,2260 @@ function App() {
 
   return (
     <MotionConfig reducedMotion={performanceMode === 'low' ? 'always' : 'never'} transition={performanceMode === 'low' ? { duration: 0 } : undefined}>
-    <div className={`fixed inset-0 bg-transparent selection:bg-brand-accent selection:text-brand-dark flex flex-col h-screen overflow-hidden relative isolate ${desktopTopInsetClass} ${rootModeClass}`} style={auraFieldStyle}>
-      <div className="fixed inset-0 bg-[#050505] z-[-2]" />
-      {/* Background Mesh (Absolute to avoid flex interference) */}
-      <div className="absolute inset-0 bg-mesh pointer-events-none z-[-1]" />
+      <div className={`fixed inset-0 bg-transparent selection:bg-brand-accent selection:text-brand-dark flex flex-col h-screen overflow-hidden relative isolate ${desktopTopInsetClass} ${rootModeClass}`} style={auraFieldStyle}>
+        <div className="fixed inset-0 bg-[#050505] z-[-2]" />
+        {/* Background Mesh (Absolute to avoid flex interference) */}
+        <div className="absolute inset-0 bg-mesh pointer-events-none z-[-1]" />
 
-      {isFaceControlEnabled && (
-        <video
-          ref={faceVideoRef}
-          autoPlay
-          muted
-          playsInline
-          className={`fixed bottom-4 left-4 z-[360] h-24 w-32 rounded-2xl border border-brand-accent/25 bg-black/70 object-cover shadow-[0_18px_50px_rgba(0,0,0,0.45)] transition-opacity ${isGestureLabOpen ? 'opacity-80' : 'pointer-events-none opacity-0'}`}
-        />
-      )}
+        {isFaceControlEnabled && (
+          <video
+            ref={faceVideoRef}
+            autoPlay
+            muted
+            playsInline
+            className={`fixed bottom-4 left-4 z-[360] h-24 w-32 rounded-2xl border border-brand-accent/25 bg-black/70 object-cover shadow-[0_18px_50px_rgba(0,0,0,0.45)] transition-opacity ${isGestureLabOpen ? 'opacity-80' : 'pointer-events-none opacity-0'}`}
+          />
+        )}
 
-      {/* ── WEB AUDIO UNLOCK OVERLAY ─────────────────────────────────────────
+        {/* ── VOICE CONTROL UI ────────────────────────────────────────────── */}
+        <button
+          id="voice-control-btn"
+          onClick={micFeatureDisabled ? undefined : toggleVoiceControl}
+          title={micFeatureDisabled ? 'Voice (temporarily disabled)' : (effectiveVoiceEnabled ? 'Disable Voice Control' : 'Enable Voice Control — say "Aether play..."')}
+          aria-disabled={micFeatureDisabled}
+          tabIndex={micFeatureDisabled ? -1 : 0}
+          className={`fixed z-[355] bottom-6 right-6 flex items-center justify-center rounded-full shadow-2xl transition-all duration-300 active:scale-90 select-none ${micFeatureDisabled ? 'pointer-events-none cursor-default opacity-90' : ''} ${!effectiveVoiceEnabled ? 'w-10 h-10 border border-white/20 bg-black/60 text-white/40 hover:text-white/70 hover:border-white/40 hover:bg-black/80' : 'w-12 h-12 border-2'}`}
+          style={effectiveVoiceEnabled ? {
+            background: voiceStatus === 'listening' ? 'rgba(22,247,198,0.13)' : (voiceStatus === 'processing' || voiceStatus === 'loading') ? 'rgba(251,191,36,0.13)' : 'rgba(239,68,68,0.13)',
+            borderColor: voiceStatus === 'listening' ? 'rgba(22,247,198,0.75)' : (voiceStatus === 'processing' || voiceStatus === 'loading') ? 'rgba(251,191,36,0.75)' : 'rgba(239,68,68,0.5)',
+            color: voiceStatus === 'listening' ? 'rgb(22,247,198)' : (voiceStatus === 'processing' || voiceStatus === 'loading') ? 'rgb(251,191,36)' : 'rgb(252,165,165)',
+            boxShadow: voiceStatus === 'listening' ? '0 0 28px rgba(22,247,198,0.3), 0 8px 24px rgba(0,0,0,0.5)' : '0 8px 24px rgba(0,0,0,0.5)',
+          } : undefined}
+        >
+          {effectiveVoiceEnabled ? (
+            voiceStatus === 'listening' ? (
+              <span className="relative flex items-center justify-center">
+                <span className="absolute inline-flex w-9 h-9 rounded-full animate-ping opacity-25" style={{ background: 'rgba(22,247,198,0.5)' }} />
+                <Mic size={18} />
+              </span>
+            ) : (voiceStatus === 'processing' || voiceStatus === 'loading') ? (
+              <Loader2 size={18} className="animate-spin" />
+            ) : (
+              <MicOff size={18} />
+            )
+          ) : (
+            <Mic size={15} />
+          )}
+        </button>
+        <AnimatePresence>
+          {effectiveVoiceEnabled && voiceToast && (
+            <motion.div
+              key={`vt-${voiceToast.message}`}
+              initial={{ opacity: 0, y: 14, scale: 0.94 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 6, scale: 0.97 }}
+              transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+              className="fixed z-[354] bottom-[76px] right-4 max-w-[290px] rounded-2xl px-4 py-3 text-[13px] font-semibold shadow-2xl pointer-events-none"
+              style={{
+                background: 'rgba(10,10,12,0.94)',
+                border: `1px solid ${voiceToast.type === 'success' ? 'rgba(22,247,198,0.45)' : voiceToast.type === 'error' ? 'rgba(239,68,68,0.45)' : 'rgba(255,255,255,0.12)'}`,
+                backdropFilter: 'blur(22px)',
+                color: voiceToast.type === 'success' ? 'rgb(22,247,198)' : voiceToast.type === 'error' ? 'rgb(252,165,165)' : 'rgba(255,255,255,0.9)',
+                boxShadow: '0 20px 60px rgba(0,0,0,0.65)',
+              }}
+            >
+              {voiceToast.message}
+            </motion.div>
+          )}
+        </AnimatePresence>
+        <AnimatePresence>
+          {effectiveVoiceEnabled && voiceStatus === 'listening' && !voiceToast && (
+            <motion.div
+              key="voice-hint"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 6 }}
+              transition={{ delay: 0.7, duration: 0.3 }}
+              className="fixed z-[353] bottom-[76px] right-4 rounded-xl px-3 py-2 text-[11px] font-medium text-white/45 pointer-events-none"
+              style={{ background: 'rgba(10,10,12,0.72)', border: '1px solid rgba(255,255,255,0.07)', backdropFilter: 'blur(14px)' }}
+            >
+              Say <span className="text-white/80 font-semibold">"Aether play…"</span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* ── WEB AUDIO UNLOCK OVERLAY ─────────────────────────────────────────
           Browsers block audio.play() without a prior user gesture in the tab.
           This overlay captures that gesture. It only renders in web mode
           (!isStandalone) and disappears permanently once tapped.
       ───────────────────────────────────────────────────────────────────── */}
-      <AnimatePresence>
-        {!isStandalone && !webAudioUnlocked && (
-          <motion.div
-            key="web-audio-unlock"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0, scale: 0.97 }}
-            transition={{ duration: 0.35 }}
-            className="fixed inset-0 z-[9999] flex items-center justify-center"
-            style={{ background: 'rgba(5,5,5,0.88)', backdropFilter: 'blur(28px)' }}
-          >
+        <AnimatePresence>
+          {!isStandalone && !webAudioUnlocked && (
             <motion.div
-              initial={{ y: 24, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              transition={{ delay: 0.12, duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
-              className="flex flex-col items-center gap-6 px-8 py-10 rounded-3xl"
-              style={{
-                background: 'rgba(255,255,255,0.03)',
-                border: '1px solid rgba(255,255,255,0.08)',
-                boxShadow: '0 32px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(0,255,191,0.06) inset',
-                maxWidth: 360,
-                width: '90vw',
-              }}
+              key="web-audio-unlock"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0, scale: 0.97 }}
+              transition={{ duration: 0.35 }}
+              className="fixed inset-0 z-[9999] flex items-center justify-center"
+              style={{ background: 'rgba(5,5,5,0.88)', backdropFilter: 'blur(28px)' }}
             >
-              {/* Glow ring */}
-              <div className="relative flex items-center justify-center">
-                <div
-                  className="absolute rounded-full animate-pulse"
-                  style={{
-                    width: 88, height: 88,
-                    background: 'radial-gradient(circle, rgba(0,255,191,0.18) 0%, transparent 70%)',
-                    filter: 'blur(12px)',
-                  }}
-                />
-                <div
-                  className="relative flex items-center justify-center rounded-full"
-                  style={{
-                    width: 72, height: 72,
-                    background: 'rgba(0,255,191,0.08)',
-                    border: '1px solid rgba(0,255,191,0.22)',
-                    boxShadow: '0 0 28px rgba(0,255,191,0.14)',
-                  }}
-                >
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-                    <path d="M9 18V6l12-2v12" stroke="#00ffbf" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                    <circle cx="6" cy="18" r="3" stroke="#00ffbf" strokeWidth="1.5"/>
-                    <circle cx="18" cy="16" r="3" stroke="#00ffbf" strokeWidth="1.5"/>
-                  </svg>
-                </div>
-              </div>
-
-              {/* Text */}
-              <div className="flex flex-col items-center gap-2 text-center">
-                <div
-                  className="font-black uppercase tracking-[0.18em] text-white"
-                  style={{ fontSize: 13 }}
-                >
-                  Aether Studio
-                </div>
-                <div
-                  className="font-medium text-center leading-relaxed"
-                  style={{ fontSize: 12, color: 'rgba(255,255,255,0.44)', maxWidth: 240 }}
-                >
-                  {queue?.[0]?.title
-                    ? <>Ready to play <span style={{ color: 'rgba(255,255,255,0.75)' }}>{queue[0].title}</span></>
-                    : 'Tap to activate your audio session'
-                  }
-                </div>
-              </div>
-
-              {/* CTA button */}
-              <motion.button
-                id="web-audio-unlock-btn"
-                whileHover={{ scale: 1.04 }}
-                whileTap={{ scale: 0.96 }}
-                onClick={() => {
-                  // This click is the browser gesture that unlocks media playback.
-                  try {
-                    youtubePlayerRef.current?.playVideo?.();
-                  } catch {}
-                  if (localAudioRef.current) {
-                    if (localAudioRef.current.src && localAudioRef.current.paused) {
-                      localAudioRef.current.play().catch(() => {});
-                    }
-                  }
-                  setWebAudioUnlocked(true);
-                  setIsPlaying(true);
-                }}
-                className="flex items-center gap-3 font-black uppercase tracking-widest transition-all"
+              <motion.div
+                initial={{ y: 24, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                transition={{ delay: 0.12, duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+                className="flex flex-col items-center gap-6 px-8 py-10 rounded-3xl"
                 style={{
-                  background: '#00ffbf',
-                  color: '#050505',
-                  border: 'none',
-                  borderRadius: 16,
-                  padding: '14px 32px',
-                  fontSize: 12,
-                  letterSpacing: '0.16em',
-                  boxShadow: '0 0 32px rgba(0,255,191,0.35), 0 4px 16px rgba(0,0,0,0.4)',
-                  cursor: 'pointer',
+                  background: 'rgba(255,255,255,0.03)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  boxShadow: '0 32px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(0,255,191,0.06) inset',
+                  maxWidth: 360,
+                  width: '90vw',
                 }}
               >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="#050505">
-                  <polygon points="5,3 19,12 5,21" />
-                </svg>
-                Tap to Listen
-              </motion.button>
+                {/* Glow ring */}
+                <div className="relative flex items-center justify-center">
+                  <div
+                    className="absolute rounded-full animate-pulse"
+                    style={{
+                      width: 88, height: 88,
+                      background: 'radial-gradient(circle, rgba(0,255,191,0.18) 0%, transparent 70%)',
+                      filter: 'blur(12px)',
+                    }}
+                  />
+                  <div
+                    className="relative flex items-center justify-center rounded-full"
+                    style={{
+                      width: 72, height: 72,
+                      background: 'rgba(0,255,191,0.08)',
+                      border: '1px solid rgba(0,255,191,0.22)',
+                      boxShadow: '0 0 28px rgba(0,255,191,0.14)',
+                    }}
+                  >
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                      <path d="M9 18V6l12-2v12" stroke="#00ffbf" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                      <circle cx="6" cy="18" r="3" stroke="#00ffbf" strokeWidth="1.5" />
+                      <circle cx="18" cy="16" r="3" stroke="#00ffbf" strokeWidth="1.5" />
+                    </svg>
+                  </div>
+                </div>
 
-              <div
-                className="font-mono uppercase tracking-widest text-center"
-                style={{ fontSize: 9, color: 'rgba(255,255,255,0.18)', letterSpacing: '0.25em' }}
-              >
-                Browser Playback Session · One-Time
-              </div>
+                {/* Text */}
+                <div className="flex flex-col items-center gap-2 text-center">
+                  <div
+                    className="font-black uppercase tracking-[0.18em] text-white"
+                    style={{ fontSize: 13 }}
+                  >
+                    Aether Studio
+                  </div>
+                  <div
+                    className="font-medium text-center leading-relaxed"
+                    style={{ fontSize: 12, color: 'rgba(255,255,255,0.44)', maxWidth: 240 }}
+                  >
+                    {queue?.[0]?.title
+                      ? <>Ready to play <span style={{ color: 'rgba(255,255,255,0.75)' }}>{queue[0].title}</span></>
+                      : 'Tap to activate your audio session'
+                    }
+                  </div>
+                </div>
+
+                {/* CTA button */}
+                <motion.button
+                  id="web-audio-unlock-btn"
+                  whileHover={{ scale: 1.04 }}
+                  whileTap={{ scale: 0.96 }}
+                  onClick={() => {
+                    // This click is the browser gesture that unlocks media playback.
+                    try {
+                      youtubePlayerRef.current?.playVideo?.();
+                    } catch { }
+                    if (localAudioRef.current) {
+                      if (localAudioRef.current.src && localAudioRef.current.paused) {
+                        localAudioRef.current.play().catch(() => { });
+                      }
+                    }
+                    setWebAudioUnlocked(true);
+                    setIsPlaying(true);
+                  }}
+                  className="flex items-center gap-3 font-black uppercase tracking-widest transition-all"
+                  style={{
+                    background: '#00ffbf',
+                    color: '#050505',
+                    border: 'none',
+                    borderRadius: 16,
+                    padding: '14px 32px',
+                    fontSize: 12,
+                    letterSpacing: '0.16em',
+                    boxShadow: '0 0 32px rgba(0,255,191,0.35), 0 4px 16px rgba(0,0,0,0.4)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="#050505">
+                    <polygon points="5,3 19,12 5,21" />
+                  </svg>
+                  Tap to Listen
+                </motion.button>
+
+                <div
+                  className="font-mono uppercase tracking-widest text-center"
+                  style={{ fontSize: 9, color: 'rgba(255,255,255,0.18)', letterSpacing: '0.25em' }}
+                >
+                  Browser Playback Session · One-Time
+                </div>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {showWindowsTitleStrip && (
-        <div
-          className="fixed inset-x-0 top-0 z-[260] h-[34px] border-b border-white/8 bg-[#0a0f12]/92 backdrop-blur-3xl drag"
-          onDoubleClick={handleHeaderDoubleClick}
-          title={isStandalone ? 'Double-click header chrome to maximize or restore' : undefined}
-        >
-          <div className="flex h-full items-center px-4 pr-[140px] select-none">
-            <div className="flex items-center gap-2">
-              <div className="h-1.5 w-1.5 rounded-full bg-brand-accent/65 shadow-[0_0_14px_rgba(0,255,191,0.4)]" />
-              <span className="text-[10px] font-black uppercase tracking-[0.22em] text-white/42">Aether</span>
-              <span className="rounded-full border border-white/10 bg-white/[0.03] px-1.5 py-[1px] text-[7px] font-black uppercase tracking-[0.2em] text-brand-accent/70">
-                Studio
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Neural Dynamic Backdrop (NOVA */}
-      <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-        <AnimatePresence mode="wait">
-          {currentTrack?.thumbnail ? (
-            <motion.div 
-              key={currentTrack.thumbnail}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 0.15 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 2 }}
-              className="absolute inset-0 bg-center bg-cover scale-110 blur-[120px]"
-              style={{ backgroundImage: `url(${getProxyUrl(currentTrack.thumbnail)})` }}
-            />
-          ) : (
-            <motion.div 
-              key="standby-backdrop"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 0.05 }}
-              exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-gradient-to-br from-brand-accent/20 via-transparent to-brand-accent/10 blur-[150px]"
-            />
           )}
         </AnimatePresence>
-        <div className={`absolute inset-0 ${isAuraMode ? 'bg-brand-dark/10' : 'bg-brand-dark/20'}`} />
-        <div className={`absolute inset-0 ${isAuraMode ? 'bg-[radial-gradient(circle_at_center,transparent_30%,rgba(0,0,0,0.30)_100%)]' : 'bg-[radial-gradient(circle_at_center,transparent_25%,rgba(0,0,0,0.38)_100%)]'}`} />
-      </div>
 
-      <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
-         <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-brand-accent/5 blur-[100px] rounded-full animate-pulse-glow" />
-         <div className="absolute bottom-[-5%] right-[-5%] w-[40%] h-[40%] bg-brand-accent/10 blur-[80px] rounded-full animate-pulse-glow" style={{ animationDelay: '2s' }} />
-      </div>
-
-      {isDoodleMode && (
-        <div className="fixed inset-0 pointer-events-none overflow-hidden z-[-1] doodle-cloud-layer doodle-bg-layer">
-          <div className="doodle-soft-blob doodle-soft-blob-a" />
-          <div className="doodle-soft-blob doodle-soft-blob-b" />
-          <div className="doodle-soft-blob doodle-soft-blob-c" />
-          <img src={catDoodlePeek} alt="doodle" className="absolute top-[10%] left-[-16vw] w-[70px] doodle-fly doodle-glide-a" style={{ opacity: Math.min(0.38, 0.2 * doodleIntensityScale), animationDelay: '-7s' }} draggable={false} />
-          <img src={catDoodlePeek} alt="doodle" className="absolute top-[26%] left-[-16vw] w-[58px] doodle-fly doodle-glide-b" style={{ opacity: Math.min(0.34, 0.18 * doodleIntensityScale), animationDelay: '-13s', transform: 'scaleX(-1)' }} draggable={false} />
-          <img src={catDoodlePeek} alt="doodle" className="absolute top-[42%] left-[-16vw] w-[64px] doodle-fly doodle-glide-c" style={{ opacity: Math.min(0.36, 0.19 * doodleIntensityScale), animationDelay: '-3s' }} draggable={false} />
-          <img src={catDoodlePeek} alt="doodle" className="absolute top-[58%] left-[-16vw] w-[60px] doodle-fly doodle-glide-a" style={{ opacity: Math.min(0.34, 0.17 * doodleIntensityScale), animationDelay: '-18s', transform: 'scaleX(-1)' }} draggable={false} />
-          <img src={catDoodlePeek} alt="doodle" className="absolute top-[74%] left-[-16vw] w-[68px] doodle-fly doodle-glide-b" style={{ opacity: Math.min(0.36, 0.2 * doodleIntensityScale), animationDelay: '-23s' }} draggable={false} />
-          <img src={catDoodlePeek} alt="doodle" className="absolute top-[88%] left-[-16vw] w-[62px] doodle-fly doodle-glide-c" style={{ opacity: Math.min(0.33, 0.17 * doodleIntensityScale), animationDelay: '-29s', transform: 'scaleX(-1)' }} draggable={false} />
-        </div>
-      )}
-
-      {/* AURA MODE: Full-screen aura field */}
-      {isAuraMode && (
-        <div className="aura-field fixed inset-0 pointer-events-none overflow-hidden z-[-1]">
-          <div className="aura-field-tone aura-field-tone-left" style={{ opacity: 'calc(var(--aura-field-flare, 0) * 0.52)' }} />
-          <div className="aura-field-tone aura-field-tone-right" style={{ opacity: 'calc(var(--aura-field-flare, 0) * 0.48)' }} />
-          <div className="aura-field-core aura-field-core-a" style={{ opacity: 'var(--aura-field-boost, 0)' }} />
-          <div className="aura-field-core aura-field-core-b" style={{ opacity: 'calc(var(--aura-field-boost, 0) * 0.82)' }} />
-          <div className="aura-field-ribbon aura-field-ribbon-a" style={{ opacity: 'var(--aura-field-flare, 0)' }} />
-          <div className="aura-field-ribbon aura-field-ribbon-b" style={{ opacity: 'calc(var(--aura-field-flare, 0) * 0.92)' }} />
-          <div className="aura-field-orbits">
-            {[
-              ['18%', '12%', '7s', '1.2s', '16px'],
-              ['72%', '16%', '9s', '3.4s', '12px'],
-              ['48%', '78%', '11s', '0s', '22px'],
-              ['12%', '68%', '13s', '2.2s', '10px'],
-              ['86%', '58%', '10s', '4.1s', '14px'],
-            ].map(([left, top, duration, delay, size], index) => (
-              <span
-                key={`aura-orbit-${index}`}
-                className="aura-field-orbit"
-                style={{ left, top, width: size, height: size, animationDuration: duration, animationDelay: delay }}
-              />
-            ))}
-          </div>
-          <div className="aura-field-particles">
-            {[
-              ['9%', '18%', '12s', '0s'],
-              ['24%', '72%', '14s', '2.5s'],
-              ['41%', '24%', '11s', '1.1s'],
-              ['58%', '66%', '16s', '4s'],
-              ['77%', '32%', '13s', '3.1s'],
-              ['91%', '78%', '18s', '0.7s'],
-            ].map(([left, top, duration, delay], index) => (
-              <span
-                key={`aura-particle-${index}`}
-                className="aura-field-particle"
-                style={{ left, top, animationDuration: duration, animationDelay: delay }}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* APP HEADER */}
-      {!showImmersiveLyricsOverlay && (
-      <header className={topHeaderClass} onDoubleClick={handleHeaderDoubleClick} title={isStandalone ? 'Double-click the header background to maximize or restore' : undefined}>
-        <div className="flex min-w-0 items-center gap-3 lg:min-w-[220px]">
-          <div className="relative flex h-11 w-11 items-center justify-center overflow-hidden rounded-[1.35rem] border border-brand-accent/25 bg-white/[0.04] shadow-[0_0_28px_rgba(0,255,191,0.08)]">
-            <img src="aether-logo.png" alt="Aether" className="h-6 w-6 object-contain" onError={(e) => e.target.src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiMwMGZmYmYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cG9seWdvbiBwb2ludHM9IjEzIDIgMyAxNCAxMiAxNCAxMSAyMiAyMSAxMCAxMiAxMCAxMyAyIj48L3BvbHlnb24+PC9zdmc+'} />
-            <div className="absolute inset-0 bg-brand-accent/6 opacity-70" />
-          </div>
-
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] font-black uppercase tracking-[0.08em] text-white/92">Aether</span>
-              <span className="rounded-full border border-brand-accent/30 bg-brand-accent/10 px-1.5 py-[2px] text-[7px] font-black uppercase tracking-[0.18em] text-brand-accent/80">
-                {BUILD_VERSION}
-              </span>
-              <span className="rounded-full border border-white/10 bg-white/[0.035] px-1.5 py-[2px] text-[7px] font-black uppercase tracking-[0.16em] text-white/55">
-                v{APP_VERSION}
-              </span>
-            </div>
-            <div className="mt-1 flex min-w-0 items-center gap-2 text-[8px] font-black uppercase tracking-[0.22em] text-white/38">
-              <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-white/52">{workspaceModeLabel}</span>
-              <span className="truncate text-brand-accent/70">{playbackModeLabel}</span>
-            </div>
-          </div>
-        </div>
-
-        <HeaderVisualControls
-          ref={headerControlsRef}
-          headerIconButtonClass={headerIconButtonClass}
-          headerAccentButtonClass={headerAccentButtonClass}
-          isGestureControlEnabled={isGestureControlEnabled}
-          openFeedbackPanel={openFeedbackPanel}
-          openGestureLab={openGestureLab}
-          openSignalLedger={openSignalLedger}
-          setVisualizerMode={setVisualizerMode}
-          visualizerMode={visualizerMode}
-          auraPreset={auraPreset}
-          setAuraPreset={setAuraPreset}
-          isDepthMotionEnabled={isDepthMotionEnabled}
-          setIsDepthMotionEnabled={setIsDepthMotionEnabled}
-          isDoodleMode={isDoodleMode}
-          setIsDoodleMode={setIsDoodleMode}
-          doodleIntensity={doodleIntensity}
-          setDoodleIntensity={setDoodleIntensity}
-          doodleIntensityBadge={doodleIntensityBadge}
-          setIsAuraStageOpen={setIsAuraStageOpen}
-          toggleDiagnostics={toggleDiagnostics}
-          isDiagnosticsOpen={isDiagnosticsOpen}
-          setLastAdded={setLastAdded}
-          shortcuts={shortcuts}
-          setShortcuts={setShortcuts}
-          isMacPlatform={isMacPlatform}
-          isStandalone={isStandalone}
-          globalMediaShortcutsEnabled={globalMediaShortcutsEnabled}
-          setGlobalMediaShortcutsEnabled={setGlobalMediaShortcutsEnabled}
-          performanceMode={performanceMode}
-          setPerformanceMode={setPerformanceMode}
-          onSurfaceOpen={(surface) => closeHeaderSurfaces(surface)}
-        />
-        <div className="order-3 flex w-full justify-center ultra-compact-hide no-drag md:order-2 md:flex-1 md:max-w-[900px] md:px-4 lg:px-6" data-no-maximize="true">
-          <HeaderSearchBox
-            searchQuery={searchQuery}
-            isSearching={isSearching}
-            hasActiveSearchState={hasActiveSearchState}
-            isAuraMode={isAuraMode}
-            disabled={videoMode === 'dual'}
-            onSearch={handleSearch}
-            onClear={() => {
-              setSearchQuery('');
-              clearDiscoveryResults();
-            }}
-          />
-        </div>
-
-        <div className="flex items-center justify-end gap-2 min-w-fit order-3 no-drag" data-no-maximize="true">
-          <HeaderSleepTimerControls
-            ref={sleepTimerControlsRef}
-            headerIconButtonClass={headerIconButtonClass}
-            sleepTimerValue={sleepTimerValue}
-            stopAfterTrack={stopAfterTrack}
-            sleepRemainingStr={sleepRemainingStr}
-            sleepDeadline={sleepDeadline}
-            handleSetSleepTimer={handleSetSleepTimer}
-            sleepCustomMinutes={sleepCustomMinutes}
-            setSleepCustomMinutes={setSleepCustomMinutes}
-            setStopAfterTrack={setStopAfterTrack}
-            sleepFadeEnabled={sleepFadeEnabled}
-            setSleepFadeEnabled={setSleepFadeEnabled}
-            onSurfaceOpen={() => closeHeaderSurfaces('sleep')}
-          />
-          <div className={`hidden md:flex items-center gap-1 rounded-[1.15rem] border p-1 no-drag ${isDualLayoutLocked ? 'border-white/8 bg-white/[0.03]' : 'border-white/12 bg-white/[0.04]'}`} title={isDualLayoutLocked ? 'Layout switching is unavailable while Dual View is active' : 'Workspace layout'}>
-            <button
-              onClick={() => setIsVerticalStack(false)}
-              disabled={isDualLayoutLocked}
-              className={`rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${!isVerticalStack ? 'bg-brand-accent text-black shadow-[0_0_16px_rgba(0,255,191,0.28)]' : isDualLayoutLocked ? 'text-white/20 cursor-not-allowed' : 'text-white/45 hover:text-brand-accent'}`}
-            >
-              Studio
-            </button>
-            <button
-              onClick={() => setIsVerticalStack(true)}
-              disabled={isDualLayoutLocked}
-              className={`rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${isVerticalStack ? 'bg-brand-accent text-black shadow-[0_0_16px_rgba(0,255,191,0.28)]' : isDualLayoutLocked ? 'text-white/20 cursor-not-allowed' : 'text-white/45 hover:text-brand-accent'}`}
-            >
-              Stack
-            </button>
-          </div>
-
-          {isStandalone && (
-            <button
-              onClick={() => {
-                runAfterInputPaint(() => {
-                  closeHeaderSurfaces('lock');
-                  appLockSettingsRef.current?.open();
-                });
-              }}
-              className={`${headerIconButtonClass} ${lockStatus.enabled ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`}
-              title="App Lock"
-            >
-              <Lock size={16} />
-            </button>
-          )}
-
-          {showWindowsHeaderWindowControls && (
-            <div className="ml-1 flex items-center gap-1 rounded-2xl border border-white/10 bg-white/[0.04] p-1 no-drag">
-              <button
-                onClick={() => window.aether?.minimize?.()}
-                className="flex h-8 w-8 items-center justify-center rounded-xl text-white/45 transition-all hover:bg-white/10 hover:text-white"
-                title="Minimize"
-              >
-                <span className="translate-y-[-1px] text-sm leading-none">-</span>
-              </button>
-              <button
-                onClick={toggleWindowMaximize}
-                className="flex h-8 w-8 items-center justify-center rounded-xl text-white/45 transition-all hover:bg-white/10 hover:text-white"
-                title="Restore"
-              >
-                <Minimize2 size={12} />
-              </button>
-              <button
-                onClick={() => window.aether?.closeWindow?.()}
-                className="flex h-8 w-8 items-center justify-center rounded-xl text-white/45 transition-all hover:bg-red-500/20 hover:text-red-300"
-                title="Close"
-              >
-                <X size={12} />
-              </button>
-            </div>
-          )}
-        </div>
-      </header>
-      )}
-
-      <SignalLedgerIsland
-        ref={soundCapsuleRef}
-        getProxyUrl={getProxyUrl}
-        currentTrack={currentTrack}
-        isPlaying={isPlaying}
-        getActivePlaybackPositionMs={getActivePlaybackPositionMs}
-        setLastAdded={setLastAdded}
-      />
-      <GestureLabIsland
-        ref={gestureLabRef}
-        isGestureControlEnabled={isGestureControlEnabled}
-        setIsGestureControlEnabled={setIsGestureControlEnabled}
-        isFaceControlEnabled={isFaceControlEnabled}
-        setIsFaceControlEnabled={setIsFaceControlEnabled}
-        faceControlStatus={faceControlStatus}
-        faceControlSignal={faceControlSignal}
-        cameraHandSignal={cameraHandSignal}
-        sharedModalCloseButtonClass={sharedModalCloseButtonClass}
-      />
-      <FeedbackIsland
-        ref={feedbackRef}
-        platform={platform}
-        isStandalone={isStandalone}
-        currentTrack={currentTrack}
-        getActivePlaybackPositionMs={getActivePlaybackPositionMs}
-        videoMode={videoMode}
-        visualizerMode={visualizerMode}
-        auraPreset={auraPreset}
-        queueLength={queue.length}
-        lyricsCount={lyrics.length}
-        appendRecentEvent={appendRecentEvent}
-        sharedModalCloseButtonClass={sharedModalCloseButtonClass}
-      />
-      <AppLockSettingsIsland
-        ref={appLockSettingsRef}
-        isStandalone={isStandalone}
-        lockStatus={lockStatus}
-        lockIdleMinutes={lockIdleMinutes}
-        setLockIdleMinutes={setLockIdleMinutes}
-        refreshLockStatus={refreshLockStatus}
-        setIsAppLocked={setIsAppLocked}
-        setLastAdded={setLastAdded}
-        sharedModalCloseButtonClass={sharedModalCloseButtonClass}
-      />
-
-      <AnimatePresence>
-        {isSoundCapsuleOpen && soundCapsuleData && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.96 }}
-            className="fixed inset-0 z-[350] overflow-y-auto px-4 py-5 md:px-8 md:py-8"
+        {showWindowsTitleStrip && (
+          <div
+            className="fixed inset-x-0 top-0 z-[260] h-[34px] border-b border-white/8 bg-[#0a0f12]/92 backdrop-blur-3xl drag"
+            onDoubleClick={handleHeaderDoubleClick}
+            title={isStandalone ? 'Double-click header chrome to maximize or restore' : undefined}
           >
-            <div className="absolute inset-0 bg-black/85 backdrop-blur-2xl" onClick={() => setIsSoundCapsuleOpen(false)} />
-            <div className="relative z-10 mx-auto flex min-h-full w-full items-start justify-center">
-              <div className="w-full max-w-[1180px] max-h-[calc(100vh-2.5rem)] glass-card bg-[#090b0f]/96 border border-brand-accent/20 rounded-[2.2rem] overflow-hidden flex flex-col shadow-[0_28px_100px_rgba(0,0,0,0.55)]">
-              <div className="flex items-center justify-between gap-4 p-5 md:p-6 border-b border-white/8 bg-black/25 backdrop-blur-md">
-                <div className="flex items-center gap-4 min-w-0">
-                  <div className="w-11 h-11 rounded-2xl bg-brand-accent/10 border border-brand-accent/25 flex items-center justify-center shrink-0">
-                    <Signal size={18} className="text-brand-accent" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-[9px] font-black uppercase tracking-[0.32em] text-white/30">PLAYBACK INTELLIGENCE</div>
-                    <div className="text-xl md:text-2xl font-black uppercase tracking-tight text-brand-accent truncate">Signal Ledger</div>
-                    <div className="mt-1 text-[10px] font-black uppercase tracking-[0.18em] text-white/34">
-                      {soundLedgerView.activeDays > 0 ? `${soundLedgerView.activeDays} active days • ${soundLedgerView.totalSessions} sessions captured` : 'Listening patterns appear as you play'}
-                    </div>
-                  </div>
-                </div>
-                <button onClick={() => setIsSoundCapsuleOpen(false)} className="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close"><X size={18} /></button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto px-5 pb-5 pt-4 md:px-6 md:pb-6 md:pt-5 lg:px-7 lg:pb-7 lg:pt-6 custom-scrollbar">
-                <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
-                  <div className="xl:col-span-8 flex flex-col gap-5">
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      <div className="glass-card bg-brand-accent/6 border border-brand-accent/20 rounded-[1.6rem] p-5">
-                        <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/38">Listening Time</div>
-                        <div className="mt-4 text-3xl md:text-4xl font-black text-brand-accent">{formatPlaybackDuration(soundLedgerView.totalMs)}</div>
-                        <div className="mt-2 text-[10px] uppercase tracking-[0.18em] text-white/34">Across {soundLedgerView.activeDays || 0} recent active days</div>
-                      </div>
-                      <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.6rem] p-5">
-                        <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/38">Qualified Plays</div>
-                        <div className="mt-4 text-3xl md:text-4xl font-black text-white">{soundLedgerView.totalTracksPlayed}</div>
-                        <div className="mt-2 text-[10px] uppercase tracking-[0.18em] text-white/34">{soundLedgerView.totalSessions} playback sessions tracked</div>
-                      </div>
-                      <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.6rem] p-5">
-                        <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/38">Peak Windows</div>
-                        <div className="mt-4 flex flex-wrap gap-2">
-                          {soundLedgerView.topWindow.length > 0 ? soundLedgerView.topWindow.map((entry) => (
-                            <span key={entry.hour} className="rounded-full border border-brand-accent/18 bg-brand-accent/10 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent">
-                              {entry.label} • {entry.count}
-                            </span>
-                          )) : (
-                            <span className="text-[10px] uppercase tracking-[0.18em] text-white/28">Collecting signal…</span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                      <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Recent Week</div>
-                            <div className="mt-1 text-[11px] text-white/34 uppercase tracking-[0.14em]">Daily listening bars + play counts</div>
-                          </div>
-                          <div className="text-[10px] text-white/30 uppercase tracking-[0.16em]">{Math.round(soundLedgerView.totalMs / 60000)} min total</div>
-                        </div>
-                        <div className="mt-5 grid grid-cols-7 gap-2">
-                          {soundLedgerView.recentWeek.map((entry) => (
-                            <div key={entry.key} className="rounded-[1.3rem] border border-white/8 bg-black/20 px-2 py-3 flex flex-col items-center gap-3">
-                              <div className="h-28 w-full flex items-end justify-center">
-                                <div
-                                  className="w-full max-w-[26px] rounded-full bg-gradient-to-t from-brand-accent via-brand-accent/80 to-white shadow-[0_0_18px_rgba(0,255,191,0.18)]"
-                                  style={{ height: `${entry.minutesMs > 0 ? 18 + ((entry.minutesMs / soundLedgerView.weekMaxMs) * 82) : 12}%` }}
-                                />
-                              </div>
-                              <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/50">{entry.label}</div>
-                              <div className="text-[9px] font-mono text-brand-accent">{Math.round(entry.minutesMs / 60000)}m</div>
-                              <div className="text-[8px] uppercase tracking-[0.16em] text-white/28">{entry.plays}p</div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Hourly Pulse</div>
-                            <div className="mt-1 text-[11px] text-white/34 uppercase tracking-[0.14em]">When you most often press play</div>
-                          </div>
-                          <Signal size={16} className="text-brand-accent/70" />
-                        </div>
-                        <div className="mt-5 grid grid-cols-12 gap-1.5">
-                          {soundLedgerView.peakHours.map((entry) => (
-                            <div key={entry.hour} className="flex flex-col items-center gap-2">
-                              <div className="h-24 w-full flex items-end justify-center">
-                                <div
-                                  className={`w-full rounded-full ${entry.count > 0 ? 'bg-brand-accent/85 shadow-[0_0_14px_rgba(0,255,191,0.14)]' : 'bg-white/[0.06]'}`}
-                                  style={{ height: `${entry.count > 0 ? 12 + ((entry.count / soundLedgerView.peakHourMax) * 88) : 10}%` }}
-                                />
-                              </div>
-                              <div className="text-[8px] font-mono text-white/28">{entry.label}</div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
-                      <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Recent Sessions</div>
-                      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-                        {soundLedgerView.recentSessions.length > 0 ? soundLedgerView.recentSessions.map((session) => (
-                          <div key={session.id} className="rounded-[1.4rem] border border-white/10 bg-black/20 p-3 flex items-center gap-3">
-                            <img src={getProxyUrl(session.thumbnail)} className="w-14 h-14 rounded-xl object-cover bg-white/[0.03]" alt="" />
-                            <div className="min-w-0 flex-1">
-                              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent">
-                                {formatPlaybackDuration(session.playedMs)} • {session.completed ? 'completed' : 'session'}
-                              </div>
-                              <div className="mt-1 text-sm font-black text-white truncate uppercase tracking-tight">{session.title}</div>
-                              <div className="mt-1 text-[10px] uppercase tracking-[0.16em] text-white/35 truncate">{session.author}</div>
-                            </div>
-                          </div>
-                        )) : (
-                          <div className="md:col-span-2 rounded-[1.4rem] border border-dashed border-white/10 bg-black/20 p-5 text-[11px] uppercase tracking-[0.18em] text-white/28">
-                            Finish a couple of real listens and this panel will start showing your latest sessions.
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="xl:col-span-4 flex flex-col gap-4">
-                    <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
-                      <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Top Artists</div>
-                      <div className="mt-4 flex flex-col gap-2.5">
-                        {soundLedgerView.topArtists.length > 0 ? soundLedgerView.topArtists.map(([name, entry], idx) => (
-                          <div key={name} className="rounded-[1.25rem] border border-white/10 bg-black/20 px-3.5 py-3 flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent">#{idx + 1}</div>
-                              <div className="mt-1 text-sm font-black text-white truncate uppercase tracking-tight">{name}</div>
-                            </div>
-                            <div className="text-right">
-                              <div className="text-[10px] font-black uppercase tracking-[0.16em] text-white/48">{entry.count} plays</div>
-                              <div className="mt-1 text-[10px] font-mono text-white/28">{formatPlaybackDuration(entry.totalMs)}</div>
-                            </div>
-                          </div>
-                        )) : (
-                          <div className="rounded-[1.25rem] border border-dashed border-white/10 bg-black/20 p-4 text-[10px] uppercase tracking-[0.18em] text-white/28">
-                            Artist rankings appear after a few qualified sessions.
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
-                      <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Genre Pulse</div>
-                      <div className="mt-4 flex flex-wrap gap-2">
-                        {soundLedgerView.genreMix.length > 0 ? soundLedgerView.genreMix.map(([genre, count]) => (
-                          <span key={genre} className="rounded-full border border-brand-accent/18 bg-brand-accent/10 px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent">
-                            {genre} • {count}
-                          </span>
-                        )) : (
-                          <span className="text-[10px] uppercase tracking-[0.18em] text-white/28">No pattern clusters yet</span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
-                      <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Most Replayed</div>
-                      <div className="mt-4 flex flex-col gap-2.5">
-                        {soundLedgerView.topTracks.length > 0 ? soundLedgerView.topTracks.map(([id, entry], idx) => (
-                          <div key={id} className="rounded-[1.25rem] border border-white/10 bg-black/20 p-3 flex items-center gap-3">
-                            <img src={getProxyUrl(entry.thumbnail)} className="w-12 h-12 rounded-xl object-cover bg-white/[0.03]" alt="" />
-                            <div className="min-w-0 flex-1">
-                              <div className="text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent">#{idx + 1} • {entry.count} plays</div>
-                              <div className="mt-1 text-sm font-black text-white truncate uppercase tracking-tight">{entry.title}</div>
-                              <div className="mt-1 text-[10px] uppercase tracking-[0.16em] text-white/35 truncate">{entry.author}</div>
-                            </div>
-                          </div>
-                        )) : (
-                          <div className="rounded-[1.25rem] border border-dashed border-white/10 bg-black/20 p-4 text-[10px] uppercase tracking-[0.18em] text-white/28">
-                            Repeats land here once a track gets replayed.
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
+            <div className="flex h-full items-center px-4 pr-[140px] select-none">
+              <div className="flex items-center gap-2">
+                <div className="h-1.5 w-1.5 rounded-full bg-brand-accent/65 shadow-[0_0_14px_rgba(0,255,191,0.4)]" />
+                <span className="text-[10px] font-black uppercase tracking-[0.22em] text-white/42">Aether</span>
+                <span className="rounded-full border border-white/10 bg-white/[0.03] px-1.5 py-[1px] text-[7px] font-black uppercase tracking-[0.2em] text-brand-accent/70">
+                  Studio
+                </span>
               </div>
             </div>
           </div>
-          </motion.div>
         )}
-      </AnimatePresence>
 
-      <AnimatePresence>
-        {isShortcutSettingsOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[340] flex items-start justify-center p-4 pt-6 md:items-center md:pt-4"
-            onClick={closeShortcutSettings}
-          >
-            <div className="absolute inset-0 bg-black/85 backdrop-blur-md" />
-            <motion.div
-              initial={{ scale: 0.96, y: 14 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.96, y: 10 }}
-              className="relative z-10 flex w-[min(96vw,920px)] max-h-[min(92vh,calc(100vh-2rem))] flex-col overflow-hidden rounded-[2rem] border border-brand-accent/25 bg-[#090b0f]/95 shadow-[0_0_90px_rgba(0,255,191,0.15)]"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-start justify-between gap-4 border-b border-white/10 bg-black/20 px-5 py-5 md:px-6 md:py-6">
-                <div>
-                  <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/35">Settings</div>
-                  <div className="text-2xl md:text-3xl font-black text-brand-accent uppercase tracking-tight">Shortcut Settings</div>
-                  <div className="text-white/55 mt-2 text-sm">Use formats like <span className="text-brand-accent">Mod+Alt+Space</span>, <span className="text-brand-accent">Shift+M</span>, <span className="text-brand-accent">D</span>.</div>
+        {/* Neural Dynamic Backdrop (NOVA */}
+        <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
+          <AnimatePresence mode="wait">
+            {currentTrack?.thumbnail ? (
+              <motion.div
+                key={currentTrack.thumbnail}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 0.15 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 2 }}
+                className="absolute inset-0 bg-center bg-cover scale-110 blur-[120px]"
+                style={{ backgroundImage: `url(${getProxyUrl(currentTrack.thumbnail)})` }}
+              />
+            ) : (
+              <motion.div
+                key="standby-backdrop"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 0.05 }}
+                exit={{ opacity: 0 }}
+                className="absolute inset-0 bg-gradient-to-br from-brand-accent/20 via-transparent to-brand-accent/10 blur-[150px]"
+              />
+            )}
+          </AnimatePresence>
+          <div className={`absolute inset-0 ${isAuraMode ? 'bg-brand-dark/10' : 'bg-brand-dark/20'}`} />
+          <div className={`absolute inset-0 ${isAuraMode ? 'bg-[radial-gradient(circle_at_center,transparent_30%,rgba(0,0,0,0.30)_100%)]' : 'bg-[radial-gradient(circle_at_center,transparent_25%,rgba(0,0,0,0.38)_100%)]'}`} />
+        </div>
+
+        <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
+          <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-brand-accent/5 blur-[100px] rounded-full animate-pulse-glow" />
+          <div className="absolute bottom-[-5%] right-[-5%] w-[40%] h-[40%] bg-brand-accent/10 blur-[80px] rounded-full animate-pulse-glow" style={{ animationDelay: '2s' }} />
+        </div>
+
+        {isDoodleMode && (
+          <div className="fixed inset-0 pointer-events-none overflow-hidden z-[-1] doodle-cloud-layer doodle-bg-layer">
+            <div className="doodle-soft-blob doodle-soft-blob-a" />
+            <div className="doodle-soft-blob doodle-soft-blob-b" />
+            <div className="doodle-soft-blob doodle-soft-blob-c" />
+            <img src={catDoodlePeek} alt="doodle" className="absolute top-[10%] left-[-16vw] w-[70px] doodle-fly doodle-glide-a" style={{ opacity: Math.min(0.38, 0.2 * doodleIntensityScale), animationDelay: '-7s' }} draggable={false} />
+            <img src={catDoodlePeek} alt="doodle" className="absolute top-[26%] left-[-16vw] w-[58px] doodle-fly doodle-glide-b" style={{ opacity: Math.min(0.34, 0.18 * doodleIntensityScale), animationDelay: '-13s', transform: 'scaleX(-1)' }} draggable={false} />
+            <img src={catDoodlePeek} alt="doodle" className="absolute top-[42%] left-[-16vw] w-[64px] doodle-fly doodle-glide-c" style={{ opacity: Math.min(0.36, 0.19 * doodleIntensityScale), animationDelay: '-3s' }} draggable={false} />
+            <img src={catDoodlePeek} alt="doodle" className="absolute top-[58%] left-[-16vw] w-[60px] doodle-fly doodle-glide-a" style={{ opacity: Math.min(0.34, 0.17 * doodleIntensityScale), animationDelay: '-18s', transform: 'scaleX(-1)' }} draggable={false} />
+            <img src={catDoodlePeek} alt="doodle" className="absolute top-[74%] left-[-16vw] w-[68px] doodle-fly doodle-glide-b" style={{ opacity: Math.min(0.36, 0.2 * doodleIntensityScale), animationDelay: '-23s' }} draggable={false} />
+            <img src={catDoodlePeek} alt="doodle" className="absolute top-[88%] left-[-16vw] w-[62px] doodle-fly doodle-glide-c" style={{ opacity: Math.min(0.33, 0.17 * doodleIntensityScale), animationDelay: '-29s', transform: 'scaleX(-1)' }} draggable={false} />
+          </div>
+        )}
+
+        {/* AURA MODE: Full-screen aura field */}
+        {isAuraMode && (
+          <div className={`aura-field fixed pointer-events-none overflow-hidden z-[-1] ${isMacPlatform ? 'inset-0 top-7' : 'inset-0'}`}>
+            <div className="aura-field-tone aura-field-tone-left" style={{ opacity: 'calc(var(--aura-field-flare, 0) * 0.52)' }} />
+            <div className="aura-field-tone aura-field-tone-right" style={{ opacity: 'calc(var(--aura-field-flare, 0) * 0.48)' }} />
+            <div className="aura-field-core aura-field-core-a" style={{ opacity: 'var(--aura-field-boost, 0)' }} />
+            <div className="aura-field-core aura-field-core-b" style={{ opacity: 'calc(var(--aura-field-boost, 0) * 0.82)' }} />
+            <div className="aura-field-ribbon aura-field-ribbon-a" style={{ opacity: 'var(--aura-field-flare, 0)' }} />
+            <div className="aura-field-ribbon aura-field-ribbon-b" style={{ opacity: 'calc(var(--aura-field-flare, 0) * 0.92)' }} />
+            <div className="aura-field-orbits">
+              {[
+                ['18%', '12%', '7s', '1.2s', '16px'],
+                ['72%', '16%', '9s', '3.4s', '12px'],
+                ['48%', '78%', '11s', '0s', '22px'],
+                ['12%', '68%', '13s', '2.2s', '10px'],
+                ['86%', '58%', '10s', '4.1s', '14px'],
+              ].map(([left, top, duration, delay, size], index) => (
+                <span
+                  key={`aura-orbit-${index}`}
+                  className="aura-field-orbit"
+                  style={{ left, top, width: size, height: size, animationDuration: duration, animationDelay: delay }}
+                />
+              ))}
+            </div>
+            <div className="aura-field-particles">
+              {[
+                ['9%', '18%', '12s', '0s'],
+                ['24%', '72%', '14s', '2.5s'],
+                ['41%', '24%', '11s', '1.1s'],
+                ['58%', '66%', '16s', '4s'],
+                ['77%', '32%', '13s', '3.1s'],
+                ['91%', '78%', '18s', '0.7s'],
+              ].map(([left, top, duration, delay], index) => (
+                <span
+                  key={`aura-particle-${index}`}
+                  className="aura-field-particle"
+                  style={{ left, top, animationDuration: duration, animationDelay: delay }}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* APP HEADER */}
+        {!showImmersiveLyricsOverlay && (
+          <header className={topHeaderClass} onDoubleClick={handleHeaderDoubleClick} title={isStandalone ? 'Double-click the header background to maximize or restore' : undefined}>
+            <div className="flex min-w-0 items-center gap-3 lg:min-w-[220px]">
+              <div className="relative flex h-11 w-11 items-center justify-center overflow-hidden rounded-[1.35rem] border border-brand-accent/25 bg-white/[0.04] shadow-[0_0_28px_rgba(0,255,191,0.08)]">
+                <img src="aether-logo.png" alt="Aether" className="h-6 w-6 object-contain" onError={(e) => e.target.src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiMwMGZmYmYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cG9seWdvbiBwb2ludHM9IjEzIDIgMyAxNCAxMiAxNCAxMSAyMiAyMSAxMCAxMiAxMCAxMyAyIj48L3BvbHlnb24+PC9zdmc+'} />
+                <div className="absolute inset-0 bg-brand-accent/6 opacity-70" />
+              </div>
+
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-black uppercase tracking-[0.08em] text-white/92">Aether</span>
+                  <span className="rounded-full border border-brand-accent/30 bg-brand-accent/10 px-1.5 py-[2px] text-[7px] font-black uppercase tracking-[0.18em] text-brand-accent/80">
+                    {BUILD_VERSION}
+                  </span>
+                  <span className="rounded-full border border-white/10 bg-white/[0.035] px-1.5 py-[2px] text-[7px] font-black uppercase tracking-[0.16em] text-white/55">
+                    v{APP_VERSION}
+                  </span>
                 </div>
-                <button onClick={closeShortcutSettings} className="w-10 h-10 rounded-xl border border-white/15 bg-white/[0.03] text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close shortcut settings">
-                  <X size={16} />
+                <div className="mt-1 flex min-w-0 items-center gap-2 text-[8px] font-black uppercase tracking-[0.22em] text-white/38">
+                  <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-white/52">{workspaceModeLabel}</span>
+                  <span className="truncate text-brand-accent/70">{playbackModeLabel}</span>
+                </div>
+              </div>
+            </div>
+
+            <HeaderVisualControls
+              ref={headerControlsRef}
+              headerIconButtonClass={headerIconButtonClass}
+              headerAccentButtonClass={headerAccentButtonClass}
+              isGestureControlEnabled={isGestureControlEnabled}
+              openFeedbackPanel={openFeedbackPanel}
+              openGestureLab={openGestureLab}
+              openSignalLedger={openSignalLedger}
+              setVisualizerMode={setVisualizerMode}
+              visualizerMode={visualizerMode}
+              auraPreset={auraPreset}
+              setAuraPreset={setAuraPreset}
+              isDepthMotionEnabled={isDepthMotionEnabled}
+              setIsDepthMotionEnabled={setIsDepthMotionEnabled}
+              isDoodleMode={isDoodleMode}
+              setIsDoodleMode={setIsDoodleMode}
+              doodleIntensity={doodleIntensity}
+              setDoodleIntensity={setDoodleIntensity}
+              doodleIntensityBadge={doodleIntensityBadge}
+              setIsAuraStageOpen={setIsAuraStageOpen}
+              toggleDiagnostics={toggleDiagnostics}
+              isDiagnosticsOpen={isDiagnosticsOpen}
+              setLastAdded={setLastAdded}
+              shortcuts={shortcuts}
+              setShortcuts={setShortcuts}
+              isMacPlatform={isMacPlatform}
+              isStandalone={isStandalone}
+              globalMediaShortcutsEnabled={globalMediaShortcutsEnabled}
+              setGlobalMediaShortcutsEnabled={setGlobalMediaShortcutsEnabled}
+              performanceMode={performanceMode}
+              setPerformanceMode={setPerformanceMode}
+              onSurfaceOpen={(surface) => closeHeaderSurfaces(surface)}
+            />
+            <div className="order-3 flex w-full justify-center ultra-compact-hide no-drag md:order-2 md:flex-1 md:max-w-[900px] md:px-4 lg:px-6" data-no-maximize="true">
+              <HeaderSearchBox
+                searchQuery={searchQuery}
+                isSearching={isSearching}
+                hasActiveSearchState={hasActiveSearchState}
+                isAuraMode={isAuraMode}
+                disabled={videoMode === 'dual'}
+                onSearch={handleSearch}
+                onClear={() => {
+                  setSearchQuery('');
+                  clearDiscoveryResults();
+                }}
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 min-w-fit order-3 no-drag" data-no-maximize="true">
+              <HeaderSleepTimerControls
+                ref={sleepTimerControlsRef}
+                headerIconButtonClass={headerIconButtonClass}
+                sleepTimerValue={sleepTimerValue}
+                stopAfterTrack={stopAfterTrack}
+                sleepRemainingStr={sleepRemainingStr}
+                sleepDeadline={sleepDeadline}
+                handleSetSleepTimer={handleSetSleepTimer}
+                sleepCustomMinutes={sleepCustomMinutes}
+                setSleepCustomMinutes={setSleepCustomMinutes}
+                setStopAfterTrack={setStopAfterTrack}
+                sleepFadeEnabled={sleepFadeEnabled}
+                setSleepFadeEnabled={setSleepFadeEnabled}
+                onSurfaceOpen={() => closeHeaderSurfaces('sleep')}
+              />
+              <div className={`hidden md:flex items-center gap-1 rounded-[1.15rem] border p-1 no-drag ${isDualLayoutLocked ? 'border-white/8 bg-white/[0.03]' : 'border-white/12 bg-white/[0.04]'}`} title={isDualLayoutLocked ? 'Layout switching is unavailable while Dual View is active' : 'Workspace layout'}>
+                <button
+                  onClick={() => setIsVerticalStack(false)}
+                  disabled={isDualLayoutLocked}
+                  className={`rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${!isVerticalStack ? 'bg-brand-accent text-black shadow-[0_0_16px_rgba(0,255,191,0.28)]' : isDualLayoutLocked ? 'text-white/20 cursor-not-allowed' : 'text-white/45 hover:text-brand-accent'}`}
+                >
+                  Studio
+                </button>
+                <button
+                  onClick={() => setIsVerticalStack(true)}
+                  disabled={isDualLayoutLocked}
+                  className={`rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${isVerticalStack ? 'bg-brand-accent text-black shadow-[0_0_16px_rgba(0,255,191,0.28)]' : isDualLayoutLocked ? 'text-white/20 cursor-not-allowed' : 'text-white/45 hover:text-brand-accent'}`}
+                >
+                  Stack
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto px-5 py-4 md:px-6 md:py-5 custom-scrollbar-heavy">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {SHORTCUT_FIELDS.map((field) => (
-                    <label key={field.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-white/75 text-sm">
-                      <div className="text-[11px] uppercase tracking-[0.2em] text-white/50 mb-2">{field.label}</div>
-                      <input
-                        value={shortcutDraft[field.id] || ''}
-                        onChange={(e) => {
-                          const value = e.target.value;
-                          setShortcutSettingsError('');
-                          setShortcutDraft((prev) => ({ ...prev, [field.id]: value }));
-                        }}
-                        className="w-full rounded-xl border border-white/15 bg-black/30 px-3 py-2 text-white outline-none focus:border-brand-accent/50"
-                        placeholder="Mod+Alt+Space"
-                      />
-                      <div className="mt-1 text-[11px] text-white/40">Current: {toReadableShortcut(shortcuts[field.id], isMacPlatform)}</div>
-                    </label>
-                  ))}
-                </div>
+              {isStandalone && (
+                <button
+                  onClick={() => {
+                    runAfterInputPaint(() => {
+                      closeHeaderSurfaces('lock');
+                      appLockSettingsRef.current?.open();
+                    });
+                  }}
+                  className={`${headerIconButtonClass} ${lockStatus.enabled ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`}
+                  title="App Lock"
+                >
+                  <Lock size={16} />
+                </button>
+              )}
 
-                <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                  <label className="flex items-start gap-3 text-sm text-white/75">
-                    <input
-                      type="checkbox"
-                      checked={globalMediaShortcutsEnabled}
-                      onChange={(e) => setGlobalMediaShortcutsEnabled(e.target.checked)}
-                      className="mt-0.5 w-4 h-4 accent-brand-accent"
-                    />
-                    <span>
-                      Enable global media shortcuts (play/pause, next, previous)
-                      <span className="block text-[11px] text-white/45 mt-1">This affects system-wide key capture and may conflict with OS/app controls. Restart app after change.</span>
-                    </span>
-                  </label>
+              {showWindowsHeaderWindowControls && (
+                <div className="ml-1 flex items-center gap-1 rounded-2xl border border-white/10 bg-white/[0.04] p-1 no-drag">
+                  <button
+                    onClick={() => window.aether?.minimize?.()}
+                    className="flex h-8 w-8 items-center justify-center rounded-xl text-white/45 transition-all hover:bg-white/10 hover:text-white"
+                    title="Minimize"
+                  >
+                    <span className="translate-y-[-1px] text-sm leading-none">-</span>
+                  </button>
+                  <button
+                    onClick={toggleWindowMaximize}
+                    className="flex h-8 w-8 items-center justify-center rounded-xl text-white/45 transition-all hover:bg-white/10 hover:text-white"
+                    title="Restore"
+                  >
+                    <Minimize2 size={12} />
+                  </button>
+                  <button
+                    onClick={() => window.aether?.closeWindow?.()}
+                    className="flex h-8 w-8 items-center justify-center rounded-xl text-white/45 transition-all hover:bg-red-500/20 hover:text-red-300"
+                    title="Close"
+                  >
+                    <X size={12} />
+                  </button>
                 </div>
+              )}
+            </div>
+          </header>
+        )}
 
-                {shortcutSettingsError && (
-                  <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-                    {shortcutSettingsError}
+        <SignalLedgerIsland
+          ref={soundCapsuleRef}
+          getProxyUrl={getProxyUrl}
+          currentTrack={currentTrack}
+          isPlaying={isPlaying}
+          getActivePlaybackPositionMs={getActivePlaybackPositionMs}
+          setLastAdded={setLastAdded}
+        />
+        <GestureLabIsland
+          ref={gestureLabRef}
+          isGestureControlEnabled={isGestureControlEnabled}
+          setIsGestureControlEnabled={setIsGestureControlEnabled}
+          isFaceControlEnabled={isFaceControlEnabled}
+          setIsFaceControlEnabled={setIsFaceControlEnabled}
+          faceControlStatus={faceControlStatus}
+          faceControlSignal={faceControlSignal}
+          cameraHandSignal={cameraHandSignal}
+          sharedModalCloseButtonClass={sharedModalCloseButtonClass}
+        />
+        <FeedbackIsland
+          ref={feedbackRef}
+          platform={platform}
+          isStandalone={isStandalone}
+          currentTrack={currentTrack}
+          getActivePlaybackPositionMs={getActivePlaybackPositionMs}
+          videoMode={videoMode}
+          visualizerMode={visualizerMode}
+          auraPreset={auraPreset}
+          queueLength={queue.length}
+          lyricsCount={lyrics.length}
+          appendRecentEvent={appendRecentEvent}
+          sharedModalCloseButtonClass={sharedModalCloseButtonClass}
+        />
+        <AppLockSettingsIsland
+          ref={appLockSettingsRef}
+          isStandalone={isStandalone}
+          lockStatus={lockStatus}
+          lockIdleMinutes={lockIdleMinutes}
+          setLockIdleMinutes={setLockIdleMinutes}
+          refreshLockStatus={refreshLockStatus}
+          setIsAppLocked={setIsAppLocked}
+          setLastAdded={setLastAdded}
+          sharedModalCloseButtonClass={sharedModalCloseButtonClass}
+        />
+
+        <AnimatePresence>
+          {isSoundCapsuleOpen && soundCapsuleData && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.96 }}
+              className="fixed inset-0 z-[350] overflow-y-auto px-4 py-5 md:px-8 md:py-8"
+            >
+              <div className="absolute inset-0 bg-black/85 backdrop-blur-2xl" onClick={() => setIsSoundCapsuleOpen(false)} />
+              <div className="relative z-10 mx-auto flex min-h-full w-full items-start justify-center">
+                <div className="w-full max-w-[1180px] max-h-[calc(100vh-2.5rem)] glass-card bg-[#090b0f]/96 border border-brand-accent/20 rounded-[2.2rem] overflow-hidden flex flex-col shadow-[0_28px_100px_rgba(0,0,0,0.55)]">
+                  <div className="flex items-center justify-between gap-4 p-5 md:p-6 border-b border-white/8 bg-black/25 backdrop-blur-md">
+                    <div className="flex items-center gap-4 min-w-0">
+                      <div className="w-11 h-11 rounded-2xl bg-brand-accent/10 border border-brand-accent/25 flex items-center justify-center shrink-0">
+                        <Signal size={18} className="text-brand-accent" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[9px] font-black uppercase tracking-[0.32em] text-white/30">PLAYBACK INTELLIGENCE</div>
+                        <div className="text-xl md:text-2xl font-black uppercase tracking-tight text-brand-accent truncate">Signal Ledger</div>
+                        <div className="mt-1 text-[10px] font-black uppercase tracking-[0.18em] text-white/34">
+                          {soundLedgerView.activeDays > 0 ? `${soundLedgerView.activeDays} active days • ${soundLedgerView.totalSessions} sessions captured` : 'Listening patterns appear as you play'}
+                        </div>
+                      </div>
+                    </div>
+                    <button onClick={() => setIsSoundCapsuleOpen(false)} className="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close"><X size={18} /></button>
                   </div>
+
+                  <div className="flex-1 overflow-y-auto px-5 pb-5 pt-4 md:px-6 md:pb-6 md:pt-5 lg:px-7 lg:pb-7 lg:pt-6 custom-scrollbar">
+                    <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
+                      <div className="xl:col-span-8 flex flex-col gap-5">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          <div className="glass-card bg-brand-accent/6 border border-brand-accent/20 rounded-[1.6rem] p-5">
+                            <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/38">Listening Time</div>
+                            <div className="mt-4 text-3xl md:text-4xl font-black text-brand-accent">{formatPlaybackDuration(soundLedgerView.totalMs)}</div>
+                            <div className="mt-2 text-[10px] uppercase tracking-[0.18em] text-white/34">Across {soundLedgerView.activeDays || 0} recent active days</div>
+                          </div>
+                          <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.6rem] p-5">
+                            <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/38">Qualified Plays</div>
+                            <div className="mt-4 text-3xl md:text-4xl font-black text-white">{soundLedgerView.totalTracksPlayed}</div>
+                            <div className="mt-2 text-[10px] uppercase tracking-[0.18em] text-white/34">{soundLedgerView.totalSessions} playback sessions tracked</div>
+                          </div>
+                          <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.6rem] p-5">
+                            <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/38">Peak Windows</div>
+                            <div className="mt-4 flex flex-wrap gap-2">
+                              {soundLedgerView.topWindow.length > 0 ? soundLedgerView.topWindow.map((entry) => (
+                                <span key={entry.hour} className="rounded-full border border-brand-accent/18 bg-brand-accent/10 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent">
+                                  {entry.label} • {entry.count}
+                                </span>
+                              )) : (
+                                <span className="text-[10px] uppercase tracking-[0.18em] text-white/28">Collecting signal…</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                          <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Recent Week</div>
+                                <div className="mt-1 text-[11px] text-white/34 uppercase tracking-[0.14em]">Daily listening bars + play counts</div>
+                              </div>
+                              <div className="text-[10px] text-white/30 uppercase tracking-[0.16em]">{Math.round(soundLedgerView.totalMs / 60000)} min total</div>
+                            </div>
+                            <div className="mt-5 grid grid-cols-7 gap-2">
+                              {soundLedgerView.recentWeek.map((entry) => (
+                                <div key={entry.key} className="rounded-[1.3rem] border border-white/8 bg-black/20 px-2 py-3 flex flex-col items-center gap-3">
+                                  <div className="h-28 w-full flex items-end justify-center">
+                                    <div
+                                      className="w-full max-w-[26px] rounded-full bg-gradient-to-t from-brand-accent via-brand-accent/80 to-white shadow-[0_0_18px_rgba(0,255,191,0.18)]"
+                                      style={{ height: `${entry.minutesMs > 0 ? 18 + ((entry.minutesMs / soundLedgerView.weekMaxMs) * 82) : 12}%` }}
+                                    />
+                                  </div>
+                                  <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/50">{entry.label}</div>
+                                  <div className="text-[9px] font-mono text-brand-accent">{Math.round(entry.minutesMs / 60000)}m</div>
+                                  <div className="text-[8px] uppercase tracking-[0.16em] text-white/28">{entry.plays}p</div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Hourly Pulse</div>
+                                <div className="mt-1 text-[11px] text-white/34 uppercase tracking-[0.14em]">When you most often press play</div>
+                              </div>
+                              <Signal size={16} className="text-brand-accent/70" />
+                            </div>
+                            <div className="mt-5 grid grid-cols-12 gap-1.5">
+                              {soundLedgerView.peakHours.map((entry) => (
+                                <div key={entry.hour} className="flex flex-col items-center gap-2">
+                                  <div className="h-24 w-full flex items-end justify-center">
+                                    <div
+                                      className={`w-full rounded-full ${entry.count > 0 ? 'bg-brand-accent/85 shadow-[0_0_14px_rgba(0,255,191,0.14)]' : 'bg-white/[0.06]'}`}
+                                      style={{ height: `${entry.count > 0 ? 12 + ((entry.count / soundLedgerView.peakHourMax) * 88) : 10}%` }}
+                                    />
+                                  </div>
+                                  <div className="text-[8px] font-mono text-white/28">{entry.label}</div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
+                          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Recent Sessions</div>
+                          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {soundLedgerView.recentSessions.length > 0 ? soundLedgerView.recentSessions.map((session) => (
+                              <div key={session.id} className="rounded-[1.4rem] border border-white/10 bg-black/20 p-3 flex items-center gap-3">
+                                <img src={getProxyUrl(session.thumbnail)} className="w-14 h-14 rounded-xl object-cover bg-white/[0.03]" alt="" />
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent">
+                                    {formatPlaybackDuration(session.playedMs)} • {session.completed ? 'completed' : 'session'}
+                                  </div>
+                                  <div className="mt-1 text-sm font-black text-white truncate uppercase tracking-tight">{session.title}</div>
+                                  <div className="mt-1 text-[10px] uppercase tracking-[0.16em] text-white/35 truncate">{session.author}</div>
+                                </div>
+                              </div>
+                            )) : (
+                              <div className="md:col-span-2 rounded-[1.4rem] border border-dashed border-white/10 bg-black/20 p-5 text-[11px] uppercase tracking-[0.18em] text-white/28">
+                                Finish a couple of real listens and this panel will start showing your latest sessions.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="xl:col-span-4 flex flex-col gap-4">
+                        <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
+                          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Top Artists</div>
+                          <div className="mt-4 flex flex-col gap-2.5">
+                            {soundLedgerView.topArtists.length > 0 ? soundLedgerView.topArtists.map(([name, entry], idx) => (
+                              <div key={name} className="rounded-[1.25rem] border border-white/10 bg-black/20 px-3.5 py-3 flex items-center justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent">#{idx + 1}</div>
+                                  <div className="mt-1 text-sm font-black text-white truncate uppercase tracking-tight">{name}</div>
+                                </div>
+                                <div className="text-right">
+                                  <div className="text-[10px] font-black uppercase tracking-[0.16em] text-white/48">{entry.count} plays</div>
+                                  <div className="mt-1 text-[10px] font-mono text-white/28">{formatPlaybackDuration(entry.totalMs)}</div>
+                                </div>
+                              </div>
+                            )) : (
+                              <div className="rounded-[1.25rem] border border-dashed border-white/10 bg-black/20 p-4 text-[10px] uppercase tracking-[0.18em] text-white/28">
+                                Artist rankings appear after a few qualified sessions.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
+                          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Genre Pulse</div>
+                          <div className="mt-4 flex flex-wrap gap-2">
+                            {soundLedgerView.genreMix.length > 0 ? soundLedgerView.genreMix.map(([genre, count]) => (
+                              <span key={genre} className="rounded-full border border-brand-accent/18 bg-brand-accent/10 px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent">
+                                {genre} • {count}
+                              </span>
+                            )) : (
+                              <span className="text-[10px] uppercase tracking-[0.18em] text-white/28">No pattern clusters yet</span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
+                          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Most Replayed</div>
+                          <div className="mt-4 flex flex-col gap-2.5">
+                            {soundLedgerView.topTracks.length > 0 ? soundLedgerView.topTracks.map(([id, entry], idx) => (
+                              <div key={id} className="rounded-[1.25rem] border border-white/10 bg-black/20 p-3 flex items-center gap-3">
+                                <img src={getProxyUrl(entry.thumbnail)} className="w-12 h-12 rounded-xl object-cover bg-white/[0.03]" alt="" />
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent">#{idx + 1} • {entry.count} plays</div>
+                                  <div className="mt-1 text-sm font-black text-white truncate uppercase tracking-tight">{entry.title}</div>
+                                  <div className="mt-1 text-[10px] uppercase tracking-[0.16em] text-white/35 truncate">{entry.author}</div>
+                                </div>
+                              </div>
+                            )) : (
+                              <div className="rounded-[1.25rem] border border-dashed border-white/10 bg-black/20 p-4 text-[10px] uppercase tracking-[0.18em] text-white/28">
+                                Repeats land here once a track gets replayed.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {isShortcutSettingsOpen && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[340] flex items-start justify-center p-4 pt-6 md:items-center md:pt-4"
+              onClick={closeShortcutSettings}
+            >
+              <div className="absolute inset-0 bg-black/85 backdrop-blur-md" />
+              <motion.div
+                initial={{ scale: 0.96, y: 14 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.96, y: 10 }}
+                className="relative z-10 flex w-[min(96vw,920px)] max-h-[min(92vh,calc(100vh-2rem))] flex-col overflow-hidden rounded-[2rem] border border-brand-accent/25 bg-[#090b0f]/95 shadow-[0_0_90px_rgba(0,255,191,0.15)]"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-start justify-between gap-4 border-b border-white/10 bg-black/20 px-5 py-5 md:px-6 md:py-6">
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/35">Settings</div>
+                    <div className="text-2xl md:text-3xl font-black text-brand-accent uppercase tracking-tight">Shortcut Settings</div>
+                    <div className="text-white/55 mt-2 text-sm">Use formats like <span className="text-brand-accent">Mod+Alt+Space</span>, <span className="text-brand-accent">Shift+M</span>, <span className="text-brand-accent">D</span>.</div>
+                  </div>
+                  <button onClick={closeShortcutSettings} className="w-10 h-10 rounded-xl border border-white/15 bg-white/[0.03] text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close shortcut settings">
+                    <X size={16} />
+                  </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto px-5 py-4 md:px-6 md:py-5 custom-scrollbar-heavy">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {SHORTCUT_FIELDS.map((field) => (
+                      <label key={field.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-white/75 text-sm">
+                        <div className="text-[11px] uppercase tracking-[0.2em] text-white/50 mb-2">{field.label}</div>
+                        <input
+                          value={shortcutDraft[field.id] || ''}
+                          onChange={(e) => {
+                            const value = e.target.value;
+                            setShortcutSettingsError('');
+                            setShortcutDraft((prev) => ({ ...prev, [field.id]: value }));
+                          }}
+                          className="w-full rounded-xl border border-white/15 bg-black/30 px-3 py-2 text-white outline-none focus:border-brand-accent/50"
+                          placeholder="Mod+Alt+Space"
+                        />
+                        <div className="mt-1 text-[11px] text-white/40">Current: {toReadableShortcut(shortcuts[field.id], isMacPlatform)}</div>
+                      </label>
+                    ))}
+                  </div>
+
+                  <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                    <label className="flex items-start gap-3 text-sm text-white/75">
+                      <input
+                        type="checkbox"
+                        checked={globalMediaShortcutsEnabled}
+                        onChange={(e) => setGlobalMediaShortcutsEnabled(e.target.checked)}
+                        className="mt-0.5 w-4 h-4 accent-brand-accent"
+                      />
+                      <span>
+                        Enable global media shortcuts (play/pause, next, previous)
+                        <span className="block text-[11px] text-white/45 mt-1">This affects system-wide key capture and may conflict with OS/app controls. Restart app after change.</span>
+                      </span>
+                    </label>
+                  </div>
+
+                  {shortcutSettingsError && (
+                    <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                      {shortcutSettingsError}
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between gap-3 flex-wrap border-t border-white/10 bg-black/20 px-5 py-4 md:px-6 md:py-5">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={resetShortcutSettingsToDefaults}
+                      className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
+                    >
+                      Reset to Defaults
+                    </button>
+                    <button
+                      onClick={() => {
+                        closeShortcutSettings();
+                        setTimeout(() => openTipsOverlay(), 0);
+                      }}
+                      className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
+                    >
+                      Open Guide
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={closeShortcutSettings}
+                      className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={saveShortcutSettings}
+                      className="px-4 py-2 rounded-xl border border-brand-accent/35 bg-brand-accent/10 text-brand-accent hover:bg-brand-accent/20 transition-all"
+                    >
+                      Save
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {isTipsOverlayOpen && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[310] flex items-center justify-center p-4"
+              onClick={closeTipsOverlay}
+            >
+              <div className="absolute inset-0 bg-black/85 backdrop-blur-md" />
+              <motion.div
+                initial={{ scale: 0.96, y: 14 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.96, y: 10 }}
+                className="relative z-10 w-[min(94vw,860px)] max-h-[88vh] overflow-y-auto rounded-3xl border border-brand-accent/25 bg-[#090b0f]/95 p-5 md:p-7 shadow-[0_0_90px_rgba(0,255,191,0.15)]"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/35">First-run Guide</div>
+                    <div className="text-2xl md:text-3xl font-black text-brand-accent uppercase tracking-tight">Welcome to Aether</div>
+                    <div className="text-white/55 mt-2 text-sm">Quick controls and feature map so you can use everything in under a minute.</div>
+                  </div>
+                  <button onClick={closeTipsOverlay} className="w-10 h-10 rounded-xl border border-white/15 bg-white/[0.03] text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close tips">
+                    <X size={16} />
+                  </button>
+                </div>
+
+                <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Command Shortcuts</div>
+                    <ul className="mt-3 space-y-2 text-white/75">
+                      <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.playPause, isMacPlatform)}</span> — Play / Pause</li>
+                      <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.previous, isMacPlatform)}</span> — Previous</li>
+                      <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.next, isMacPlatform)}</span> — Next</li>
+                      <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.volumeUp, isMacPlatform)}</span> — Volume up</li>
+                      <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.volumeDown, isMacPlatform)}</span> — Volume down</li>
+                      <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.mute, isMacPlatform)}</span> — Mute / Unmute</li>
+                      <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.clearQueue, isMacPlatform)}</span> — Clear queue</li>
+                      <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.focusMode, isMacPlatform)}</span> — Toggle focus view</li>
+                      <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.miniPlayer, isMacPlatform)}</span> — Toggle mini player</li>
+                      <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.diagnostics, isMacPlatform)}</span> — Open diagnostics panel</li>
+                    </ul>
+                    <div className="mt-3 text-[11px] text-white/45">Tip: media keys may be managed by your OS. App shortcuts above always work while Aether is focused.</div>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Main Buttons</div>
+                    <ul className="mt-3 space-y-2 text-white/75">
+                      <li><span className="text-brand-accent font-black">Search bar</span> — find songs quickly</li>
+                      <li><span className="text-brand-accent font-black">Studio / Stack</span> — switch workspace layout</li>
+                      <li><span className="text-brand-accent font-black">Focus</span> — hide side panels for a cleaner stage</li>
+                      <li><span className="text-brand-accent font-black">Diagnostics</span> — debug network/playback issues</li>
+                      <li><span className="text-brand-accent font-black">Vault overlay</span> — save/import/export playlists</li>
+                      <li><span className="text-brand-accent font-black">Smart Mix</span> — generate instant context playlist</li>
+                      <li><span className="text-brand-accent font-black">Sleep Timer</span> — auto-stop playback later</li>
+                    </ul>
+                  </div>
+                </div>
+
+                <label className="mt-5 flex items-center gap-3 text-sm text-white/70 select-none cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={tipsDontShowAgain}
+                    onChange={(e) => setTipsDontShowAgain(e.checked)}
+                    className="w-4 h-4 accent-brand-accent"
+                  />
+                  Don’t show this again on app startup
+                </label>
+
+                <div className="mt-4 flex items-center justify-end gap-2">
+                  <button
+                    onClick={() => {
+                      closeTipsOverlay();
+                      openShortcutSettings();
+                    }}
+                    className="px-4 py-2 rounded-xl border border-brand-accent/35 bg-brand-accent/10 text-brand-accent hover:bg-brand-accent/20 transition-all"
+                  >
+                    Customize Shortcuts
+                  </button>
+                  <button
+                    onClick={closeTipsOverlay}
+                    className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
+                  >
+                    Got it
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {isDiagnosticsOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: -8, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -6, scale: 0.98 }}
+              className="fixed right-4 md:right-6 z-[240] w-[min(92vw,420px)] overflow-y-auto custom-scrollbar glass-card bg-[#07090c]/90 border border-white/10 backdrop-blur-2xl rounded-3xl p-4 md:p-5 shadow-[0_20px_60px_rgba(0,0,0,0.45)]"
+              style={{ top: diagnosticsTopOffset, maxHeight: `calc(100vh - ${diagnosticsTopOffset + 16}px)` }}
+            >
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-[10px] tracking-[0.24em] uppercase font-black text-brand-accent">Diagnostics</div>
+                <button onClick={() => setIsDiagnosticsOpen(false)} className="text-white/40 hover:text-brand-accent transition-colors">
+                  <X size={14} />
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2 mb-3">
+                <button
+                  onClick={handleResetPlaybackEngine}
+                  className="px-3 py-1.5 rounded-xl border border-brand-accent/30 bg-brand-accent/10 text-brand-accent text-[10px] font-black uppercase tracking-[0.16em] hover:bg-brand-accent/20 transition-all"
+                >
+                  Reset Engine
+                </button>
+                {isStandalone && (
+                  <button
+                    onClick={handleRunRuntimeRepair}
+                    disabled={isRuntimeRepairing}
+                    className="px-3 py-1.5 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 text-[10px] font-black uppercase tracking-[0.16em] hover:border-brand-accent/35 hover:text-brand-accent transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {repairActionLabel}
+                  </button>
+                )}
+                <button
+                  onClick={() => setSkipEvents([])}
+                  className="px-3 py-1.5 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 text-[10px] font-black uppercase tracking-[0.16em] hover:border-white/30 transition-all"
+                >
+                  Clear Events
+                </button>
+                {canUseUpdater && updateInfo?.enabled && (
+                  <button
+                    onClick={handleUpdateAction}
+                    disabled={isUpdateBusy || updateInfo?.status === 'checking' || updateInfo?.status === 'downloading'}
+                    className={`px-3 py-1.5 rounded-xl border text-[10px] font-black uppercase tracking-[0.16em] transition-all disabled:opacity-60 disabled:cursor-not-allowed ${updateInfo?.downloaded ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : updateInfo?.available ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent hover:bg-brand-accent/20' : 'border-white/15 bg-white/[0.03] text-white/70 hover:border-white/30'}`}
+                    title={updateInfo?.message || 'Check for updates'}
+                  >
+                    <span className="inline-flex items-center gap-1.5">
+                      <RefreshCw size={11} className={`${updateInfo?.status === 'checking' || updateInfo?.status === 'downloading' ? 'animate-spin' : ''}`} />
+                      {updateActionLabel}
+                    </span>
+                  </button>
                 )}
               </div>
 
-              <div className="flex items-center justify-between gap-3 flex-wrap border-t border-white/10 bg-black/20 px-5 py-4 md:px-6 md:py-5">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <button
-                    onClick={resetShortcutSettingsToDefaults}
-                    className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
-                  >
-                    Reset to Defaults
-                  </button>
-                  <button
-                    onClick={() => {
-                      closeShortcutSettings();
-                      setTimeout(() => openTipsOverlay(), 0);
-                    }}
-                    className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
-                  >
-                    Open Guide
-                  </button>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={closeShortcutSettings}
-                    className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={saveShortcutSettings}
-                    className="px-4 py-2 rounded-xl border border-brand-accent/35 bg-brand-accent/10 text-brand-accent hover:bg-brand-accent/20 transition-all"
-                  >
-                    Save
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {isTipsOverlayOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[310] flex items-center justify-center p-4"
-            onClick={closeTipsOverlay}
-          >
-            <div className="absolute inset-0 bg-black/85 backdrop-blur-md" />
-            <motion.div
-              initial={{ scale: 0.96, y: 14 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.96, y: 10 }}
-              className="relative z-10 w-[min(94vw,860px)] max-h-[88vh] overflow-y-auto rounded-3xl border border-brand-accent/25 bg-[#090b0f]/95 p-5 md:p-7 shadow-[0_0_90px_rgba(0,255,191,0.15)]"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/35">First-run Guide</div>
-                  <div className="text-2xl md:text-3xl font-black text-brand-accent uppercase tracking-tight">Welcome to Aether</div>
-                  <div className="text-white/55 mt-2 text-sm">Quick controls and feature map so you can use everything in under a minute.</div>
-                </div>
-                <button onClick={closeTipsOverlay} className="w-10 h-10 rounded-xl border border-white/15 bg-white/[0.03] text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close tips">
-                  <X size={16} />
-                </button>
-              </div>
-
-              <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                  <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Command Shortcuts</div>
-                  <ul className="mt-3 space-y-2 text-white/75">
-                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.playPause, isMacPlatform)}</span> — Play / Pause</li>
-                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.previous, isMacPlatform)}</span> — Previous</li>
-                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.next, isMacPlatform)}</span> — Next</li>
-                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.volumeUp, isMacPlatform)}</span> — Volume up</li>
-                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.volumeDown, isMacPlatform)}</span> — Volume down</li>
-                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.mute, isMacPlatform)}</span> — Mute / Unmute</li>
-                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.clearQueue, isMacPlatform)}</span> — Clear queue</li>
-                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.focusMode, isMacPlatform)}</span> — Toggle focus view</li>
-                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.miniPlayer, isMacPlatform)}</span> — Toggle mini player</li>
-                    <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.diagnostics, isMacPlatform)}</span> — Open diagnostics panel</li>
-                  </ul>
-                  <div className="mt-3 text-[11px] text-white/45">Tip: media keys may be managed by your OS. App shortcuts above always work while Aether is focused.</div>
-                </div>
-
-                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                  <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Main Buttons</div>
-                  <ul className="mt-3 space-y-2 text-white/75">
-                    <li><span className="text-brand-accent font-black">Search bar</span> — find songs quickly</li>
-                    <li><span className="text-brand-accent font-black">Studio / Stack</span> — switch workspace layout</li>
-                    <li><span className="text-brand-accent font-black">Focus</span> — hide side panels for a cleaner stage</li>
-                    <li><span className="text-brand-accent font-black">Diagnostics</span> — debug network/playback issues</li>
-                    <li><span className="text-brand-accent font-black">Vault overlay</span> — save/import/export playlists</li>
-                    <li><span className="text-brand-accent font-black">Smart Mix</span> — generate instant context playlist</li>
-                    <li><span className="text-brand-accent font-black">Sleep Timer</span> — auto-stop playback later</li>
-                  </ul>
-                </div>
-              </div>
-
-              <label className="mt-5 flex items-center gap-3 text-sm text-white/70 select-none cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={tipsDontShowAgain}
-                  onChange={(e) => setTipsDontShowAgain(e.checked)}
-                  className="w-4 h-4 accent-brand-accent"
-                />
-                Don’t show this again on app startup
-              </label>
-
-              <div className="mt-4 flex items-center justify-end gap-2">
-                <button
-                  onClick={() => {
-                    closeTipsOverlay();
-                    openShortcutSettings();
-                  }}
-                  className="px-4 py-2 rounded-xl border border-brand-accent/35 bg-brand-accent/10 text-brand-accent hover:bg-brand-accent/20 transition-all"
-                >
-                  Customize Shortcuts
-                </button>
-                <button
-                  onClick={closeTipsOverlay}
-                  className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
-                >
-                  Got it
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {isDiagnosticsOpen && (
-          <motion.div
-            initial={{ opacity: 0, y: -8, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -6, scale: 0.98 }}
-            className="fixed right-4 md:right-6 z-[240] w-[min(92vw,420px)] overflow-y-auto custom-scrollbar glass-card bg-[#07090c]/90 border border-white/10 backdrop-blur-2xl rounded-3xl p-4 md:p-5 shadow-[0_20px_60px_rgba(0,0,0,0.45)]"
-            style={{ top: diagnosticsTopOffset, maxHeight: `calc(100vh - ${diagnosticsTopOffset + 16}px)` }}
-          >
-            <div className="flex items-center justify-between mb-3">
-              <div className="text-[10px] tracking-[0.24em] uppercase font-black text-brand-accent">Diagnostics</div>
-              <button onClick={() => setIsDiagnosticsOpen(false)} className="text-white/40 hover:text-brand-accent transition-colors">
-                <X size={14} />
-              </button>
-            </div>
-
-            <div className="flex items-center gap-2 mb-3">
-              <button
-                onClick={handleResetPlaybackEngine}
-                className="px-3 py-1.5 rounded-xl border border-brand-accent/30 bg-brand-accent/10 text-brand-accent text-[10px] font-black uppercase tracking-[0.16em] hover:bg-brand-accent/20 transition-all"
-              >
-                Reset Engine
-              </button>
-              {isStandalone && (
-                <button
-                  onClick={handleRunRuntimeRepair}
-                  disabled={isRuntimeRepairing}
-                  className="px-3 py-1.5 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 text-[10px] font-black uppercase tracking-[0.16em] hover:border-brand-accent/35 hover:text-brand-accent transition-all disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  {repairActionLabel}
-                </button>
-              )}
-              <button
-                onClick={() => setSkipEvents([])}
-                className="px-3 py-1.5 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 text-[10px] font-black uppercase tracking-[0.16em] hover:border-white/30 transition-all"
-              >
-                Clear Events
-              </button>
-              {canUseUpdater && updateInfo?.enabled && (
-                <button
-                  onClick={handleUpdateAction}
-                  disabled={isUpdateBusy || updateInfo?.status === 'checking' || updateInfo?.status === 'downloading'}
-                  className={`px-3 py-1.5 rounded-xl border text-[10px] font-black uppercase tracking-[0.16em] transition-all disabled:opacity-60 disabled:cursor-not-allowed ${updateInfo?.downloaded ? 'bg-brand-accent border-brand-dark text-brand-dark shadow-neon-strong' : updateInfo?.available ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent hover:bg-brand-accent/20' : 'border-white/15 bg-white/[0.03] text-white/70 hover:border-white/30'}`}
-                  title={updateInfo?.message || 'Check for updates'}
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <RefreshCw size={11} className={`${updateInfo?.status === 'checking' || updateInfo?.status === 'downloading' ? 'animate-spin' : ''}`} />
-                    {updateActionLabel}
-                  </span>
-                </button>
-              )}
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 text-[10px] font-mono">
-              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
-                <div className="text-white/40 uppercase mb-1">Transport</div>
-                <div className={`font-black ${isAudioBuffering ? 'text-yellow-400' : isPlaying ? 'text-brand-accent' : 'text-white/70'}`}>
-                  {isAudioBuffering ? 'BUFFERING' : isPlaying ? 'PLAYING' : 'PAUSED'}
-                </div>
-              </div>
-              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
-                <div className="text-white/40 uppercase mb-1">Queue</div>
-                <div className="font-black text-brand-accent">{Math.max(0, queue.length - 1)} pending</div>
-              </div>
-              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
-                <div className="text-white/40 uppercase mb-1">App CPU</div>
-                <div className="font-black text-brand-accent">{systemStats?.appCpu ?? 0}%</div>
-              </div>
-              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
-                <div className="text-white/40 uppercase mb-1">App Memory</div>
-                <div className="font-black text-brand-accent">{systemStats?.appMem ?? 0}MB</div>
-              </div>
-              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
-                <div className="text-white/40 uppercase mb-1">Workspace Mode</div>
-                <div className="font-black text-white/80">{workspaceModeLabel} • {playbackModeLabel}</div>
-              </div>
-              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
-                <div className="text-white/40 uppercase mb-1">Current Node</div>
-                <div className="font-black text-white/85 truncate">{currentTrack?.title || '—'}</div>
-              </div>
-              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
-                <div className="text-white/40 uppercase mb-1">Queue Poll</div>
-                <div className="font-black text-brand-accent">{queuePollDisplay}</div>
-                <div className="text-white/40 mt-1">{queuePollTime}</div>
-              </div>
-              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
-                <div className="text-white/40 uppercase mb-1">System Poll</div>
-                <div className="font-black text-brand-accent">{diagnostics.lastSystemFetchMs ?? '—'}ms</div>
-                <div className="text-white/40 mt-1">{formatDiagTime(diagnostics.lastSystemFetchAt)}</div>
-              </div>
-              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
-                <div className="text-white/40 uppercase mb-1">Lyrics Source</div>
-                <div className="font-black text-brand-accent truncate">{diagnostics.lastLyricsSource || '—'}</div>
-              </div>
-              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
-                <div className="text-white/40 uppercase mb-1">Song Fetch</div>
-                <div className="font-black text-brand-accent">{diagnostics.lastSongFetchMs ?? '—'}ms</div>
-                <div className="text-white/40 mt-1 truncate">{diagnostics.lastSongSource || '-'}</div>
-              </div>
-              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
-                <div className="text-white/40 uppercase mb-1">Lyrics Fetch</div>
-                <div className="font-black text-brand-accent">{diagnostics.lastLyricsFetchMs ?? '—'}ms</div>
-              </div>
-              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
-                <div className="text-white/40 uppercase mb-1">Sync State</div>
-                <div className="font-black text-white/80">offset {lyricOffsetMs}ms • line {activeLyricIndex >= 0 ? activeLyricIndex + 1 : 0} • {isAutoScrollPaused ? 'manual' : 'auto'}</div>
-              </div>
-              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
-                <div className="text-white/40 uppercase mb-1">Transport Guard</div>
-                <div className="font-black text-white/80">
-                  hits {diagnostics.transportGuardHits ?? 0}
-                  {diagnostics.lastTransportGuardAction ? ` • last ${diagnostics.lastTransportGuardAction}` : ''}
-                  {diagnostics.lastTransportGuardAt ? ` • ${formatDiagTime(diagnostics.lastTransportGuardAt)}` : ''}
-                </div>
-              </div>
-              <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
-                <div className="text-white/40 uppercase mb-1">API Base</div>
-                <div className="font-black text-white/70">{diagnosticsApiBase}</div>
-                <div className={diagnosticPathBlockClass}>{diagnosticsApiBase}</div>
-                <button
-                  onClick={() => handleCopyDiagnosticsValue(diagnosticsApiBase, 'API base copied')}
-                  className="mt-2 inline-flex items-center rounded-lg border border-white/12 bg-white/[0.03] px-2 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-white/60 hover:border-brand-accent/30 hover:text-brand-accent transition-all"
-                >
-                  Copy
-                </button>
-              </div>
-
-              {isStandalone && (
-                <>
-                  <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
-                    <div className="text-white/40 uppercase mb-1">YT-DLP</div>
-                    <div className={`font-black ${ytDlpStatusTone}`}>
-                      {ytDlpStatusLabel}
-                    </div>
-                    <div className="text-white/45 mt-1">{ytDlpDetailLine}</div>
-                    <div className={diagnosticPathBlockClass}>{engineStatus?.ytDlpPath || 'bootstrap pending'}</div>
-                    {engineStatus?.ytDlpPath && (
-                      <button
-                        onClick={() => handleCopyDiagnosticsValue(engineStatus.ytDlpPath, 'yt-dlp path copied')}
-                        className="mt-2 inline-flex items-center rounded-lg border border-white/12 bg-white/[0.03] px-2 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-white/60 hover:border-brand-accent/30 hover:text-brand-accent transition-all"
-                      >
-                        Copy Path
-                      </button>
-                    )}
+              <div className="grid grid-cols-2 gap-2 text-[10px] font-mono">
+                <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                  <div className="text-white/40 uppercase mb-1">Transport</div>
+                  <div className={`font-black ${isAudioBuffering ? 'text-yellow-400' : isPlaying ? 'text-brand-accent' : 'text-white/70'}`}>
+                    {isAudioBuffering ? 'BUFFERING' : isPlaying ? 'PLAYING' : 'PAUSED'}
                   </div>
-                  <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
-                    <div className="text-white/40 uppercase mb-1">FFmpeg</div>
-                    <div className={`font-black ${ffmpegStatusTone}`}>
-                      {ffmpegStatusLabel}
-                    </div>
-                    <div className="text-white/45 mt-1">{ffmpegDetailLine}</div>
-                    <div className={diagnosticPathBlockClass}>{engineStatus?.ffmpegPath || 'not resolved'}</div>
-                    {engineStatus?.ffmpegPath && (
-                      <button
-                        onClick={() => handleCopyDiagnosticsValue(engineStatus.ffmpegPath, 'FFmpeg path copied')}
-                        className="mt-2 inline-flex items-center rounded-lg border border-white/12 bg-white/[0.03] px-2 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-white/60 hover:border-brand-accent/30 hover:text-brand-accent transition-all"
-                      >
-                        Copy Path
-                      </button>
-                    )}
+                </div>
+                <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                  <div className="text-white/40 uppercase mb-1">Queue</div>
+                  <div className="font-black text-brand-accent">{Math.max(0, queue.length - 1)} pending</div>
+                </div>
+                <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                  <div className="text-white/40 uppercase mb-1">App CPU</div>
+                  <div className="font-black text-brand-accent">{systemStats?.appCpu ?? 0}%</div>
+                </div>
+                <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                  <div className="text-white/40 uppercase mb-1">App Memory</div>
+                  <div className="font-black text-brand-accent">{systemStats?.appMem ?? 0}MB</div>
+                </div>
+                <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                  <div className="text-white/40 uppercase mb-1">Workspace Mode</div>
+                  <div className="font-black text-white/80">{workspaceModeLabel} • {playbackModeLabel}</div>
+                </div>
+                <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                  <div className="text-white/40 uppercase mb-1">Current Node</div>
+                  <div className="font-black text-white/85 truncate">{currentTrack?.title || '—'}</div>
+                </div>
+                <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                  <div className="text-white/40 uppercase mb-1">Queue Poll</div>
+                  <div className="font-black text-brand-accent">{queuePollDisplay}</div>
+                  <div className="text-white/40 mt-1">{queuePollTime}</div>
+                </div>
+                <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                  <div className="text-white/40 uppercase mb-1">System Poll</div>
+                  <div className="font-black text-brand-accent">{diagnostics.lastSystemFetchMs ?? '—'}ms</div>
+                  <div className="text-white/40 mt-1">{formatDiagTime(diagnostics.lastSystemFetchAt)}</div>
+                </div>
+                <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                  <div className="text-white/40 uppercase mb-1">Lyrics Source</div>
+                  <div className="font-black text-brand-accent truncate">{diagnostics.lastLyricsSource || '—'}</div>
+                </div>
+                <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10">
+                  <div className="text-white/40 uppercase mb-1">Song Fetch</div>
+                  <div className="font-black text-brand-accent">{diagnostics.lastSongFetchMs ?? '—'}ms</div>
+                  <div className="text-white/40 mt-1 truncate">{diagnostics.lastSongSource || '-'}</div>
+                </div>
+                <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                  <div className="text-white/40 uppercase mb-1">Lyrics Fetch</div>
+                  <div className="font-black text-brand-accent">{diagnostics.lastLyricsFetchMs ?? '—'}ms</div>
+                </div>
+                <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                  <div className="text-white/40 uppercase mb-1">Sync State</div>
+                  <div className="font-black text-white/80">offset {lyricOffsetMs}ms • line {activeLyricIndex >= 0 ? activeLyricIndex + 1 : 0} • {isAutoScrollPaused ? 'manual' : 'auto'}</div>
+                </div>
+                <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                  <div className="text-white/40 uppercase mb-1">Transport Guard</div>
+                  <div className="font-black text-white/80">
+                    hits {diagnostics.transportGuardHits ?? 0}
+                    {diagnostics.lastTransportGuardAction ? ` • last ${diagnostics.lastTransportGuardAction}` : ''}
+                    {diagnostics.lastTransportGuardAt ? ` • ${formatDiagTime(diagnostics.lastTransportGuardAt)}` : ''}
                   </div>
-                  <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
-                    <div className="text-white/40 uppercase mb-1">Cookies Session</div>
-                    <div className={`font-black ${cookieStatusTone}`}>
-                      {cookieStatusLabel}
-                    </div>
-                    <div className="text-white/45 mt-1">{cookieSummaryLine}</div>
-                    <div className="text-[10px] text-white/35 mt-1">{cookieAssuranceLine}</div>
-                    {engineStatus?.cookiesPath && (
-                      <div className={diagnosticPathBlockClass}>{engineStatus.cookiesPath}</div>
-                    )}
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <button
-                        onClick={handleImportCookies}
-                        className="px-2.5 py-1.5 rounded-lg border border-brand-accent/30 text-brand-accent bg-brand-accent/10 hover:bg-brand-accent/20 transition-all"
-                      >
-                        Upload Cookies
-                      </button>
-                      {engineStatus?.cookiesPath && (
+                </div>
+                <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                  <div className="text-white/40 uppercase mb-1">API Base</div>
+                  <div className="font-black text-white/70">{diagnosticsApiBase}</div>
+                  <div className={diagnosticPathBlockClass}>{diagnosticsApiBase}</div>
+                  <button
+                    onClick={() => handleCopyDiagnosticsValue(diagnosticsApiBase, 'API base copied')}
+                    className="mt-2 inline-flex items-center rounded-lg border border-white/12 bg-white/[0.03] px-2 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-white/60 hover:border-brand-accent/30 hover:text-brand-accent transition-all"
+                  >
+                    Copy
+                  </button>
+                </div>
+
+                {isStandalone && (
+                  <>
+                    <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                      <div className="text-white/40 uppercase mb-1">YT-DLP</div>
+                      <div className={`font-black ${ytDlpStatusTone}`}>
+                        {ytDlpStatusLabel}
+                      </div>
+                      <div className="text-white/45 mt-1">{ytDlpDetailLine}</div>
+                      <div className="mt-3 flex items-center gap-2">
                         <button
-                          onClick={() => handleCopyDiagnosticsValue(engineStatus.cookiesPath, 'Cookie path copied')}
-                          className="px-2.5 py-1.5 rounded-lg border border-white/15 text-white/70 bg-white/[0.03] hover:border-brand-accent/30 hover:text-brand-accent transition-all"
+                          onClick={handleRepairEnvironment}
+                          className="inline-flex items-center rounded-lg border border-white/12 bg-white/[0.03] px-3 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-white/60 hover:border-brand-accent/30 hover:text-brand-accent transition-all"
+                        >
+                          {repairResult?.status === 'running' ? 'Repairing…' : 'Repair Environment'}
+                        </button>
+                        {repairResult?.status === 'done' && (
+                          <div className="flex items-center gap-2">
+                            <div className="text-[11px] font-black text-white/70">{repairResult.result?.ytDlpReady ? 'OK' : 'Issues found'}</div>
+                            {!repairResult.result?.ytDlpReady && (
+                              <button
+                                onClick={handleAttemptFixes}
+                                className="inline-flex items-center rounded-lg border border-white/12 bg-white/[0.03] px-2 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-white/60 hover:border-brand-accent/30 hover:text-brand-accent transition-all"
+                              >
+                                Attempt Platform Fixes
+                              </button>
+                            )}
+                            {!repairResult?.installerResult?.success && (
+                              <button
+                                onClick={handleRunInstaller}
+                                className="inline-flex items-center rounded-lg border border-white/12 bg-white/[0.03] px-2 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-white/60 hover:border-brand-accent/30 hover:text-brand-accent transition-all"
+                              >
+                                Open Installer / Releases
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        {repairResult?.status === 'error' && (
+                          <div className="text-[11px] font-black text-red-400">{repairResult.error}</div>
+                        )}
+                      </div>
+                      <div className={diagnosticPathBlockClass}>{engineStatus?.ytDlpPath || 'bootstrap pending'}</div>
+                      {engineStatus?.ytDlpPath && (
+                        <button
+                          onClick={() => handleCopyDiagnosticsValue(engineStatus.ytDlpPath, 'yt-dlp path copied')}
+                          className="mt-2 inline-flex items-center rounded-lg border border-white/12 bg-white/[0.03] px-2 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-white/60 hover:border-brand-accent/30 hover:text-brand-accent transition-all"
                         >
                           Copy Path
                         </button>
                       )}
-                      <button
-                        onClick={() => {
-                          if (isStandalone && window.aether?.openExternal) {
-                            window.aether.openExternal('https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies');
-                          } else {
-                            window.open('https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies', '_blank');
-                          }
-                        }}
-                        className="px-2.5 py-1.5 rounded-lg border border-white/15 text-white/70 bg-white/[0.03] hover:border-white/30 transition-all"
-                      >
-                        Cookie Guide
-                      </button>
                     </div>
-                  </div>
-                  <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
-                    <div className="text-white/40 uppercase mb-1">Storage</div>
-                    <div className="font-black text-brand-accent">{formatBytes(storageStats?.totalBytes || 0)}</div>
-                    <div className="text-white/45 mt-1">
-                      downloads {formatBytes(storageStats?.downloadsBytes || 0)} • cache {formatBytes(storageStats?.cacheBytes || 0)}
+                    <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                      <div className="text-white/40 uppercase mb-1">FFmpeg</div>
+                      <div className={`font-black ${ffmpegStatusTone}`}>
+                        {ffmpegStatusLabel}
+                      </div>
+                      <div className="text-white/45 mt-1">{ffmpegDetailLine}</div>
+                      <div className={diagnosticPathBlockClass}>{engineStatus?.ffmpegPath || 'not resolved'}</div>
+                      {engineStatus?.ffmpegPath && (
+                        <button
+                          onClick={() => handleCopyDiagnosticsValue(engineStatus.ffmpegPath, 'FFmpeg path copied')}
+                          className="mt-2 inline-flex items-center rounded-lg border border-white/12 bg-white/[0.03] px-2 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-white/60 hover:border-brand-accent/30 hover:text-brand-accent transition-all"
+                        >
+                          Copy Path
+                        </button>
+                      )}
                     </div>
-                  </div>
-
-                  <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2 space-y-2">
-                    <div className="text-white/40 uppercase">Storage Policy</div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <label className="text-white/55">
-                        Cache cap (MB)
-                        <input
-                          type="number"
-                          min={256}
-                          max={16384}
-                          value={storagePolicy.cacheCapMb}
-                          onChange={(e) => {
-                            const parsed = parseInt(e.target.value || '2048', 10);
-                            setStoragePolicy(prev => ({ ...prev, cacheCapMb: Number.isFinite(parsed) ? Math.max(256, parsed) : 2048 }));
+                    <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                      <div className="text-white/40 uppercase mb-1">Cookies Session</div>
+                      <div className={`font-black ${cookieStatusTone}`}>
+                        {cookieStatusLabel}
+                      </div>
+                      <div className="text-white/45 mt-1">{cookieSummaryLine}</div>
+                      <div className="text-[10px] text-white/35 mt-1">{cookieAssuranceLine}</div>
+                      {engineStatus?.cookiesPath && (
+                        <div className={diagnosticPathBlockClass}>{engineStatus.cookiesPath}</div>
+                      )}
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          onClick={handleImportCookies}
+                          className="px-2.5 py-1.5 rounded-lg border border-brand-accent/30 text-brand-accent bg-brand-accent/10 hover:bg-brand-accent/20 transition-all"
+                        >
+                          Upload Cookies
+                        </button>
+                        {engineStatus?.cookiesPath && (
+                          <button
+                            onClick={() => handleCopyDiagnosticsValue(engineStatus.cookiesPath, 'Cookie path copied')}
+                            className="px-2.5 py-1.5 rounded-lg border border-white/15 text-white/70 bg-white/[0.03] hover:border-brand-accent/30 hover:text-brand-accent transition-all"
+                          >
+                            Copy Path
+                          </button>
+                        )}
+                        <button
+                          onClick={() => {
+                            if (isStandalone && window.aether?.openExternal) {
+                              window.aether.openExternal('https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies');
+                            } else {
+                              window.open('https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies', '_blank');
+                            }
                           }}
-                          className="mt-1 w-full rounded-lg border border-white/15 bg-black/30 px-2 py-1 text-white"
-                        />
-                      </label>
-                      <label className="text-white/55">
-                        Age cleanup (days)
-                        <input
-                          type="number"
-                          min={1}
-                          max={365}
-                          value={storagePolicy.maxCacheAgeDays}
-                          onChange={(e) => {
-                            const parsed = parseInt(e.target.value || '30', 10);
-                            setStoragePolicy(prev => ({ ...prev, maxCacheAgeDays: Number.isFinite(parsed) ? Math.max(1, parsed) : 30 }));
-                          }}
-                          className="mt-1 w-full rounded-lg border border-white/15 bg-black/30 px-2 py-1 text-white"
-                        />
-                      </label>
+                          className="px-2.5 py-1.5 rounded-lg border border-white/15 text-white/70 bg-white/[0.03] hover:border-white/30 transition-all"
+                        >
+                          Cookie Guide
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        disabled={isStorageBusy}
-                        onClick={async () => { await applyStoragePolicy(storagePolicy); await refreshStorageStats(); }}
-                        className="px-2 py-1 rounded-lg border border-brand-accent/30 text-brand-accent bg-brand-accent/10 disabled:opacity-50"
-                      >
-                        Save Policy
-                      </button>
-                      <button
-                        disabled={isStorageBusy}
-                        onClick={() => runStorageOptimize('cap')}
-                        className="px-2 py-1 rounded-lg border border-white/15 text-white/75 bg-white/[0.03] disabled:opacity-50"
-                      >
-                        Trim to Cap {storageEstimate.cap ? `(${formatBytes(storageEstimate.cap.estimatedBytes)})` : ''}
-                      </button>
-                      <button
-                        disabled={isStorageBusy}
-                        onClick={() => runStorageOptimize('age')}
-                        className="px-2 py-1 rounded-lg border border-white/15 text-white/75 bg-white/[0.03] disabled:opacity-50"
-                      >
-                        Clean Old Cache {storageEstimate.age ? `(${formatBytes(storageEstimate.age.estimatedBytes)})` : ''}
-                      </button>
-                      <button
-                        disabled={isStorageBusy}
-                        onClick={() => runStorageOptimize('downloads-only')}
-                        className="px-2 py-1 rounded-lg border border-yellow-500/30 text-yellow-300 bg-yellow-500/10 disabled:opacity-50"
-                      >
-                        Keep Downloaded Only {storageEstimate.downloadsOnly ? `(${formatBytes(storageEstimate.downloadsOnly.estimatedBytes)})` : ''}
-                      </button>
-                      <button
-                        disabled={isStorageBusy}
-                        onClick={async () => { await refreshStorageStats(); await refreshStorageEstimate(); }}
-                        className="px-2 py-1 rounded-lg border border-white/15 text-white/60 bg-white/[0.02] disabled:opacity-50"
-                      >
-                        Refresh
-                      </button>
+                    <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                      <div className="text-white/40 uppercase mb-1">Storage</div>
+                      <div className="font-black text-brand-accent">{formatBytes(storageStats?.totalBytes || 0)}</div>
+                      <div className="text-white/45 mt-1">
+                        downloads {formatBytes(storageStats?.downloadsBytes || 0)} • cache {formatBytes(storageStats?.cacheBytes || 0)}
+                      </div>
                     </div>
 
-                    <div className="mt-2 rounded-xl border border-white/10 bg-black/20 p-2">
-                      <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
-                        <div className="text-white/55 uppercase text-[11px]">Downloaded Tracks ({offlineDownloads.length})</div>
-                        <div className="flex items-center gap-2">
-                          <button
-                            disabled={isOfflineRemovalBusy || isOfflineDownloadsBusy}
-                            onClick={refreshOfflineDownloads}
-                            className="px-2 py-1 rounded-lg border border-white/15 text-white/70 bg-white/[0.03] disabled:opacity-50"
-                          >
-                            Refresh List
-                          </button>
-                          <button
-                            disabled={offlineDownloads.length === 0 || isOfflineRemovalBusy || isOfflineDownloadsBusy}
-                            onClick={clearAllDownloadedTracks}
-                            className="px-2 py-1 rounded-lg border border-red-500/35 text-red-300 bg-red-500/10 disabled:opacity-50"
-                          >
-                            Clear All Downloads
-                          </button>
+                    <div className="p-2 rounded-xl bg-white/[0.03] border border-white/10 col-span-2 space-y-2">
+                      <div className="text-white/40 uppercase">Storage Policy</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="text-white/55">
+                          Cache cap (MB)
+                          <input
+                            type="number"
+                            min={256}
+                            max={16384}
+                            value={storagePolicy.cacheCapMb}
+                            onChange={(e) => {
+                              const parsed = parseInt(e.target.value || '2048', 10);
+                              setStoragePolicy(prev => ({ ...prev, cacheCapMb: Number.isFinite(parsed) ? Math.max(256, parsed) : 2048 }));
+                            }}
+                            className="mt-1 w-full rounded-lg border border-white/15 bg-black/30 px-2 py-1 text-white"
+                          />
+                        </label>
+                        <label className="text-white/55">
+                          Age cleanup (days)
+                          <input
+                            type="number"
+                            min={1}
+                            max={365}
+                            value={storagePolicy.maxCacheAgeDays}
+                            onChange={(e) => {
+                              const parsed = parseInt(e.target.value || '30', 10);
+                              setStoragePolicy(prev => ({ ...prev, maxCacheAgeDays: Number.isFinite(parsed) ? Math.max(1, parsed) : 30 }));
+                            }}
+                            className="mt-1 w-full rounded-lg border border-white/15 bg-black/30 px-2 py-1 text-white"
+                          />
+                        </label>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          disabled={isStorageBusy}
+                          onClick={async () => { await applyStoragePolicy(storagePolicy); await refreshStorageStats(); }}
+                          className="px-2 py-1 rounded-lg border border-brand-accent/30 text-brand-accent bg-brand-accent/10 disabled:opacity-50"
+                        >
+                          Save Policy
+                        </button>
+                        <button
+                          disabled={isStorageBusy}
+                          onClick={() => runStorageOptimize('cap')}
+                          className="px-2 py-1 rounded-lg border border-white/15 text-white/75 bg-white/[0.03] disabled:opacity-50"
+                        >
+                          Trim to Cap {storageEstimate.cap ? `(${formatBytes(storageEstimate.cap.estimatedBytes)})` : ''}
+                        </button>
+                        <button
+                          disabled={isStorageBusy}
+                          onClick={() => runStorageOptimize('age')}
+                          className="px-2 py-1 rounded-lg border border-white/15 text-white/75 bg-white/[0.03] disabled:opacity-50"
+                        >
+                          Clean Old Cache {storageEstimate.age ? `(${formatBytes(storageEstimate.age.estimatedBytes)})` : ''}
+                        </button>
+                        <button
+                          disabled={isStorageBusy}
+                          onClick={() => runStorageOptimize('downloads-only')}
+                          className="px-2 py-1 rounded-lg border border-yellow-500/30 text-yellow-300 bg-yellow-500/10 disabled:opacity-50"
+                        >
+                          Keep Downloaded Only {storageEstimate.downloadsOnly ? `(${formatBytes(storageEstimate.downloadsOnly.estimatedBytes)})` : ''}
+                        </button>
+                        <button
+                          disabled={isStorageBusy}
+                          onClick={async () => { await refreshStorageStats(); await refreshStorageEstimate(); }}
+                          className="px-2 py-1 rounded-lg border border-white/15 text-white/60 bg-white/[0.02] disabled:opacity-50"
+                        >
+                          Refresh
+                        </button>
+                      </div>
+
+                      <div className="mt-2 rounded-xl border border-white/10 bg-black/20 p-2">
+                        <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+                          <div className="text-white/55 uppercase text-[11px]">Downloaded Tracks ({offlineDownloads.length})</div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              disabled={isOfflineRemovalBusy || isOfflineDownloadsBusy}
+                              onClick={refreshOfflineDownloads}
+                              className="px-2 py-1 rounded-lg border border-white/15 text-white/70 bg-white/[0.03] disabled:opacity-50"
+                            >
+                              Refresh List
+                            </button>
+                            <button
+                              disabled={offlineDownloads.length === 0 || isOfflineRemovalBusy || isOfflineDownloadsBusy}
+                              onClick={clearAllDownloadedTracks}
+                              className="px-2 py-1 rounded-lg border border-red-500/35 text-red-300 bg-red-500/10 disabled:opacity-50"
+                            >
+                              Clear All Downloads
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="max-h-52 overflow-y-auto pr-1 space-y-1">
+                          {offlineDownloads.length === 0 ? (
+                            <div className="text-white/35 text-xs">No downloaded tracks stored.</div>
+                          ) : offlineDownloads.map((item) => {
+                            const meta = downloadLabelById.get(item.id);
+                            const title = meta?.title || item.id;
+                            const author = meta?.author || 'Unknown';
+                            return (
+                              <div key={`download-${item.id}`} className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-2 py-1.5">
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-[11px] text-white/85 font-black truncate">{title}</div>
+                                  <div className="text-[10px] text-white/45 truncate">{author} • {formatBytes(item.bytes || 0)}{item.modifiedAt ? ` • ${new Date(item.modifiedAt).toLocaleString()}` : ''}</div>
+                                </div>
+                                <button
+                                  disabled={isOfflineRemovalBusy || isOfflineDownloadsBusy}
+                                  onClick={() => removeDownloadedById(item.id, title)}
+                                  className="px-2 py-1 rounded-md border border-red-500/35 text-red-300 bg-red-500/10 disabled:opacity-50"
+                                  title="Delete downloaded file"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
-
-                      <div className="max-h-52 overflow-y-auto pr-1 space-y-1">
-                        {offlineDownloads.length === 0 ? (
-                          <div className="text-white/35 text-xs">No downloaded tracks stored.</div>
-                        ) : offlineDownloads.map((item) => {
-                          const meta = downloadLabelById.get(item.id);
-                          const title = meta?.title || item.id;
-                          const author = meta?.author || 'Unknown';
-                          return (
-                            <div key={`download-${item.id}`} className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-2 py-1.5">
-                              <div className="min-w-0 flex-1">
-                                <div className="text-[11px] text-white/85 font-black truncate">{title}</div>
-                                <div className="text-[10px] text-white/45 truncate">{author} • {formatBytes(item.bytes || 0)}{item.modifiedAt ? ` • ${new Date(item.modifiedAt).toLocaleString()}` : ''}</div>
-                              </div>
-                              <button
-                                disabled={isOfflineRemovalBusy || isOfflineDownloadsBusy}
-                                onClick={() => removeDownloadedById(item.id, title)}
-                                className="px-2 py-1 rounded-md border border-red-500/35 text-red-300 bg-red-500/10 disabled:opacity-50"
-                                title="Delete downloaded file"
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
                     </div>
+                  </>
+                )}
+
+                {(diagnostics.lastQueueError || diagnostics.lastSystemError || diagnostics.lastLyricsError) && (
+                  <div className="p-2 rounded-xl bg-red-500/10 border border-red-500/30 col-span-2">
+                    <div className="text-red-300 uppercase mb-1">Last Error</div>
+                    <div className="font-black text-red-200/90 truncate">{diagnostics.lastQueueError || diagnostics.lastSystemError || diagnostics.lastLyricsError}</div>
                   </div>
-                </>
-              )}
+                )}
 
-              {(diagnostics.lastQueueError || diagnostics.lastSystemError || diagnostics.lastLyricsError) && (
-                <div className="p-2 rounded-xl bg-red-500/10 border border-red-500/30 col-span-2">
-                  <div className="text-red-300 uppercase mb-1">Last Error</div>
-                  <div className="font-black text-red-200/90 truncate">{diagnostics.lastQueueError || diagnostics.lastSystemError || diagnostics.lastLyricsError}</div>
+                <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <div className="text-white/40 uppercase">Recent Events</div>
+                    <div className="text-[10px] text-white/30">{skipEvents.length} / 50</div>
+                  </div>
+                  <div className="space-y-1.5 max-h-32 overflow-auto pr-1">
+                    {skipEvents.length === 0 ? (
+                      <div className="text-white/35">No recent events captured yet.</div>
+                    ) : (
+                      skipEvents.slice(-8).reverse().map((event, idx) => (
+                        <div key={`${event.at || 0}-${idx}`} className="rounded-xl border border-white/8 bg-black/20 px-2.5 py-2 text-white/70">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-brand-accent text-[10px]">{new Date(event.at || Date.now()).toLocaleTimeString()}</span>
+                            <span className={`text-[9px] uppercase tracking-[0.16em] ${event.tone === 'error' ? 'text-red-300' : event.tone === 'success' ? 'text-brand-accent' : event.tone === 'warning' ? 'text-yellow-300' : 'text-white/35'}`}>
+                              {event.tone || 'event'}
+                            </span>
+                          </div>
+                          <div className="mt-1 font-black text-white/85 break-words">{event.label || event.reason || 'event'}</div>
+                          <div className="mt-1 text-white/45 break-words">{event.detail || event.title || 'No details'}</div>
+                        </div>
+                      ))
+                    )}
+                  </div>
                 </div>
-              )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-              <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10 col-span-2">
-                <div className="flex items-center justify-between gap-3 mb-2">
-                  <div className="text-white/40 uppercase">Recent Events</div>
-                  <div className="text-[10px] text-white/30">{skipEvents.length} / 50</div>
-                </div>
-                <div className="space-y-1.5 max-h-32 overflow-auto pr-1">
-                  {skipEvents.length === 0 ? (
-                    <div className="text-white/35">No recent events captured yet.</div>
-                  ) : (
-                    skipEvents.slice(-8).reverse().map((event, idx) => (
-                      <div key={`${event.at || 0}-${idx}`} className="rounded-xl border border-white/8 bg-black/20 px-2.5 py-2 text-white/70">
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="text-brand-accent text-[10px]">{new Date(event.at || Date.now()).toLocaleTimeString()}</span>
-                          <span className={`text-[9px] uppercase tracking-[0.16em] ${event.tone === 'error' ? 'text-red-300' : event.tone === 'success' ? 'text-brand-accent' : event.tone === 'warning' ? 'text-yellow-300' : 'text-white/35'}`}>
-                            {event.tone || 'event'}
+
+        <main
+          className={`aether-depth-stage flex-1 relative z-10 w-full mb-0 min-h-0 px-4 md:px-6 py-4 ${isVerticalStack ? '!flex !flex-col !gap-8 overflow-y-auto scroll-smooth pb-20 custom-scrollbar' : 'flex flex-row gap-4 overflow-hidden'}`}
+          style={{
+            scale: 1,
+            paddingRight: isDualVisualMode && !isVerticalStack ? `calc(${dualVisualStageWidth} + 1.25rem)` : undefined,
+          }}
+        >
+
+          {/* PLAYER & LYRICS PILLAR */}
+          <div className={`performance-island flex flex-col gap-4 min-w-0 overflow-hidden ${leftWorkspaceClass}`}>
+
+            {/* PLAYER CARD */}
+            {isDualWorkspaceMode ? (
+              <div
+                className={`performance-island glass-card relative overflow-hidden shrink-0 rounded-[2.35rem] border border-white/[0.08] px-4 py-4 md:px-5 md:py-4 transition-all duration-500 ${isAuraMode ? 'bg-white/[0.02] border-white/[0.14] backdrop-blur-[28px] shadow-[0_20px_70px_rgba(0,0,0,0.26)]' : 'bg-[#080b10]/88'}`}
+                style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder } : undefined}
+              >
+                {currentTrack ? (
+                  <div className="relative z-10 flex flex-col gap-3">
+                    <div className="flex items-start gap-4">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="label-caps mb-0 text-brand-accent/75 text-[9px] tracking-[0.24em]">Dual Stage</span>
+                          <span className="rounded-full border border-brand-accent/20 bg-brand-accent/10 px-2 py-1 text-[8px] font-black uppercase tracking-[0.18em] text-brand-accent/80">
+                            Main Player
                           </span>
                         </div>
-                        <div className="mt-1 font-black text-white/85 break-words">{event.label || event.reason || 'event'}</div>
-                        <div className="mt-1 text-white/45 break-words">{event.detail || event.title || 'No details'}</div>
+                        <div className="mt-1 text-lg md:text-xl font-black text-white/95 leading-tight uppercase tracking-tight line-clamp-2">{currentTrack.title}</div>
+                        <div className="mt-1 text-[10px] font-black uppercase tracking-[0.26em] text-brand-accent/70 truncate">{currentTrack.author}</div>
                       </div>
-                    ))
-                  )}
-                </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          onClick={cycleRepeatMode}
+                          className={`relative flex h-10 w-10 items-center justify-center rounded-2xl border transition-all active:scale-95 ${repeatMode === 'off' ? 'border-white/10 bg-white/[0.04] text-white/60 hover:border-brand-accent/30 hover:text-brand-accent' : 'border-brand-accent/30 bg-brand-accent/12 text-brand-accent shadow-[0_0_16px_rgba(0,255,191,0.16)]'}`}
+                          title={repeatModeLabel}
+                        >
+                          <Repeat size={16} />
+                          {repeatModeBadge && <span className="absolute right-1.5 top-1.5 text-[8px] font-black leading-none">{repeatModeBadge}</span>}
+                        </button>
+                        <button onClick={() => handleControl('previous')} className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/60 transition-all hover:border-brand-accent/30 hover:text-brand-accent active:scale-95" title="Previous">
+                          <Rewind size={18} fill="currentColor" />
+                        </button>
+                        <button onClick={() => handleControl(isPlaying ? 'pause' : 'resume')} className="flex h-12 w-12 items-center justify-center rounded-[1.2rem] text-black transition-all hover:scale-[1.03] active:scale-95" style={{ background: trackControlAccent, boxShadow: `0 0 22px ${trackControlGlow}` }} title={isPlaying ? 'Pause' : 'Play'}>
+                          {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-0.5" />}
+                        </button>
+                        <button onClick={() => handleControl('skip')} className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/60 transition-all hover:border-brand-accent/30 hover:text-brand-accent active:scale-95" title="Next">
+                          <FastForward size={18} fill="currentColor" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <PlaybackProgressIsland
+                      durationMs={currentTrack.totalDurationMs || currentTrack.duration || 0}
+                      getPositionMs={getActivePlaybackPositionMs}
+                      onSeek={handleSeek}
+                      accent={trackProgressAccent}
+                      glow={trackProgressGlow}
+                      middleContent={<PlayerModePill videoMode={videoMode} switchVideoMode={switchVideoMode} variant="dual" />}
+                    />
+                  </div>
+                ) : (
+                  <div className="flex h-28 items-center justify-center text-white/25">Standby</div>
+                )}
               </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            ) : (
+              <div
+                className={`performance-island glass-card flex relative overflow-hidden group shrink-0 transition-all duration-700 flex-col sm:flex-row flex-none rounded-[3.5rem] shadow-2xl transition-all ${playerCardClass} ${isAuraMode ? 'bg-white/[0.015] border-white/[0.14] backdrop-blur-[30px] shadow-[0_24px_90px_rgba(0,0,0,0.32)]' : 'border-white/5'}`}
+                style={isAuraMode ? { boxShadow: auraCardShadow, borderColor: auraCardBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
+              >
+                {isAuraMode && (
+                  <div
+                    className="absolute inset-0 pointer-events-none"
+                    style={{
+                      background: `radial-gradient(120% 85% at 50% 0%, rgba(0,255,191,${0.06 + immersiveBeatIntensity * 0.16}) 0%, rgba(0,255,191,0) 72%)`,
+                      opacity: 0.85,
+                    }}
+                  />
+                )}
+                {/* TOP BAR / NAVIGATION */}
+                {currentTrack && (
+                  <div className="absolute inset-0 blur-[120px] opacity-10 pointer-events-none group-hover:opacity-20 transition-opacity">
+                    <img src={getProxyUrl(currentTrack.thumbnail)} alt="" className="w-full h-full object-cover" />
+                  </div>
+                )}
+
+                {/* HIGH-FIDELITY CANVAS VISUALIZER (BTM BAR) */}
+                <canvas
+                  ref={visualizerCanvasRef}
+                  width={800}
+                  height={40}
+                  className={`aether-visualizer-canvas absolute bottom-0 left-0 right-0 w-full h-[32px] pointer-events-none z-20 transition-opacity duration-500 ${visualizerMode === 'bars' ? 'opacity-50' : 'opacity-0'}`}
+                />
+
+                {currentTrack ? (
+                  <>
+                    {/* NEURAL BUFFERING OVERLAY */}
+                    {isAudioBuffering && (
+                      <motion.div
+                        initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                        className="absolute inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm rounded-[2.5rem]"
+                      >
+                        <div className="flex flex-col items-center gap-4">
+                          <div className="w-12 h-12 border-t-2 border-brand-accent rounded-full animate-spin shadow-[0_0_20px_#00ffbf]" />
+                          <div className="text-brand-accent font-black text-[10px] tracking-[0.5em] uppercase animate-pulse">Neural Buffering...</div>
+                        </div>
+                      </motion.div>
+                    )}
+                    <div className="flex flex-col md:flex-row gap-8 lg:gap-12 flex-1 relative z-10 w-full">
+                      {/* LEFT: THUMBNAIL + VOLUME */}
+                      <div
+                        className="flex flex-col gap-6 items-center flex-none transition-all duration-500"
+                      >
+                        <div className="w-48 h-48 md:w-56 md:h-56 lg:w-60 lg:h-60 relative group flex-none rounded-[2.5rem] overflow-hidden drop-shadow-2xl">
+                          <img src={getProxyUrl(currentTrack.thumbnail)} className="absolute inset-0 w-full h-full object-cover shadow-2xl border border-white/10 group-hover:scale-105 transition-transform duration-700" alt="" />
+                          <div className="absolute inset-0 bg-brand-accent/10 opacity-0 group-hover:opacity-100 transition-opacity rounded-[2.5rem] flex items-center justify-center">
+                            <Activity className="text-brand-accent animate-pulse" size={32} />
+                          </div>
+                        </div>
+
+                        {/* COMPACT VOLUME UNIT */}
+                        <div className={`w-full flex flex-col gap-2 px-2 p-3 rounded-2xl border ${isAuraMode ? 'bg-white/[0.03] border-white/[0.14] backdrop-blur-xl' : 'bg-white/5 border-white/5'}`}>
+                          <div className="flex items-center justify-between">
+                            <button onClick={() => handleControl('mute')} className="hover:text-brand-accent transition-colors active:scale-90">
+                              <Volume2 size={12} className={volume === 0 ? 'text-red-500' : 'text-brand-accent/50'} />
+                            </button>
+                            <span className="text-[9px] font-mono text-brand-accent font-black tracking-widest">{Math.round(volume * 100)}%</span>
+                          </div>
+                          <input type="range" min="0" max="1" step="0.01" value={volume} onChange={(e) => handleVolumeChange(e.target.value)} className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-brand-accent" />
+                        </div>
+                      </div>
+
+                      {/* RIGHT: METADATA + SEEKER + TRANSPORT */}
+                      <div className="flex flex-col flex-1 min-w-0 py-0">
+                        <div className="mb-6">
+                          <div className="flex items-center justify-between gap-4 mb-2">
+                            <div className="label-caps mb-0 text-brand-accent/60 text-[9px] flex items-center gap-2 tracking-[0.28em] uppercase font-black">
+                              <span className="w-1 h-1 rounded-full bg-brand-accent animate-pulse" />
+                              {isAudioBuffering ? "Buffering" : "Now Playing"}
+                            </div>
+                            <PlayerActionButtons
+                              canDownloadCurrentTrack={canDownloadCurrentTrack}
+                              canOpenCurrentSource={canOpenCurrentSource}
+                              currentTrack={currentTrack}
+                              currentTrackSourceUrl={currentTrackSourceUrl}
+                              cycleRepeatMode={cycleRepeatMode}
+                              handleControl={handleControl}
+                              handleDownloadCurrentTrack={handleDownloadCurrentTrack}
+                              isCurrentTrackFavorite={isTrackFavorite(currentTrack)}
+                              isDownloadingTrack={isDownloadingTrack}
+                              isFocusedMode={isFocusedMode}
+                              openLibraryOverlay={openLibraryOverlay}
+                              openTrackInspect={openTrackInspect}
+                              queueLength={queue.length}
+                              repeatMode={repeatMode}
+                              repeatModeBadge={repeatModeBadge}
+                              repeatModeLabel={repeatModeLabel}
+                              setIsFocusedMode={setIsFocusedMode}
+                              setIsPlayerOverlayOpen={setIsPlayerOverlayOpen}
+                              toggleFavoriteTrack={toggleFavoriteTrack}
+                            />
+                          </div>
+                          <h1 className={`${playerTitleClass} font-black text-white/95 leading-none uppercase tracking-tighter mb-2 line-clamp-2 transition-all duration-700`} style={{ textShadow: visualizerMode === 'pulse' ? `0 0 20px ${themeColor}44` : 'none' }}>{currentTrack.title}</h1>
+                          <p className="text-brand-accent text-xs font-black uppercase tracking-[0.3em] opacity-80 transition-all duration-700" style={{ textShadow: visualizerMode === 'pulse' ? `0 0 10px ${themeColor}88` : 'none' }}>{currentTrack.author}</p>
+                        </div>
+
+                        <div className="mt-auto space-y-6">
+                          <PlaybackProgressIsland
+                            durationMs={currentTrack.totalDurationMs || currentTrack.duration || 0}
+                            getPositionMs={getActivePlaybackPositionMs}
+                            onSeek={handleSeek}
+                            accent={trackProgressAccent}
+                            glow={trackProgressGlow}
+                            barClassName="h-1.5 w-full bg-white/5 rounded-full overflow-hidden relative group cursor-pointer"
+                            fillClassName="absolute inset-0 left-0 w-full"
+                            timeRowClassName="flex justify-between text-[10px] font-mono text-white/30 font-black tracking-widest uppercase"
+                          />
+
+                          {/* COMPACT TRANSPORT CLUSTER - CENTERED */}
+                          <PlayerTransportControls
+                            beatRingsRef={beatRingsRef}
+                            handleControl={handleControl}
+                            isAuraMode={isAuraMode}
+                            isPlaying={isPlaying}
+                            playButtonRef={playButtonRef}
+                            trackControlAccent={trackControlAccent}
+                            trackControlGlow={trackControlGlow}
+                          />
+
+                          {/* VIDEO MODE TOGGLE PILL */}
+                          {currentTrack && isStandalone && (
+                            <div className="flex items-center justify-center mt-4">
+                              <PlayerModePill videoMode={videoMode} switchVideoMode={switchVideoMode} />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="w-full h-64 flex flex-col items-center justify-center gap-6 opacity-10">
+                    <Music size={80} className="text-brand-text-dim animate-pulse" strokeWidth={1} />
+                    <div className="label-caps text-xl tracking-[0.5em]">Network Standby</div>
+                  </div>
+                )}
+              </div>
+            )}
 
 
-      <motion.main 
-        className={`aether-depth-stage flex-1 relative z-10 w-full mb-0 min-h-0 px-4 md:px-6 py-4 ${isVerticalStack ? '!flex !flex-col !gap-8 overflow-y-auto scroll-smooth pb-20 custom-scrollbar' : 'flex flex-row gap-4 overflow-hidden'}`}
-        style={{
-          scale: 1,
-          paddingRight: isDualVisualMode && !isVerticalStack ? `calc(${dualVisualStageWidth} + 1.25rem)` : undefined,
-        }}
-        transition={{ type: "spring", stiffness: 300, damping: 20 }}
-      >
-        
-        {/* PLAYER & LYRICS PILLAR */}
-        <div className={`performance-island flex flex-col gap-4 min-w-0 overflow-hidden ${leftWorkspaceClass}`}>
-          
-          {/* PLAYER CARD */}
-          {isDualWorkspaceMode ? (
+            {/* LYRICS PANEL - FLEX-1 TO FILL GAP */}
             <div
-              className={`performance-island glass-card relative overflow-hidden shrink-0 rounded-[2.35rem] border border-white/[0.08] px-4 py-4 md:px-5 md:py-4 transition-all duration-500 ${isAuraMode ? 'bg-white/[0.02] border-white/[0.14] backdrop-blur-[28px] shadow-[0_20px_70px_rgba(0,0,0,0.26)]' : 'bg-[#080b10]/88'}`}
-              style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder } : undefined}
+              className={`performance-island glass-card overflow-hidden flex flex-col transition-all duration-300 min-h-0 ${panelGlassClass} ${panelInteractiveClass} ${lyricsPanelHeightClass}`}
+              style={{
+                ...(isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : {}),
+              }}
             >
-              {currentTrack ? (
-                <div className="relative z-10 flex flex-col gap-3">
-                  <div className="flex items-start gap-4">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="label-caps mb-0 text-brand-accent/75 text-[9px] tracking-[0.24em]">Dual Stage</span>
-                        <span className="rounded-full border border-brand-accent/20 bg-brand-accent/10 px-2 py-1 text-[8px] font-black uppercase tracking-[0.18em] text-brand-accent/80">
-                          Main Player
+              <div className={`border-b border-white/5 ${panelHeaderClass} ${isVerticalStack ? 'px-3 py-2' : 'px-5 py-4'}`}>
+                <div className="flex items-start justify-between gap-3 min-w-0">
+                  <div className="flex items-start gap-3 min-w-0 flex-1 overflow-hidden">
+                    <div className="w-9 h-9 rounded-2xl bg-brand-accent/10 border border-brand-accent/20 flex items-center justify-center text-brand-accent flex-none shadow-[0_0_18px_rgba(0,255,191,0.15)]">
+                      <BookOpen size={16} />
+                    </div>
+                    <div className="min-w-0 flex-1 overflow-hidden">
+                      <div className="flex items-center gap-2 flex-wrap min-w-0">
+                        <span className="label-caps mb-0 text-[9px] tracking-[0.1em] uppercase truncate shrink">{lyricsHeaderEyebrow}</span>
+                        <span className={`px-2 py-1 rounded-full text-[8px] font-black uppercase tracking-[0.18em] border ${currentManualLyricsLines.length > 0 ? 'bg-brand-accent/15 border-brand-accent/30 text-brand-accent' : isLyricsLoading ? 'bg-white/5 border-white/10 text-white/50' : isPlaying ? (lyrics.length > 0 ? 'bg-white/5 border-white/10 text-white/65' : 'bg-white/5 border-white/10 text-white/45') : 'bg-white/5 border-white/10 text-white/45'}`}>
+                          {currentManualLyricsLines.length > 0 ? 'Manual' : isLyricsLoading ? 'Fetching' : isPlaying ? (lyrics.length > 0 ? 'Synced' : 'Decoding') : lyrics.length > 0 ? 'Ready' : 'Idle'}
                         </span>
                       </div>
-                      <div className="mt-1 text-lg md:text-xl font-black text-white/95 leading-tight uppercase tracking-tight line-clamp-2">{currentTrack.title}</div>
-                      <div className="mt-1 text-[10px] font-black uppercase tracking-[0.26em] text-brand-accent/70 truncate">{currentTrack.author}</div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        onClick={cycleRepeatMode}
-                        className={`relative flex h-10 w-10 items-center justify-center rounded-2xl border transition-all active:scale-95 ${repeatMode === 'off' ? 'border-white/10 bg-white/[0.04] text-white/60 hover:border-brand-accent/30 hover:text-brand-accent' : 'border-brand-accent/30 bg-brand-accent/12 text-brand-accent shadow-[0_0_16px_rgba(0,255,191,0.16)]'}`}
-                        title={repeatModeLabel}
-                      >
-                        <Repeat size={16} />
-                        {repeatModeBadge && <span className="absolute right-1.5 top-1.5 text-[8px] font-black leading-none">{repeatModeBadge}</span>}
-                      </button>
-                      <button onClick={() => handleControl('previous')} className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/60 transition-all hover:border-brand-accent/30 hover:text-brand-accent active:scale-95" title="Previous">
-                        <Rewind size={18} fill="currentColor" />
-                      </button>
-                      <button onClick={() => handleControl(isPlaying ? 'pause' : 'resume')} className="flex h-12 w-12 items-center justify-center rounded-[1.2rem] text-black transition-all hover:scale-[1.03] active:scale-95" style={{ background: trackControlAccent, boxShadow: `0 0 22px ${trackControlGlow}` }} title={isPlaying ? 'Pause' : 'Play'}>
-                        {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-0.5" />}
-                      </button>
-                      <button onClick={() => handleControl('skip')} className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/60 transition-all hover:border-brand-accent/30 hover:text-brand-accent active:scale-95" title="Next">
-                        <FastForward size={18} fill="currentColor" />
-                      </button>
-                    </div>
-                  </div>
-
-                  <PlaybackProgressIsland
-                    durationMs={currentTrack.totalDurationMs || currentTrack.duration || 0}
-                    getPositionMs={getActivePlaybackPositionMs}
-                    onSeek={handleSeek}
-                    accent={trackProgressAccent}
-                    glow={trackProgressGlow}
-	                    middleContent={<PlayerModePill videoMode={videoMode} switchVideoMode={switchVideoMode} variant="dual" />}
-                  />
-                </div>
-              ) : (
-                <div className="flex h-28 items-center justify-center text-white/25">Standby</div>
-              )}
-            </div>
-          ) : (
-          <div
-            className={`performance-island glass-card flex relative overflow-hidden group shrink-0 transition-all duration-700 flex-col sm:flex-row flex-none rounded-[3.5rem] shadow-2xl transition-all ${playerCardClass} ${isAuraMode ? 'bg-white/[0.015] border-white/[0.14] backdrop-blur-[30px] shadow-[0_24px_90px_rgba(0,0,0,0.32)]' : 'border-white/5'}`}
-            style={isAuraMode ? { boxShadow: auraCardShadow, borderColor: auraCardBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
-          >
-            {isAuraMode && (
-              <div
-                className="absolute inset-0 pointer-events-none"
-                style={{
-                  background: `radial-gradient(120% 85% at 50% 0%, rgba(0,255,191,${0.06 + immersiveBeatIntensity * 0.16}) 0%, rgba(0,255,191,0) 72%)`,
-                  opacity: 0.85,
-                }}
-              />
-            )}
-        {/* TOP BAR / NAVIGATION */}
-            {currentTrack && (
-              <div className="absolute inset-0 blur-[120px] opacity-10 pointer-events-none group-hover:opacity-20 transition-opacity">
-                <img src={getProxyUrl(currentTrack.thumbnail)} alt="" className="w-full h-full object-cover" />
-              </div>
-            )}
-            
-            {/* HIGH-FIDELITY CANVAS VISUALIZER (BTM BAR) */}
-            <canvas 
-               ref={visualizerCanvasRef} 
-               width={800} 
-               height={40} 
-	               className={`aether-visualizer-canvas absolute bottom-0 left-0 right-0 w-full h-[32px] pointer-events-none z-20 transition-opacity duration-500 ${visualizerMode === 'bars' ? 'opacity-50' : 'opacity-0'}`}
-            />
-
-            {currentTrack ? (
-                <>
-                {/* NEURAL BUFFERING OVERLAY */}
-                {isAudioBuffering && (
-                  <motion.div 
-                    initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-                    className="absolute inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm rounded-[2.5rem]"
-                  >
-                    <div className="flex flex-col items-center gap-4">
-                        <div className="w-12 h-12 border-t-2 border-brand-accent rounded-full animate-spin shadow-[0_0_20px_#00ffbf]" />
-                        <div className="text-brand-accent font-black text-[10px] tracking-[0.5em] uppercase animate-pulse">Neural Buffering...</div>
-                    </div>
-                  </motion.div>
-                )}
-              <div className="flex flex-col md:flex-row gap-8 lg:gap-12 flex-1 relative z-10 w-full">
-                 {/* LEFT: THUMBNAIL + VOLUME */}
-                 <div
-                    className="flex flex-col gap-6 items-center flex-none transition-all duration-500"
-                 >
-                    <div className="w-48 h-48 md:w-56 md:h-56 lg:w-60 lg:h-60 relative group flex-none rounded-[2.5rem] overflow-hidden drop-shadow-2xl">
-                        <img src={getProxyUrl(currentTrack.thumbnail)} className="absolute inset-0 w-full h-full object-cover shadow-2xl border border-white/10 group-hover:scale-105 transition-transform duration-700" alt="" />
-                        <div className="absolute inset-0 bg-brand-accent/10 opacity-0 group-hover:opacity-100 transition-opacity rounded-[2.5rem] flex items-center justify-center">
-                            <Activity className="text-brand-accent animate-pulse" size={32} />
-                        </div>
-                    </div>
-
-                    {/* COMPACT VOLUME UNIT */}
-                    <div className={`w-full flex flex-col gap-2 px-2 p-3 rounded-2xl border ${isAuraMode ? 'bg-white/[0.03] border-white/[0.14] backdrop-blur-xl' : 'bg-white/5 border-white/5'}`}>
-                       <div className="flex items-center justify-between">
-                          <button onClick={() => handleControl('mute')} className="hover:text-brand-accent transition-colors active:scale-90">
-                            <Volume2 size={12} className={volume === 0 ? 'text-red-500' : 'text-brand-accent/50'} />
-                          </button>
-                         <span className="text-[9px] font-mono text-brand-accent font-black tracking-widest">{Math.round(volume * 100)}%</span>
-                       </div>
-                       <input type="range" min="0" max="1" step="0.01" value={volume} onChange={(e) => handleVolumeChange(e.target.value)} className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-brand-accent" />
-                    </div>
-                 </div>
-
-                 {/* RIGHT: METADATA + SEEKER + TRANSPORT */}
-                 <div className="flex flex-col flex-1 min-w-0 py-0">
-                    <div className="mb-6">
-                        <div className="flex items-center justify-between gap-4 mb-2">
-                             <div className="label-caps mb-0 text-brand-accent/60 text-[9px] flex items-center gap-2 tracking-[0.28em] uppercase font-black">
-                              <span className="w-1 h-1 rounded-full bg-brand-accent animate-pulse" />
-                               {isAudioBuffering ? "Buffering" : "Now Playing"}
-                           </div>
-	                           <PlayerActionButtons
-	                             canDownloadCurrentTrack={canDownloadCurrentTrack}
-	                             canOpenCurrentSource={canOpenCurrentSource}
-	                             currentTrack={currentTrack}
-	                             currentTrackSourceUrl={currentTrackSourceUrl}
-	                             cycleRepeatMode={cycleRepeatMode}
-	                             handleControl={handleControl}
-	                             handleDownloadCurrentTrack={handleDownloadCurrentTrack}
-	                             isCurrentTrackFavorite={isTrackFavorite(currentTrack)}
-	                             isDownloadingTrack={isDownloadingTrack}
-	                             isFocusedMode={isFocusedMode}
-	                             openLibraryOverlay={openLibraryOverlay}
-	                             openTrackInspect={openTrackInspect}
-	                             queueLength={queue.length}
-	                             repeatMode={repeatMode}
-	                             repeatModeBadge={repeatModeBadge}
-	                             repeatModeLabel={repeatModeLabel}
-	                             setIsFocusedMode={setIsFocusedMode}
-	                             setIsPlayerOverlayOpen={setIsPlayerOverlayOpen}
-	                             toggleFavoriteTrack={toggleFavoriteTrack}
-	                           />
-                        </div>
-                        <h1 className={`${playerTitleClass} font-black text-white/95 leading-none uppercase tracking-tighter mb-2 line-clamp-2 transition-all duration-700`} style={{ textShadow: visualizerMode === 'pulse' ? `0 0 20px ${themeColor}44` : 'none' }}>{currentTrack.title}</h1>
-                        <p className="text-brand-accent text-xs font-black uppercase tracking-[0.3em] opacity-80 transition-all duration-700" style={{ textShadow: visualizerMode === 'pulse' ? `0 0 10px ${themeColor}88` : 'none' }}>{currentTrack.author}</p>
-                    </div>
-
-                    <div className="mt-auto space-y-6">
-                       <PlaybackProgressIsland
-                         durationMs={currentTrack.totalDurationMs || currentTrack.duration || 0}
-                         getPositionMs={getActivePlaybackPositionMs}
-                         onSeek={handleSeek}
-                         accent={trackProgressAccent}
-                         glow={trackProgressGlow}
-                         barClassName="h-1.5 w-full bg-white/5 rounded-full overflow-hidden relative group cursor-pointer"
-                         fillClassName="absolute inset-0 left-0 w-full"
-                         timeRowClassName="flex justify-between text-[10px] font-mono text-white/30 font-black tracking-widest uppercase"
-                       />
-
-                        {/* COMPACT TRANSPORT CLUSTER - CENTERED */}
-	                        <PlayerTransportControls
-	                          beatRingsRef={beatRingsRef}
-	                          handleControl={handleControl}
-	                          isAuraMode={isAuraMode}
-	                          isPlaying={isPlaying}
-	                          playButtonRef={playButtonRef}
-	                          trackControlAccent={trackControlAccent}
-	                          trackControlGlow={trackControlGlow}
-	                        />
-
-                         {/* VIDEO MODE TOGGLE PILL */}
-                         {currentTrack && isStandalone && (
-	                           <div className="flex items-center justify-center mt-4">
-	                             <PlayerModePill videoMode={videoMode} switchVideoMode={switchVideoMode} />
-	                           </div>
-                         )}
+                      <div className="mt-1 text-[10px] uppercase tracking-[0.22em] text-white/35 truncate">
+                        {currentManualLyricsLines.length > 0
+                          ? `${currentManualLyricsLines.length} saved line${currentManualLyricsLines.length === 1 ? '' : 's'} for ${currentTrack?.title || currentTrackTitle || 'this track'}`
+                          : currentTrack?.title
+                            ? currentTrack.title
+                            : 'No track selected'}
                       </div>
-                   </div>
-               </div>
-               </>
-            ) : (
-              <div className="w-full h-64 flex flex-col items-center justify-center gap-6 opacity-10">
-                <Music size={80} className="text-brand-text-dim animate-pulse" strokeWidth={1} />
-                <div className="label-caps text-xl tracking-[0.5em]">Network Standby</div>
-              </div>
-            )}
-          </div>
-          )}
-
-
-          {/* LYRICS PANEL - FLEX-1 TO FILL GAP */}
-          <div
-            className={`performance-island glass-card overflow-hidden flex flex-col transition-all duration-300 min-h-0 ${panelGlassClass} ${panelInteractiveClass} ${lyricsPanelHeightClass}`}
-            style={{
-              ...(isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : {}),
-            }}
-          >
-            <div className={`border-b border-white/5 ${panelHeaderClass} ${isVerticalStack ? 'px-3 py-2' : 'px-5 py-4'}`}>
-              <div className="flex items-start justify-between gap-3 min-w-0">
-                <div className="flex items-start gap-3 min-w-0 flex-1 overflow-hidden">
-                  <div className="w-9 h-9 rounded-2xl bg-brand-accent/10 border border-brand-accent/20 flex items-center justify-center text-brand-accent flex-none shadow-[0_0_18px_rgba(0,255,191,0.15)]">
-                    <BookOpen size={16} />
+                    </div>
                   </div>
-                  <div className="min-w-0 flex-1 overflow-hidden">
-                    <div className="flex items-center gap-2 flex-wrap min-w-0">
-                      <span className="label-caps mb-0 text-[9px] tracking-[0.1em] uppercase truncate shrink">{lyricsHeaderEyebrow}</span>
-                      <span className={`px-2 py-1 rounded-full text-[8px] font-black uppercase tracking-[0.18em] border ${currentManualLyricsLines.length > 0 ? 'bg-brand-accent/15 border-brand-accent/30 text-brand-accent' : isLyricsLoading ? 'bg-white/5 border-white/10 text-white/50' : isPlaying ? (lyrics.length > 0 ? 'bg-white/5 border-white/10 text-white/65' : 'bg-white/5 border-white/10 text-white/45') : 'bg-white/5 border-white/10 text-white/45'}`}>
-                        {currentManualLyricsLines.length > 0 ? 'Manual' : isLyricsLoading ? 'Fetching' : isPlaying ? (lyrics.length > 0 ? 'Synced' : 'Decoding') : lyrics.length > 0 ? 'Ready' : 'Idle'}
-                      </span>
+                  <div className="flex items-center gap-1.5 no-drag flex-none shrink-0 ml-2 flex-wrap justify-end">
+                    <div className="flex items-center bg-white/5 rounded-xl border border-white/10 p-1 group/sync relative overflow-hidden">
+                      <button onClick={() => handleSync(-500)} className="p-2 hover:text-brand-accent" title="Shift lyrics backward 500ms"><ChevronLeft size={18} /></button>
+                      <span className="text-[10px] font-mono text-brand-accent font-black w-14 text-center">{lyricOffsetMs}ms</span>
+                      <button onClick={() => handleSync(500)} className="p-2 hover:text-brand-accent" title="Shift lyrics forward 500ms"><ChevronRight size={18} /></button>
                     </div>
-                    <div className="mt-1 text-[10px] uppercase tracking-[0.22em] text-white/35 truncate">
-                      {currentManualLyricsLines.length > 0
-                        ? `${currentManualLyricsLines.length} saved line${currentManualLyricsLines.length === 1 ? '' : 's'} for ${currentTrack?.title || currentTrackTitle || 'this track'}`
-                        : currentTrack?.title
-                          ? currentTrack.title
-                          : 'No track selected'}
-                    </div>
+                    <button
+                      onClick={openManualLyricsEditor}
+                      className={`flex items-center gap-1 px-3 py-2 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all ${currentManualLyricsLines.length > 0 ? 'bg-brand-accent/15 border-brand-accent/40 text-brand-accent' : 'bg-white/5 border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/40'}`}
+                      title={currentManualLyricsLines.length > 0 ? 'Edit saved manual lyrics' : 'Add manual lyrics for this track'}
+                    >
+                      <Edit3 size={10} /> {currentManualLyricsLines.length > 0 ? 'Edit' : 'Add'}
+                    </button>
+                    <button
+                      onClick={handleSaveLyricPreset}
+                      className={`hidden md:flex items-center gap-1 px-3 py-2 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all ${isLyricPresetSaved ? 'bg-brand-accent/15 border-brand-accent/40 text-brand-accent' : 'bg-white/5 border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/40'}`}
+                      title={hasLyricPreset ? 'Update saved sync offset for this track' : 'Save current sync offset for this track'}
+                    >
+                      <Save size={10} /> {lyricPresetActionLabel}
+                    </button>
+                    <button
+                      onClick={handleResetLyricPreset}
+                      className="hidden md:flex items-center gap-1 px-3 py-2 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all bg-white/5 border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/40"
+                      title="Reset sync for this track"
+                    >
+                      <RotateCcw size={10} /> Reset
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (isImmersiveLyricsLocked) return;
+                        if (!isLyricsExpanded) closeHeaderSurfaces();
+                        setIsLyricsExpanded((prev) => !prev);
+                      }}
+                      disabled={isImmersiveLyricsLocked}
+                      className={`flex items-center justify-center p-2 w-8 h-8 rounded-xl border transition-all text-brand-accent group flex-none ${isImmersiveLyricsLocked ? 'bg-brand-accent/12 border-brand-accent/30 text-brand-accent/80 cursor-default' : 'bg-white/5 border-white/10 hover:bg-white/10 hover:border-brand-accent active:scale-90'}`}
+                      title={isImmersiveLyricsLocked ? 'Immersive lyrics are unavailable while the visual stage is active' : 'Immersive Output'}
+                    >
+                      <Maximize2 size={16} />
+                    </button>
                   </div>
                 </div>
-                <div className="flex items-center gap-1.5 no-drag flex-none shrink-0 ml-2 flex-wrap justify-end">
-                  <div className="flex items-center bg-white/5 rounded-xl border border-white/10 p-1 group/sync relative overflow-hidden">
-                    <button onClick={() => handleSync(-500)} className="p-2 hover:text-brand-accent" title="Shift lyrics backward 500ms"><ChevronLeft size={18} /></button>
-                    <span className="text-[10px] font-mono text-brand-accent font-black w-14 text-center">{lyricOffsetMs}ms</span>
-                    <button onClick={() => handleSync(500)} className="p-2 hover:text-brand-accent" title="Shift lyrics forward 500ms"><ChevronRight size={18} /></button>
-                  </div>
-                  <button
-                    onClick={openManualLyricsEditor}
-                    className={`flex items-center gap-1 px-3 py-2 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all ${currentManualLyricsLines.length > 0 ? 'bg-brand-accent/15 border-brand-accent/40 text-brand-accent' : 'bg-white/5 border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/40'}`}
-                    title={currentManualLyricsLines.length > 0 ? 'Edit saved manual lyrics' : 'Add manual lyrics for this track'}
-                  >
-                    <Edit3 size={10} /> {currentManualLyricsLines.length > 0 ? 'Edit' : 'Add'}
-                  </button>
-                  <button
-                    onClick={handleSaveLyricPreset}
-                    className={`hidden md:flex items-center gap-1 px-3 py-2 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all ${isLyricPresetSaved ? 'bg-brand-accent/15 border-brand-accent/40 text-brand-accent' : 'bg-white/5 border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/40'}`}
-                    title={hasLyricPreset ? 'Update saved sync offset for this track' : 'Save current sync offset for this track'}
-                  >
-                    <Save size={10} /> {lyricPresetActionLabel}
-                  </button>
-                  <button
-                    onClick={handleResetLyricPreset}
-                    className="hidden md:flex items-center gap-1 px-3 py-2 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all bg-white/5 border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/40"
-                    title="Reset sync for this track"
-                  >
-                    <RotateCcw size={10} /> Reset
-                  </button>
-                  <button 
-                    onClick={() => {
-                      if (isImmersiveLyricsLocked) return;
-                      if (!isLyricsExpanded) closeHeaderSurfaces();
-                      setIsLyricsExpanded((prev) => !prev);
+              </div>
+
+              <div className={`flex-1 overflow-y-auto scroll-smooth relative ${lyricsViewportClass}`} ref={lyricsContainerRef} onWheel={() => setIsAutoScrollPaused(true)} onTouchStart={() => setIsAutoScrollPaused(true)}>
+                {isDualWorkspaceMode && (
+                  <motion.div
+                    aria-hidden
+                    className="pointer-events-none absolute left-1/2 top-1/2 z-0 -translate-x-1/2 -translate-y-1/2 rounded-full"
+                    animate={{
+                      opacity: 0.12 + immersiveBeatIntensity * 0.34,
+                      scale: 1 + immersiveBeatIntensity * 0.22,
                     }}
-                    disabled={isImmersiveLyricsLocked}
-                    className={`flex items-center justify-center p-2 w-8 h-8 rounded-xl border transition-all text-brand-accent group flex-none ${isImmersiveLyricsLocked ? 'bg-brand-accent/12 border-brand-accent/30 text-brand-accent/80 cursor-default' : 'bg-white/5 border-white/10 hover:bg-white/10 hover:border-brand-accent active:scale-90'}`}
-                    title={isImmersiveLyricsLocked ? 'Immersive lyrics are unavailable while the visual stage is active' : 'Immersive Output'}
+                    transition={{ duration: 0.22, ease: 'easeOut' }}
+                    style={{
+                      width: 'min(72vw, 760px)',
+                      height: 'min(72vw, 760px)',
+                      background: `radial-gradient(circle, ${themeColor}${alphaHex(0.18)} 0%, ${themeColor}${alphaHex(0.07)} 36%, transparent 72%)`,
+                      filter: `blur(${30 + immersiveBeatIntensity * 22}px)`,
+                      willChange: 'transform, opacity, filter'
+                    }}
+                  />
+                )}
+                {isAutoScrollPaused && lyrics.length > 0 && (
+                  <button
+                    onClick={handleResyncLyrics}
+                    className="sticky top-0 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-4 py-2 bg-brand-accent text-black font-black text-[10px] uppercase tracking-widest rounded-full shadow-neon translate-y-4 animate-bounce hover:scale-105 transition-transform"
                   >
-                    <Maximize2 size={16} />
+                    <RotateCcw size={12} /> Resume Sync
                   </button>
-                </div>
-              </div>
-            </div>
-            
-            <div className={`flex-1 overflow-y-auto scroll-smooth relative ${lyricsViewportClass}`} ref={lyricsContainerRef} onWheel={() => setIsAutoScrollPaused(true)} onTouchStart={() => setIsAutoScrollPaused(true)}>
-              {isDualWorkspaceMode && (
-                <motion.div
-                  aria-hidden
-                  className="pointer-events-none absolute left-1/2 top-1/2 z-0 -translate-x-1/2 -translate-y-1/2 rounded-full"
-                  animate={{
-                    opacity: 0.12 + immersiveBeatIntensity * 0.34,
-                    scale: 1 + immersiveBeatIntensity * 0.22,
-                  }}
-                  transition={{ duration: 0.22, ease: 'easeOut' }}
-                  style={{
-                    width: 'min(72vw, 760px)',
-                    height: 'min(72vw, 760px)',
-                    background: `radial-gradient(circle, ${themeColor}${alphaHex(0.18)} 0%, ${themeColor}${alphaHex(0.07)} 36%, transparent 72%)`,
-                    filter: `blur(${30 + immersiveBeatIntensity * 22}px)`,
-                    willChange: 'transform, opacity, filter'
-                  }}
-                />
-              )}
-              {isAutoScrollPaused && lyrics.length > 0 && (
-                <button 
-                  onClick={handleResyncLyrics}
-                  className="sticky top-0 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-4 py-2 bg-brand-accent text-black font-black text-[10px] uppercase tracking-widest rounded-full shadow-neon translate-y-4 animate-bounce hover:scale-105 transition-transform"
-                >
-                  <RotateCcw size={12} /> Resume Sync
-                </button>
-              )}
-              {isLyricsLoading ? (
-                <div className="h-full flex items-center justify-center"><Loader2 className="animate-spin text-brand-accent" size={48} /></div>
-              ) : lyrics.length > 0 ? (
-                <div className={lyricsListClass}>
-                  {memoizedLyricsContent}
-                </div>
-              ) : (
-                <div className="h-full flex flex-col items-center justify-center text-center p-12">
-                   <div className="grid grid-cols-4 gap-4 w-64 opacity-10 mb-12">
-                      {[...Array(16)].map((_, i) => <div key={i} className="h-4 bg-brand-accent rounded-sm animate-pulse" style={{ animationDelay: `${i*0.1}s` }} />)}
-                   </div>
-                   <div className="flex flex-col items-center gap-4 opacity-20">
+                )}
+                {isLyricsLoading ? (
+                  <div className="h-full flex items-center justify-center"><Loader2 className="animate-spin text-brand-accent" size={48} /></div>
+                ) : lyrics.length > 0 ? (
+                  <div className={lyricsListClass}>
+                    {memoizedLyricsContent}
+                  </div>
+                ) : (
+                  <div className="h-full flex flex-col items-center justify-center text-center p-12">
+                    <div className="grid grid-cols-4 gap-4 w-64 opacity-10 mb-12">
+                      {[...Array(16)].map((_, i) => <div key={i} className="h-4 bg-brand-accent rounded-sm animate-pulse" style={{ animationDelay: `${i * 0.1}s` }} />)}
+                    </div>
+                    <div className="flex flex-col items-center gap-4 opacity-20">
                       <Signal size={48} className="text-brand-accent animate-pulse" />
                       <div className="text-[12px] font-black uppercase tracking-[0.5em]">SIGNAL_STANDBY</div>
                       <div className="text-[10px] font-mono uppercase tracking-widest opacity-50">awaiting incoming stream decrypt...</div>
-                   </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* RIGHT COLUMN */}
-        {showSecondaryColumn && (
-          <div className={`performance-island flex flex-col gap-4 min-w-0 ${isVerticalStack ? '!w-full !max-w-full !flex-none pb-20' : 'w-[33.333%] h-full overflow-hidden flex-none'}`}>
-            {/* QUEUE */}
-            <div
-              className={`performance-island ${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col ${isAutoplayMenuOpen ? 'overflow-visible z-[340]' : 'overflow-hidden'} transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}
-              style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
-            >
-            <div className={`p-3 border-b border-white/5 flex items-center justify-between ${panelHeaderClass}`}>
-               <div className="flex items-center gap-3">
-                 <ListMusic size={18} className="text-brand-accent" />
-                 <span className="label-caps mb-0 text-[10px]">Queue Buffer</span>
-               </div>
-               <div className="flex items-center gap-3">
-                 <button 
-                  onClick={() => { if (queue.length > 0) openLibraryOverlay({ type: 'queue', items: queue.slice() }); }}
-                  className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-brand-accent/20 hover:text-brand-accent"
-                  title="Flash Queue to Target Vault"
-                 >
-                    <Save size={10} />
-                 </button>
-                           <button 
-                            onClick={() => setIsViewingFullQueue(true)}
-                            className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-brand-accent/20 hover:text-brand-accent"
-                            title="View Full Queue"
-                            >
-                              <Maximize2 size={10} />
-                            </button>
-                 <button
-                    onClick={() => {
-                        if (queue.length > 1) {
-                            console.log("[Aether/Shuffle] Shuffling buffer...");
-                            setQueue(prev => {
-                               if (!Array.isArray(prev) || prev.length <= 1) return prev;
-                               const current = prev[0];
-                               const rest = [...prev.slice(1)].sort(() => Math.random() - 0.5);
-                               return [current, ...rest];
-                            });
-                        }
-                    }}
-                    className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-white/10 hover:text-white"
-                    title="Shuffle Queue Buffer"
-                 >
-                    <Shuffle size={10} />
-                 </button>
-                 <div className="relative">
-                   <button 
-                     onClick={(e) => {
-                       e.stopPropagation();
-                       setIsAutoplayMenuOpen(prev => !prev);
-                     }}
-                     className={`p-1.5 rounded-lg transition-all flex items-center gap-2 ${isAutoplayEnabled ? 'bg-brand-accent/20 text-brand-accent border border-brand-accent/30 shadow-neon' : 'bg-white/5 text-white/30 border border-white/10 opacity-70'}`}
-                     title="Neural Autoplay Mode"
-                   >
-                     <Zap size={10} className={isAutoplayEnabled ? 'animate-pulse' : ''} />
-                     <span className="text-[8px] font-black uppercase tracking-tighter">{isAutoplayEnabled ? 'AUTO_ON' : 'AUTO_OFF'}</span>
-                     <span className="text-[8px] font-black uppercase tracking-tighter opacity-80">{autoplayMoodMode}</span>
-                   </button>
-
-                   {isAutoplayMenuOpen && (
-                     <div className="absolute right-0 top-full mt-2 z-[320] w-48 rounded-xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-2 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
-                       <button
-                         onClick={() => {
-                           setIsAutoplayEnabled(prev => !prev);
-                           setIsAutoplayMenuOpen(false);
-                         }}
-                         className={`w-full text-left px-3 py-2 rounded-lg text-[11px] font-black uppercase tracking-widest transition-colors ${isAutoplayEnabled ? 'text-brand-accent bg-brand-accent/10' : 'text-white/70 hover:text-brand-accent hover:bg-white/5'}`}
-                       >
-                         {isAutoplayEnabled ? 'Disable Autoplay' : 'Enable Autoplay'}
-                       </button>
-                       <div className="my-1 border-t border-white/10" />
-                       {AUTOPLAY_MOOD_MODES.map((mode) => (
-                         <button
-                           key={`autoplay-mode-${mode.id}`}
-                           onClick={() => {
-                             setAutoplayMoodMode(mode.id);
-                             setIsAutoplayMenuOpen(false);
-                             setLastAdded(`Autoplay mood • ${mode.label}`);
-                             setTimeout(() => setLastAdded(null), 1500);
-                           }}
-                           className={`w-full text-left px-3 py-2 rounded-lg text-[11px] font-black uppercase tracking-widest transition-colors ${autoplayMoodMode === mode.id ? 'text-brand-accent bg-brand-accent/10' : 'text-white/70 hover:text-brand-accent hover:bg-white/5'}`}
-                         >
-                           {mode.label}
-                         </button>
-                       ))}
-                     </div>
-                   )}
-                 </div>
-                 <span className="text-[10px] font-mono font-black text-brand-accent bg-brand-accent/10 px-2 py-0.5 rounded-full">{Math.max(0, queue.length - 1)}</span>
-               </div>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3 pb-6">
-              <AnimatePresence mode="popLayout">
-                {queue.length > 1 ? queue.slice(1).map((track, idx) => {
-                   const warmupId = resolveWarmupTrackId(track);
-                   const isDownloaded = warmupId ? downloadedTracks.includes(warmupId) : downloadedTracks.includes(track.id);
-                   return (
-                   <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} key={`${track.id}-${idx}`} className={`performance-list-item group glass-card p-3 flex items-center gap-4 hover:border-brand-accent/30 transition-all border-white/5 ${isDownloaded ? 'bg-red-500/15 border-red-500/30 shadow-[0_0_20px_rgba(255,0,0,0.35)]' : 'bg-white/[0.01]'}`}>
-                     <img src={getProxyUrl(track.thumbnail)} className="w-12 h-12 rounded-xl object-cover" alt="" />
-                     <div className="flex-1 min-w-0">
-                       <div className="text-[12px] font-black truncate group-hover:text-brand-accent transition-colors uppercase tracking-widest">{track.title}</div>
-                       <div className="text-[10px] text-brand-text-dim truncate font-bold uppercase opacity-50 mt-1">{track.author}</div>
-                     </div>
-                     {isDownloaded && (
-                        <span className="text-[9px] font-black uppercase tracking-widest text-red-500 border border-red-500/70 px-2 py-1 rounded-full">READY</span>
-                     )}
-                     <button onClick={() => openTrackInspect(track, 'queue')} className="lg:opacity-0 group-hover:opacity-100 hover:text-brand-accent p-2" title="Inspect Track">
-                       <Eye size={15} />
-                     </button>
-                     <button onClick={() => handleRemove(idx + 1)} className="lg:opacity-0 group-hover:opacity-100 hover:text-white p-2">
-                       <Trash2 size={16} className="text-red-500/50 hover:text-red-500" />
-                      </button>
-                    </motion.div>
-                   );
-                }) : (
-                  <div className="h-full flex flex-col items-center justify-center opacity-10 py-12 text-[10px] font-black tracking-widest uppercase">
-                    Buffer Empty
-                    {isDoodleMode && <img src={catDoodlePeek} alt="doodle" className="mt-3 h-10 w-auto opacity-70 select-none pointer-events-none" draggable={false} />}
+                    </div>
                   </div>
                 )}
-              </AnimatePresence>
+              </div>
             </div>
           </div>
 
-          {/* DISCOVERY */}
-          <div
-            className={`performance-island ${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col overflow-hidden transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}
-            style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
-          >
-            <div className={`p-3 border-b border-white/5 flex items-center justify-between ${panelHeaderClass}`}>
-              <div className="flex items-center gap-3">
-                <Globe size={18} className="text-brand-accent" />
-                <span className="label-caps mb-0 text-[10px]">Neural Discovery</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setIsViewingFullDiscovery(true)}
-                  className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-brand-accent/20 hover:text-brand-accent"
-                  title="View Full Discovery"
-                >
-                  <Maximize2 size={10} />
-                </button>
-                {(searchResults.length > 0 || hasCompletedSearch) && <button onClick={clearDiscoveryResults} className="p-2 px-4 glass-card text-[9px] font-black text-red-500 hover:bg-red-500/10 active:scale-95 transition-all border-red-500/20">FLUSH</button>}
-              </div>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 pb-6">
-              <AnimatePresence>
-                {discoveryItems.map((t) => (
-                   <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} key={t.id} className="performance-list-item glass-card p-4 flex items-center gap-4 hover:border-brand-accent group overflow-hidden relative transition-all active:scale-[0.98] border-white/5">
-                     <img src={getProxyUrl(t.thumbnail)} className="w-14 h-14 rounded-2xl object-cover z-10" alt="" />
-                     <div className="flex-1 min-w-0 z-10">
-                       <div className="text-[13px] font-black truncate group-hover:text-brand-accent transition-colors uppercase tracking-widest">{t.title}</div>
-                       <div className="text-[10px] text-brand-text-dim truncate font-bold opacity-50 mt-1 uppercase leading-none">{t.author}</div>
-                     </div>
-                     <div className="flex items-center gap-2 z-10">
-                        <button onClick={() => openTrackInspect(t, isSearchActive ? 'discovery' : 'recommendation')} className="w-10 h-10 rounded-xl bg-white/5 text-white/30 flex items-center justify-center hover:bg-brand-accent/20 hover:text-brand-accent transition-all border border-white/10" title="Inspect Track">
-                          <Eye size={18} />
-                        </button>
-                        <button onClick={() => handleAdd(t)} className="w-10 h-10 rounded-xl bg-brand-accent/10 text-brand-accent flex items-center justify-center hover:bg-brand-accent hover:text-brand-dark transition-all border border-brand-accent/20">
-                          <Plus size={22} />
-                        </button>
-                        <button onClick={() => toggleFavoriteTrack(t)} className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all border ${isTrackFavorite(t) ? 'bg-rose-400/15 text-rose-300 border-rose-300/30' : 'bg-white/5 text-white/30 hover:bg-rose-400/15 hover:text-rose-300 border-white/10 hover:border-rose-300/30'}`} title={isTrackFavorite(t) ? 'Remove from Favorites' : 'Add to Favorites'}>
-                          <Heart size={17} fill={isTrackFavorite(t) ? 'currentColor' : 'none'} />
-                        </button>
-                        <button onClick={() => openLibraryOverlay({ type: 'track', items: [t] })} className="w-10 h-10 rounded-xl bg-white/5 text-white/30 flex items-center justify-center hover:bg-brand-accent/20 hover:text-brand-accent transition-all border border-white/10">
-                          <HardDrive size={18} />
-                        </button>
-                     </div>
-                     <div className="absolute inset-0 bg-brand-accent/[0.05] translate-y-full group-hover:translate-y-0 transition-transform duration-500" />
-                    </motion.div>
-                ))}
-              </AnimatePresence>
-                {!isSearching && searchResults.length === 0 && neuralRecommendations.length === 0 && !hasCompletedSearch && (
-                <div className="h-full flex flex-col items-center justify-center gap-4 opacity-10 text-center py-4">
-                   <div className="relative">
-                      <Search size={32} strokeWidth={1} />
-                      <div className="absolute inset-0 blur-xl bg-brand-accent/30 animate-pulse" />
-                   </div>
-                   <p className="text-[8px] font-black uppercase tracking-[0.4em]">Awaiting Content</p>
-                   {isDoodleMode && <img src={catDoodlePeek} alt="doodle" className="h-10 w-auto opacity-75 select-none pointer-events-none" draggable={false} />}
+          {/* RIGHT COLUMN */}
+          {showSecondaryColumn && (
+            <div className={`performance-island flex flex-col gap-4 min-w-0 ${isVerticalStack ? '!w-full !max-w-full !flex-none pb-20' : 'w-[33.333%] h-full overflow-hidden flex-none'}`}>
+              {/* QUEUE */}
+              <div
+                className={`performance-island ${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col ${isAutoplayMenuOpen ? 'overflow-visible z-[340]' : 'overflow-hidden'} transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}
+                style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
+              >
+                <div className={`p-3 border-b border-white/5 flex items-center justify-between ${panelHeaderClass}`}>
+                  <div className="flex items-center gap-3">
+                    <ListMusic size={18} className="text-brand-accent" />
+                    <span className="label-caps mb-0 text-[10px]">Queue Buffer</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => { if (queue.length > 0) openLibraryOverlay({ type: 'queue', items: queue.slice() }); }}
+                      className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-brand-accent/20 hover:text-brand-accent"
+                      title="Flash Queue to Target Vault"
+                    >
+                      <Save size={10} />
+                    </button>
+                    <button
+                      onClick={() => setIsViewingFullQueue(true)}
+                      className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-brand-accent/20 hover:text-brand-accent"
+                      title="View Full Queue"
+                    >
+                      <Maximize2 size={10} />
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (queue.length > 1) {
+                          console.log("[Aether/Shuffle] Shuffling buffer...");
+                          setQueue(prev => {
+                            if (!Array.isArray(prev) || prev.length <= 1) return prev;
+                            const current = prev[0];
+                            const rest = [...prev.slice(1)].sort(() => Math.random() - 0.5);
+                            return [current, ...rest];
+                          });
+                        }
+                      }}
+                      className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-white/10 hover:text-white"
+                      title="Shuffle Queue Buffer"
+                    >
+                      <Shuffle size={10} />
+                    </button>
+                    <div className="relative">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIsAutoplayMenuOpen(prev => !prev);
+                        }}
+                        className={`p-1.5 rounded-lg transition-all flex items-center gap-2 ${isAutoplayEnabled ? 'bg-brand-accent/20 text-brand-accent border border-brand-accent/30 shadow-neon' : 'bg-white/5 text-white/30 border border-white/10 opacity-70'}`}
+                        title="Neural Autoplay Mode"
+                      >
+                        <Zap size={10} className={isAutoplayEnabled ? 'animate-pulse' : ''} />
+                        <span className="text-[8px] font-black uppercase tracking-tighter">{isAutoplayEnabled ? 'AUTO_ON' : 'AUTO_OFF'}</span>
+                        <span className="text-[8px] font-black uppercase tracking-tighter opacity-80">{autoplayMoodMode}</span>
+                      </button>
+
+                      {isAutoplayMenuOpen && (
+                        <div className="absolute right-0 top-full mt-2 z-[320] w-48 rounded-xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-2 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
+                          <button
+                            onClick={() => {
+                              setIsAutoplayEnabled(prev => !prev);
+                              setIsAutoplayMenuOpen(false);
+                            }}
+                            className={`w-full text-left px-3 py-2 rounded-lg text-[11px] font-black uppercase tracking-widest transition-colors ${isAutoplayEnabled ? 'text-brand-accent bg-brand-accent/10' : 'text-white/70 hover:text-brand-accent hover:bg-white/5'}`}
+                          >
+                            {isAutoplayEnabled ? 'Disable Autoplay' : 'Enable Autoplay'}
+                          </button>
+                          <div className="my-1 border-t border-white/10" />
+                          {AUTOPLAY_MOOD_MODES.map((mode) => (
+                            <button
+                              key={`autoplay-mode-${mode.id}`}
+                              onClick={() => {
+                                setAutoplayMoodMode(mode.id);
+                                setIsAutoplayMenuOpen(false);
+                                setLastAdded(`Autoplay mood • ${mode.label}`);
+                                setTimeout(() => setLastAdded(null), 1500);
+                              }}
+                              className={`w-full text-left px-3 py-2 rounded-lg text-[11px] font-black uppercase tracking-widest transition-colors ${autoplayMoodMode === mode.id ? 'text-brand-accent bg-brand-accent/10' : 'text-white/70 hover:text-brand-accent hover:bg-white/5'}`}
+                            >
+                              {mode.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <span className="text-[10px] font-mono font-black text-brand-accent bg-brand-accent/10 px-2 py-0.5 rounded-full">{Math.max(0, queue.length - 1)}</span>
+                  </div>
                 </div>
-              )}
-                {!isSearching && searchResults.length === 0 && hasCompletedSearch && (
-                 <div className="h-full flex flex-col items-center justify-center gap-4 text-center py-4 opacity-40">
-                   <div className="relative text-brand-accent/70">
-                     <Search size={30} strokeWidth={1.4} />
-                   </div>
-                   <div>
-                     <p className="text-[9px] font-black uppercase tracking-[0.35em] text-white/60">No Results Found</p>
-                     <p className="mt-2 text-[8px] font-bold uppercase tracking-[0.25em] text-white/30 max-w-[220px] mx-auto">
-                      Try a different title, artist, or fewer words.
-                     </p>
-                   </div>
-                 </div>
-                )}
-            </div>
-          </div>
+                <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3 pb-6">
+                  <AnimatePresence mode="popLayout">
+                    {queue.length > 1 ? queue.slice(1).map((track, idx) => {
+                      const warmupId = resolveWarmupTrackId(track);
+                      const isDownloaded = warmupId ? downloadedTracks.includes(warmupId) : downloadedTracks.includes(track.id);
+                      return (
+                        <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} key={`${track.id}-${idx}`} className={`performance-list-item group glass-card p-3 flex items-center gap-4 hover:border-brand-accent/30 transition-all border-white/5 ${isDownloaded ? 'bg-red-500/15 border-red-500/30 shadow-[0_0_20px_rgba(255,0,0,0.35)]' : 'bg-white/[0.01]'}`}>
+                          <img src={getProxyUrl(track.thumbnail)} className="w-12 h-12 rounded-xl object-cover" alt="" />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[12px] font-black truncate group-hover:text-brand-accent transition-colors uppercase tracking-widest">{track.title}</div>
+                            <div className="text-[10px] text-brand-text-dim truncate font-bold uppercase opacity-50 mt-1">{track.author}</div>
+                          </div>
+                          {isDownloaded && (
+                            <span className="text-[9px] font-black uppercase tracking-widest text-red-500 border border-red-500/70 px-2 py-1 rounded-full">READY</span>
+                          )}
+                          <button onClick={() => openTrackInspect(track, 'queue')} className="lg:opacity-0 group-hover:opacity-100 hover:text-brand-accent p-2" title="Inspect Track">
+                            <Eye size={15} />
+                          </button>
+                          <button onClick={() => handleRemove(idx + 1)} className="lg:opacity-0 group-hover:opacity-100 hover:text-white p-2">
+                            <Trash2 size={16} className="text-red-500/50 hover:text-red-500" />
+                          </button>
+                        </motion.div>
+                      );
+                    }) : (
+                      <div className="h-full flex flex-col items-center justify-center opacity-10 py-12 text-[10px] font-black tracking-widest uppercase">
+                        Buffer Empty
+                        {isDoodleMode && <img src={catDoodlePeek} alt="doodle" className="mt-3 h-10 w-auto opacity-70 select-none pointer-events-none" draggable={false} />}
+                      </div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </div>
 
-          {/* STUDIO LIBRARY */}
-            <div
-              className={`performance-island glass-card flex flex-col overflow-hidden studio-vault-container relative shadow-inner library-panel transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass} ${isVerticalStack ? 'min-h-[500px] flex-none' : 'h-full min-h-0'}`}
-              style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
-            >
-            <div className={`px-2.5 py-2 border-b border-white/5 flex items-center justify-between gap-1.5 ${panelHeaderClass}`}>
-              <div className="flex items-center gap-2 min-w-0">
-                <HardDrive size={16} className="text-brand-accent shrink-0" />
-                <span className="label-caps mb-0 text-[10px] tracking-widest truncate">Studio Library</span>
+              {/* DISCOVERY */}
+              <div
+                className={`performance-island ${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col overflow-hidden transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}
+                style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
+              >
+                <div className={`p-3 border-b border-white/5 flex items-center justify-between ${panelHeaderClass}`}>
+                  <div className="flex items-center gap-3">
+                    <Globe size={18} className="text-brand-accent" />
+                    <span className="label-caps mb-0 text-[10px]">Neural Discovery</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setIsViewingFullDiscovery(true)}
+                      className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-brand-accent/20 hover:text-brand-accent"
+                      title="View Full Discovery"
+                    >
+                      <Maximize2 size={10} />
+                    </button>
+                    {(searchResults.length > 0 || hasCompletedSearch) && <button onClick={clearDiscoveryResults} className="p-2 px-4 glass-card text-[9px] font-black text-red-500 hover:bg-red-500/10 active:scale-95 transition-all border-red-500/20">FLUSH</button>}
+                  </div>
+                </div>
+                <DiscoveryGridSection
+                  discoveryItems={discoveryItems}
+                  isSearching={isSearching}
+                  searchResults={searchResults}
+                  hasCompletedSearch={hasCompletedSearch}
+                  isTrackFavorite={isTrackFavorite}
+                  openTrackInspect={openTrackInspect}
+                  isSearchActive={isSearchActive}
+                  handleAdd={handleAdd}
+                  toggleFavoriteTrack={toggleFavoriteTrack}
+                  openLibraryOverlay={openLibraryOverlay}
+                  isDoodleMode={isDoodleMode}
+                  catDoodlePeek={catDoodlePeek}
+                />
               </div>
-              <div className="flex items-center gap-1 shrink-0">
-                <button onClick={handleGenerateSmartMix} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Generate Smart Mix"><Zap size={10} /></button>
-                <button onClick={handleCleanVault} disabled={isVaultCleaning} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors disabled:opacity-40 flex items-center justify-center" title="Clean Vault (dedupe + remove unavailable + normalize metadata)"><RefreshCw size={10} className={isVaultCleaning ? 'animate-spin' : ''} /></button>
-                <button onClick={() => openLibraryOverlay(null)} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Open Vault Overlay"><ListMusic size={10} /></button>
-                {isStandalone && (
-                  <>
-                    <button onClick={() => { closeHeaderSurfaces(); setMusicImportProvider(''); setSpotifyImportUrl(''); setSpotifyImportPlaylistName(''); setSpotifyImportProgress({ stage: 'idle', progress: 0, message: '' }); setSpotifyImportLogs([]); setIsSpotifyImportOpen(true); }} className="w-7 h-7 rounded-lg bg-white/5 text-white/45 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center no-drag" title="Import Music Playlist"><Music size={11} /></button>
-                    <button onClick={handleImportVault} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Import Vault (.aether)"><Upload size={10} /></button>
-                  </>
-                )}
-              </div>
-            </div>
-            <div className="px-4 py-2 border-b border-white/5 bg-white/[0.02] flex flex-col items-center">
-              <div className="flex min-w-0 items-center justify-center gap-2 overflow-hidden">
-                <span className="text-[8px] font-black uppercase tracking-[0.2em] text-white/40">Nodes</span>
-                <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-brand-accent/10 border border-brand-accent/20 text-brand-accent">{libraryInsights.unique} unique</span>
-                <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/70">{libraryInsights.total} total</span>
-                <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/70">{libraryInsights.duplicates} dupes</span>
-              </div>
-              {libraryInsights.topArtists.length > 0 && (
-                <div className="mt-1 text-[8px] font-mono text-white/40 text-center truncate w-full">Top: {libraryInsights.topArtists.map(([artist]) => artist).join(' • ')}</div>
-              )}
-            </div>
-            {/* SAFE SCROLL WRAPPER */}
-            <div className={`flex-1 min-h-0 relative ${isVerticalStack ? 'h-[500px]' : ''}`}>
-               <div className="absolute inset-0 overflow-y-auto p-4 flex flex-col gap-6 pb-12 studio-vault-container custom-scrollbar">
-                  <div className="vault-project-grid">
-                        <div className="vault-project-card group/vault border-rose-300/20 bg-rose-400/[0.035]">
-                           <div className="vault-project-art" onClick={() => { setViewingPlaylist(FAVORITES_PLAYLIST_ID); openLibraryOverlay(null); }}>
-                              {favoriteTracksList.length > 0 ? favoriteTracksList.slice(0, 4).map((track, tidx) => (
+
+              {/* STUDIO LIBRARY */}
+              <div
+                className={`performance-island glass-card flex flex-col overflow-hidden studio-vault-container relative shadow-inner library-panel transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass} ${isVerticalStack ? 'min-h-[500px] flex-none' : 'h-full min-h-0'}`}
+                style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
+              >
+                <div className={`px-2.5 py-2 border-b border-white/5 flex items-center justify-between gap-1.5 ${panelHeaderClass}`}>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <HardDrive size={16} className="text-brand-accent shrink-0" />
+                    <span className="label-caps mb-0 text-[10px] tracking-widest truncate">Studio Library</span>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={handleGenerateSmartMix} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Generate Smart Mix"><Zap size={10} /></button>
+                    <button onClick={handleCleanVault} disabled={isVaultCleaning} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors disabled:opacity-40 flex items-center justify-center" title="Clean Vault (dedupe + remove unavailable + normalize metadata)"><RefreshCw size={10} className={isVaultCleaning ? 'animate-spin' : ''} /></button>
+                    <button onClick={() => openLibraryOverlay(null)} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Open Vault Overlay"><ListMusic size={10} /></button>
+                    {isStandalone && (
+                      <>
+                        <button onClick={() => { closeHeaderSurfaces(); setMusicImportProvider(''); setSpotifyImportUrl(''); setSpotifyImportPlaylistName(''); setSpotifyImportProgress({ stage: 'idle', progress: 0, message: '' }); setSpotifyImportLogs([]); setIsSpotifyImportOpen(true); }} className="w-7 h-7 rounded-lg bg-white/5 text-white/45 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center no-drag" title="Import Music Playlist"><Music size={11} /></button>
+                        <button onClick={handleImportVault} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Import Vault (.aether)"><Upload size={10} /></button>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="px-4 py-2 border-b border-white/5 bg-white/[0.02] flex flex-col items-center">
+                  <div className="flex min-w-0 items-center justify-center gap-2 overflow-hidden">
+                    <span className="text-[8px] font-black uppercase tracking-[0.2em] text-white/40">Nodes</span>
+                    <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-brand-accent/10 border border-brand-accent/20 text-brand-accent">{libraryInsights.unique} unique</span>
+                    <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/70">{libraryInsights.total} total</span>
+                    <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/70">{libraryInsights.duplicates} dupes</span>
+                  </div>
+                  {libraryInsights.topArtists.length > 0 && (
+                    <div className="mt-1 text-[8px] font-mono text-white/40 text-center truncate w-full">Top: {libraryInsights.topArtists.map(([artist]) => artist).join(' • ')}</div>
+                  )}
+                </div>
+                {/* SAFE SCROLL WRAPPER */}
+                <div className={`flex-1 min-h-0 relative ${isVerticalStack ? 'h-[500px]' : ''}`}>
+                  <div className="absolute inset-0 overflow-y-auto p-4 flex flex-col gap-6 pb-12 studio-vault-container custom-scrollbar">
+                    <div className="vault-project-grid">
+                      <div className="vault-project-card group/vault border-rose-300/20 bg-rose-400/[0.035]">
+                        <div className="vault-project-art" onClick={() => { setViewingPlaylist(FAVORITES_PLAYLIST_ID); openLibraryOverlay(null); }}>
+                          {favoriteTracksList.length > 0 ? favoriteTracksList.slice(0, 4).map((track, tidx) => (
+                            <img
+                              key={`favorites-cover-${tidx}`}
+                              src={getProxyUrl(track.thumbnail)}
+                              className="vault-project-cover"
+                              alt=""
+                              style={{ '--cover-index': tidx }}
+                            />
+                          )) : (
+                            <div className="vault-project-empty text-rose-300"><Heart size={20} /></div>
+                          )}
+                          <div className="vault-project-sheen" />
+                          <div className="vault-project-count">{favoriteTracksList.length}</div>
+                        </div>
+                        <div className="min-w-0">
+                          <button onClick={() => { setViewingPlaylist(FAVORITES_PLAYLIST_ID); openLibraryOverlay(null); }} className="w-full text-left text-[12px] font-black text-white/88 uppercase tracking-tight truncate group-hover/vault:text-rose-300 transition-colors" title={FAVORITES_PLAYLIST_NAME}>
+                            {FAVORITES_PLAYLIST_NAME}
+                          </button>
+                          <div className="mt-1 text-[8px] font-black uppercase tracking-[0.22em] text-white/30 truncate">
+                            Built-in favorites
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-5 gap-1.5">
+                          <button onClick={() => handleFavoritePlayAll(false)} className="vault-project-tool favorite-play" title="Play Favorites"><Play size={11} /></button>
+                          <button onClick={() => handleFavoritePlayAll(true)} className="vault-project-tool favorite-play" title="Shuffle Favorites"><Shuffle size={11} /></button>
+                          <button onClick={handleFavoriteAddAll} className="vault-project-tool" title="Queue Favorites"><Plus size={11} /></button>
+                          {isStandalone && <button onClick={() => handleExportVault(FAVORITES_PLAYLIST_ID)} className="vault-project-tool" title="Export Favorites"><Download size={11} /></button>}
+                          <button onClick={() => { setViewingPlaylist(FAVORITES_PLAYLIST_ID); openLibraryOverlay(null); }} className="vault-project-tool" title="View Favorites"><Maximize2 size={11} /></button>
+                        </div>
+                        {favoriteTracksList.length > 0 && (
+                          <button onClick={() => openPlaylistInspect(FAVORITES_PLAYLIST_NAME, favoriteTracksList, 'vault:favorites')} className="vault-project-inspect">
+                            <Eye size={11} /> Inspect favorites
+                          </button>
+                        )}
+                      </div>
+                      {orderedPlaylistNames.map(name => {
+                        const vaultTracks = playlists[name] || [];
+                        const previewTracks = vaultTracks.slice(0, 4);
+                        const featuredTrack = previewTracks[0];
+                        return (
+                          <div key={name} className="vault-project-card group/vault">
+                            <div className="vault-project-art" onClick={() => setViewingPlaylist(name)}>
+                              {previewTracks.length > 0 ? previewTracks.map((track, tidx) => (
                                 <img
-                                  key={`favorites-cover-${tidx}`}
+                                  key={`${name}-cover-${tidx}`}
                                   src={getProxyUrl(track.thumbnail)}
                                   className="vault-project-cover"
                                   alt=""
                                   style={{ '--cover-index': tidx }}
                                 />
                               )) : (
-                                <div className="vault-project-empty text-rose-300"><Heart size={20} /></div>
+                                <div className="vault-project-empty"><HardDrive size={20} /></div>
                               )}
                               <div className="vault-project-sheen" />
-                              <div className="vault-project-count">{favoriteTracksList.length}</div>
-                           </div>
-                           <div className="min-w-0">
-                              <button onClick={() => { setViewingPlaylist(FAVORITES_PLAYLIST_ID); openLibraryOverlay(null); }} className="w-full text-left text-[12px] font-black text-white/88 uppercase tracking-tight truncate group-hover/vault:text-rose-300 transition-colors" title={FAVORITES_PLAYLIST_NAME}>
-                                {FAVORITES_PLAYLIST_NAME}
-                              </button>
+                              <div className="vault-project-count">{vaultTracks.length}</div>
+                            </div>
+                            <div className="min-w-0">
+                              {isRenamingPlaylist === name ? (
+                                <input autoFocus className="w-full bg-white/5 border border-brand-accent/30 rounded-md px-2 py-1 text-[10px] font-black text-brand-accent outline-none" value={renameValue} onChange={(e) => setRenameValue(e.target.value)} onBlur={(e) => handleRenamePlaylist(name, e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleRenamePlaylist(name, e.currentTarget.value); if (e.key === 'Escape') setIsRenamingPlaylist(null); }} />
+                              ) : (
+                                <button
+                                  draggable={false}
+                                  onPointerDown={(e) => {
+                                    e.stopPropagation();
+                                  }}
+                                  onDoubleClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setIsRenamingPlaylist(name);
+                                    setRenameValue(name);
+                                  }}
+                                  onClick={(e) => {
+                                    if (e.detail > 1) return;
+                                    setViewingPlaylist(name);
+                                  }}
+                                  className="w-full text-left text-[12px] font-black text-white/88 uppercase tracking-tight truncate group-hover/vault:text-brand-accent transition-colors"
+                                  title={name}
+                                >
+                                  {name}
+                                </button>
+                              )}
                               <div className="mt-1 text-[8px] font-black uppercase tracking-[0.22em] text-white/30 truncate">
-                                Built-in favorites
+                                {featuredTrack?.author || 'Empty vault'} {featuredTrack ? 'signal' : ''}
                               </div>
-                           </div>
-                           <div className="grid grid-cols-5 gap-1.5">
-                              <button onClick={() => handleFavoritePlayAll(false)} className="vault-project-tool favorite-play" title="Play Favorites"><Play size={11} /></button>
-                              <button onClick={() => handleFavoritePlayAll(true)} className="vault-project-tool favorite-play" title="Shuffle Favorites"><Shuffle size={11} /></button>
-                              <button onClick={handleFavoriteAddAll} className="vault-project-tool" title="Queue Favorites"><Plus size={11} /></button>
-                              {isStandalone && <button onClick={() => handleExportVault(FAVORITES_PLAYLIST_ID)} className="vault-project-tool" title="Export Favorites"><Download size={11} /></button>}
-                              <button onClick={() => { setViewingPlaylist(FAVORITES_PLAYLIST_ID); openLibraryOverlay(null); }} className="vault-project-tool" title="View Favorites"><Maximize2 size={11} /></button>
-                           </div>
-                           {favoriteTracksList.length > 0 && (
-                            <button onClick={() => openPlaylistInspect(FAVORITES_PLAYLIST_NAME, favoriteTracksList, 'vault:favorites')} className="vault-project-inspect">
-                              <Eye size={11} /> Inspect favorites
-                            </button>
-                           )}
-                        </div>
-                        {orderedPlaylistNames.map(name => {
-                          const vaultTracks = playlists[name] || [];
-                          const previewTracks = vaultTracks.slice(0, 4);
-                          const featuredTrack = previewTracks[0];
-                          return (
-                          <div key={name} className="vault-project-card group/vault">
-                             <div className="vault-project-art" onClick={() => setViewingPlaylist(name)}>
-                                {previewTracks.length > 0 ? previewTracks.map((track, tidx) => (
-                                  <img
-                                    key={`${name}-cover-${tidx}`}
-                                    src={getProxyUrl(track.thumbnail)}
-                                    className="vault-project-cover"
-                                    alt=""
-                                    style={{ '--cover-index': tidx }}
-                                  />
-                                )) : (
-                                  <div className="vault-project-empty"><HardDrive size={20} /></div>
-                                )}
-                                <div className="vault-project-sheen" />
-                                <div className="vault-project-count">{vaultTracks.length}</div>
-                             </div>
-                             <div className="min-w-0">
-                                {isRenamingPlaylist === name ? (
-                                  <input autoFocus className="w-full bg-white/5 border border-brand-accent/30 rounded-md px-2 py-1 text-[10px] font-black text-brand-accent outline-none" value={renameValue} onChange={(e) => setRenameValue(e.target.value)} onBlur={() => handleRenamePlaylist(name, renameValue)} onKeyDown={(e) => { if (e.key === 'Enter') handleRenamePlaylist(name, renameValue); if (e.key === 'Escape') setIsRenamingPlaylist(null); }} />
-                                ) : (
-                                  <button onDoubleClick={() => { setIsRenamingPlaylist(name); setRenameValue(name); }} onClick={() => setViewingPlaylist(name)} className="w-full text-left text-[12px] font-black text-white/88 uppercase tracking-tight truncate group-hover/vault:text-brand-accent transition-colors" title={name}>
-                                    {name}
-                                  </button>
-                                )}
-                                <div className="mt-1 text-[8px] font-black uppercase tracking-[0.22em] text-white/30 truncate">
-                                  {featuredTrack?.author || 'Empty vault'} {featuredTrack ? 'signal' : ''}
-                                </div>
-                             </div>
-                             <div className="grid grid-cols-6 gap-1.5">
-                                <button onClick={() => movePlaylist(name, -1)} className="vault-project-tool" title={`Move ${name} up`}><ChevronLeft size={11} /></button>
-                                <button onClick={() => movePlaylist(name, 1)} className="vault-project-tool" title={`Move ${name} down`}><ChevronRight size={11} /></button>
-                                <button onClick={() => handlePlaylistAddAll(name)} className="vault-project-tool" title={`Inject ${name} to Queue`}><Plus size={11} /></button>
-                                <button onClick={() => {
-                                  const shuffled = [...vaultTracks].sort(() => Math.random() - 0.5);
-                                  setQueue(shuffled);
-                                  seekActivePlaybackTo(0);
-                                  setIsPlaying(shuffled.length > 0);
-                                  closeHeaderSurfaces();
-                                }} className="vault-project-tool" title={`Shuffle & Play ${name}`}><Shuffle size={11} /></button>
-                                <button onClick={() => setIsViewingFullPlaylist(name)} className="vault-project-tool" title={`View ${name} Fullscreen`}><Maximize2 size={11} /></button>
-                                <button onClick={() => handleDeletePlaylist(name)} className="vault-project-tool danger" title={`Delete ${name}`}><Trash2 size={11} /></button>
-                             </div>
-                             {vaultTracks.length > 0 && (
+                            </div>
+                            <div className="grid grid-cols-6 gap-1.5">
+                              <button onClick={() => movePlaylist(name, -1)} className="vault-project-tool" title={`Move ${name} up`}><ChevronLeft size={11} /></button>
+                              <button onClick={() => movePlaylist(name, 1)} className="vault-project-tool" title={`Move ${name} down`}><ChevronRight size={11} /></button>
+                              <button onClick={() => handlePlaylistAddAll(name)} className="vault-project-tool" title={`Inject ${name} to Queue`}><Plus size={11} /></button>
+                              <button onClick={() => {
+                                const shuffled = [...vaultTracks].sort(() => Math.random() - 0.5);
+                                setQueue(shuffled);
+                                seekActivePlaybackTo(0);
+                                setIsPlaying(shuffled.length > 0);
+                                closeHeaderSurfaces();
+                              }} className="vault-project-tool" title={`Shuffle & Play ${name}`}><Shuffle size={11} /></button>
+                              <button onClick={() => setIsViewingFullPlaylist(name)} className="vault-project-tool" title={`View ${name} Fullscreen`}><Maximize2 size={11} /></button>
+                              <button onClick={() => handleDeletePlaylist(name)} className="vault-project-tool danger" title={`Delete ${name}`}><Trash2 size={11} /></button>
+                            </div>
+                            {vaultTracks.length > 0 && (
                               <button onClick={() => openPlaylistInspect(name, vaultTracks, `vault:${name}`)} className="vault-project-inspect">
                                 <Eye size={11} /> Inspect playlist
                               </button>
-                             )}
+                            )}
                           </div>
-                          );
-                       })}
+                        );
+                      })}
                     </div>
-               </div>
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-      )}
-      </motion.main>
+          )}
+        </main>
 
-      <AnimatePresence>
-        {isManualLyricsEditorOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[230] flex items-center justify-center bg-black/80 backdrop-blur-md p-4"
-          >
-            <div
-              className="absolute inset-0"
-              onClick={() => {
-                if (!isManualLyricsSaving) setIsManualLyricsEditorOpen(false);
-              }}
-            />
+        <AnimatePresence>
+          {isManualLyricsEditorOpen && (
             <motion.div
-              initial={{ opacity: 0, y: 12, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 8, scale: 0.98 }}
-              className="relative z-10 w-full max-w-5xl max-h-[88vh] overflow-hidden rounded-[2rem] border border-white/10 bg-[#07090c]/96 shadow-[0_24px_80px_rgba(0,0,0,0.6)] backdrop-blur-2xl flex flex-col"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[230] flex items-center justify-center bg-black/80 backdrop-blur-md p-4"
             >
-              <div className="flex items-start justify-between gap-4 p-4 md:p-5 border-b border-white/10 bg-black/20">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <div className="w-10 h-10 rounded-2xl bg-brand-accent/10 border border-brand-accent/20 flex items-center justify-center text-brand-accent">
-                      <Edit3 size={16} />
-                    </div>
-                    <div>
-                      <div className="text-[10px] font-black uppercase tracking-[0.32em] text-brand-accent">Manual Lyrics Editor</div>
-                      <div className="mt-1 text-sm md:text-base font-black text-white/90 truncate">
-                        {currentTrack?.title || currentTrackTitle || 'Current track'}
+              <div
+                className="absolute inset-0"
+                onClick={() => {
+                  if (!isManualLyricsSaving) setIsManualLyricsEditorOpen(false);
+                }}
+              />
+              <motion.div
+                initial={{ opacity: 0, y: 12, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.98 }}
+                className="relative z-10 w-full max-w-5xl max-h-[88vh] overflow-hidden rounded-[2rem] border border-white/10 bg-[#07090c]/96 shadow-[0_24px_80px_rgba(0,0,0,0.6)] backdrop-blur-2xl flex flex-col"
+              >
+                <div className="flex items-start justify-between gap-4 p-4 md:p-5 border-b border-white/10 bg-black/20">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="w-10 h-10 rounded-2xl bg-brand-accent/10 border border-brand-accent/20 flex items-center justify-center text-brand-accent">
+                        <Edit3 size={16} />
                       </div>
-                      <div className="mt-1 text-[10px] uppercase tracking-[0.24em] text-white/35 truncate">
-                        Saved in LRC format • future plays will use this version automatically
-                      </div>
-                    </div>
-                  </div>
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
-                    <button
-                      onClick={() => setIsManualLyricsRawEditorOpen(prev => !prev)}
-                      className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${isManualLyricsRawEditorOpen ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/[0.04] border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                    >
-                      Raw LRC
-                    </button>
-                    <button
-                      onClick={pasteCurrentLyricsIntoRawEditor}
-                      className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/60 hover:text-brand-accent hover:border-brand-accent/35 transition-all"
-                    >
-                      Paste from clipboard
-                    </button>
-                    <button
-                      onClick={copyManualLyricsToClipboard}
-                      className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/60 hover:text-brand-accent hover:border-brand-accent/35 transition-all"
-                    >
-                      Export LRC
-                    </button>
-                    <button
-                      onClick={appendStampedManualLyricsLine}
-                      className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${isManualLyricsTapMode ? 'bg-brand-accent text-black border-brand-accent shadow-neon' : 'bg-white/[0.04] border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/35'}`}
-                    >
-                      {isManualLyricsTapMode ? 'Tap mode on' : 'Tap to stamp'}
-                    </button>
-                    {manualLyricsSavedNotice && (
-                      <span className="text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent/80">{manualLyricsSavedNotice}</span>
-                    )}
-                  </div>
-                </div>
-                <button
-                  onClick={() => {
-                    if (!isManualLyricsSaving) setIsManualLyricsEditorOpen(false);
-                  }}
-                  className="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center"
-                  title="Close editor"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-4 md:p-5 space-y-3 custom-scrollbar">
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
-                  <div className="text-[10px] font-black uppercase tracking-[0.24em] text-white/55">
-                    Enter one line per row. Use <span className="text-brand-accent">mm:ss.xx</span> timestamps and keep the order sorted before saving.
-                  </div>
-                  <button
-                    onClick={() => appendManualLyricsDraftLine(getActivePlaybackPositionMs())}
-                    className="flex items-center gap-1.5 rounded-xl border border-brand-accent/30 bg-brand-accent/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent hover:bg-brand-accent/20 transition-all"
-                  >
-                    <PlusCircle size={12} /> Add line
-                  </button>
-                </div>
-
-                {isManualLyricsRawEditorOpen && (
-                  <div className="rounded-[1.5rem] border border-brand-accent/25 bg-brand-accent/5 p-4 space-y-3">
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
                       <div>
-                        <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Raw LRC import</div>
-                        <div className="mt-1 text-[9px] uppercase tracking-[0.18em] text-white/40">Paste timestamped lines, then apply them to the editor below.</div>
-                      </div>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <button
-                          onClick={loadManualLyricsFromRawText}
-                          className="rounded-xl border border-brand-accent/30 bg-brand-accent px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-black transition-all hover:scale-[1.01]"
-                        >
-                          Apply LRC
-                        </button>
-                        <button
-                          onClick={() => setIsManualLyricsRawEditorOpen(false)}
-                          className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/60 hover:text-brand-accent hover:border-brand-accent/35 transition-all"
-                        >
-                          Hide raw
-                        </button>
+                        <div className="text-[10px] font-black uppercase tracking-[0.32em] text-brand-accent">Manual Lyrics Editor</div>
+                        <div className="mt-1 text-sm md:text-base font-black text-white/90 truncate">
+                          {currentTrack?.title || currentTrackTitle || 'Current track'}
+                        </div>
+                        <div className="mt-1 text-[10px] uppercase tracking-[0.24em] text-white/35 truncate">
+                          Saved in LRC format • future plays will use this version automatically
+                        </div>
                       </div>
                     </div>
-                    <textarea
-                      value={manualLyricsRawText}
-                      onChange={(event) => setManualLyricsRawText(event.target.value)}
-                      placeholder="[00:00.00] Intro\n[00:12.30] First line"
-                      className="w-full min-h-[180px] rounded-[1.25rem] border border-white/10 bg-black/35 px-4 py-3 text-[12px] font-mono text-white outline-none transition-colors placeholder:text-white/20 focus:border-brand-accent/40"
-                    />
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={() => setIsManualLyricsRawEditorOpen(prev => !prev)}
+                        className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${isManualLyricsRawEditorOpen ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : 'bg-white/[0.04] border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                      >
+                        Raw LRC
+                      </button>
+                      <button
+                        onClick={pasteCurrentLyricsIntoRawEditor}
+                        className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/60 hover:text-brand-accent hover:border-brand-accent/35 transition-all"
+                      >
+                        Paste from clipboard
+                      </button>
+                      <button
+                        onClick={copyManualLyricsToClipboard}
+                        className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/60 hover:text-brand-accent hover:border-brand-accent/35 transition-all"
+                      >
+                        Export LRC
+                      </button>
+                      <button
+                        onClick={appendStampedManualLyricsLine}
+                        className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${isManualLyricsTapMode ? 'bg-brand-accent text-black border-brand-accent shadow-neon' : 'bg-white/[0.04] border-white/10 text-white/60 hover:text-brand-accent hover:border-brand-accent/35'}`}
+                      >
+                        {isManualLyricsTapMode ? 'Tap mode on' : 'Tap to stamp'}
+                      </button>
+                      {manualLyricsSavedNotice && (
+                        <span className="text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent/80">{manualLyricsSavedNotice}</span>
+                      )}
+                    </div>
                   </div>
-                )}
-
-                {manualLyricsDraft.length === 0 ? (
-                  <div className="rounded-[1.5rem] border border-dashed border-white/10 bg-white/[0.02] p-10 text-center text-white/35">
-                    <Sparkles size={26} className="mx-auto text-brand-accent/70" />
-                    <div className="mt-3 text-[10px] font-black uppercase tracking-[0.32em]">No lines yet</div>
-                    <div className="mt-2 text-[10px] uppercase tracking-[0.18em] opacity-70">Add a timestamped lyric row to start building the track.</div>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {manualLyricsDraft.map((line, index) => (
-                      <div key={line.id} className="grid gap-3 rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-4 md:grid-cols-[180px_minmax(0,1fr)_auto] md:items-start">
-                        <div className="space-y-2">
-                          <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">Timestamp</div>
-                          <input
-                            value={line.timestamp || ''}
-                            onChange={(event) => updateManualLyricsDraftLine(index, { timestamp: event.target.value })}
-                            placeholder="00:00.00"
-                            className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-[12px] font-mono text-white outline-none transition-colors placeholder:text-white/20 focus:border-brand-accent/40"
-                          />
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => stampManualLyricsDraftLine(index)}
-                              className="rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[9px] font-black uppercase tracking-[0.16em] text-white/55 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
-                            >
-                              Use current time
-                            </button>
-                            <div className="text-[9px] font-mono text-white/30 truncate">
-                              {formatManualLyricsTimestamp(parseManualLyricsTimestamp(line.timestamp) ?? line.time)}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="space-y-2 min-w-0">
-                          <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">Lyric line</div>
-                          <input
-                            value={line.text}
-                            onChange={(event) => updateManualLyricsDraftLine(index, { text: event.target.value })}
-                            placeholder="Write the lyric line here"
-                            className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-[12px] text-white outline-none transition-colors placeholder:text-white/20 focus:border-brand-accent/40"
-                          />
-                        </div>
-
-                        <div className="flex items-start justify-end md:pt-6">
-                          <button
-                            onClick={() => removeManualLyricsDraftLine(index)}
-                            className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-white/50 hover:border-red-500/40 hover:text-red-400 transition-all"
-                            title="Remove line"
-                          >
-                            <MinusCircle size={12} /> Remove
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="border-t border-white/10 bg-black/25 p-4 md:p-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div className="min-w-0">
-                  <div className="text-[10px] font-black uppercase tracking-[0.24em] text-white/50">
-                    Saved as LRC for this track
-                  </div>
-                  <div className={`mt-1 text-[10px] font-bold uppercase tracking-[0.18em] ${manualLyricsDraftError ? 'text-red-400' : 'text-white/30'}`}>
-                    {manualLyricsDraftError || 'The app will prefer these saved lyrics the next time this song plays.'}
-                  </div>
-                </div>
-                <div className="flex items-center justify-end gap-2 flex-wrap">
-                  <button
-                    onClick={appendStampedManualLyricsLine}
-                    className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/65 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
-                  >
-                    Stamp + Row
-                  </button>
                   <button
                     onClick={() => {
                       if (!isManualLyricsSaving) setIsManualLyricsEditorOpen(false);
                     }}
-                    className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/65 hover:border-white/25 hover:text-white transition-all disabled:opacity-50"
-                    disabled={isManualLyricsSaving}
+                    className="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center"
+                    title="Close editor"
                   >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleSaveManualLyrics}
-                    disabled={isManualLyricsSaving}
-                    className="rounded-xl border border-brand-accent/30 bg-brand-accent px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-black shadow-neon transition-all hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {isManualLyricsSaving ? 'Saving…' : 'Save Lyrics'}
+                    <X size={16} />
                   </button>
                 </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
-      {/* Global Toast Overlay */}
-      <ToastPortal>
-      <AnimatePresence>
-        {sessionRestoreNotice && (
-          <motion.div
-            initial={{ opacity: 0, y: -20, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -16, scale: 0.96 }}
-            className="fixed top-20 left-1/2 -translate-x-1/2 px-6 py-3 bg-white/10 text-white font-black rounded-2xl border border-brand-accent/30 backdrop-blur-xl z-[700] flex items-center gap-3"
-          >
-            <Clock size={14} className="text-brand-accent" />
-            <span className="text-[10px] uppercase tracking-[0.2em]">{sessionRestoreNotice}</span>
-          </motion.div>
-        )}
+                <div className="flex-1 overflow-y-auto p-4 md:p-5 space-y-3 custom-scrollbar">
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-white/55">
+                      Enter one line per row. Use <span className="text-brand-accent">mm:ss.xx</span> timestamps and keep the order sorted before saving.
+                    </div>
+                    <button
+                      onClick={() => appendManualLyricsDraftLine(getActivePlaybackPositionMs())}
+                      className="flex items-center gap-1.5 rounded-xl border border-brand-accent/30 bg-brand-accent/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent hover:bg-brand-accent/20 transition-all"
+                    >
+                      <PlusCircle size={12} /> Add line
+                    </button>
+                  </div>
 
-        {updateToast && (
-          <motion.div
-            initial={{ opacity: 0, y: -18, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -12, scale: 0.96 }}
-            className="fixed top-32 left-1/2 -translate-x-1/2 px-5 py-2.5 bg-[#06090d]/90 text-brand-accent font-black rounded-2xl border border-brand-accent/30 backdrop-blur-xl z-[700] flex items-center gap-3"
-          >
-            <RefreshCw size={12} className={`${updateInfo?.status === 'downloading' || updateInfo?.status === 'checking' ? 'animate-spin' : ''}`} />
-            <span className="text-[9px] uppercase tracking-[0.18em]">{updateToast}</span>
-          </motion.div>
-        )}
+                  {isManualLyricsRawEditorOpen && (
+                    <div className="rounded-[1.5rem] border border-brand-accent/25 bg-brand-accent/5 p-4 space-y-3">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div>
+                          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Raw LRC import</div>
+                          <div className="mt-1 text-[9px] uppercase tracking-[0.18em] text-white/40">Paste timestamped lines, then apply them to the editor below.</div>
+                        </div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button
+                            onClick={loadManualLyricsFromRawText}
+                            className="rounded-xl border border-brand-accent/30 bg-brand-accent px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-black transition-all hover:scale-[1.01]"
+                          >
+                            Apply LRC
+                          </button>
+                          <button
+                            onClick={() => setIsManualLyricsRawEditorOpen(false)}
+                            className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/60 hover:text-brand-accent hover:border-brand-accent/35 transition-all"
+                          >
+                            Hide raw
+                          </button>
+                        </div>
+                      </div>
+                      <textarea
+                        value={manualLyricsRawText}
+                        onChange={(event) => setManualLyricsRawText(event.target.value)}
+                        placeholder="[00:00.00] Intro\n[00:12.30] First line"
+                        className="w-full min-h-[180px] rounded-[1.25rem] border border-white/10 bg-black/35 px-4 py-3 text-[12px] font-mono text-white outline-none transition-colors placeholder:text-white/20 focus:border-brand-accent/40"
+                      />
+                    </div>
+                  )}
 
-        {skipReasonToast && (
-          <motion.div
-            initial={{ opacity: 0, y: 20, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 12, scale: 0.96 }}
-            className="fixed right-5 bottom-24 px-4 py-2 bg-black/70 text-brand-accent font-mono rounded-xl border border-brand-accent/30 backdrop-blur-xl z-[700]"
-          >
-            <span className="text-[10px] uppercase tracking-[0.16em]">skip: {skipReasonToast}</span>
-          </motion.div>
-        )}
+                  {manualLyricsDraft.length === 0 ? (
+                    <div className="rounded-[1.5rem] border border-dashed border-white/10 bg-white/[0.02] p-10 text-center text-white/35">
+                      <Sparkles size={26} className="mx-auto text-brand-accent/70" />
+                      <div className="mt-3 text-[10px] font-black uppercase tracking-[0.32em]">No lines yet</div>
+                      <div className="mt-2 text-[10px] uppercase tracking-[0.18em] opacity-70">Add a timestamped lyric row to start building the track.</div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {manualLyricsDraft.map((line, index) => (
+                        <div key={line.id} className="grid gap-3 rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-4 md:grid-cols-[180px_minmax(0,1fr)_auto] md:items-start">
+                          <div className="space-y-2">
+                            <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">Timestamp</div>
+                            <input
+                              value={line.timestamp || ''}
+                              onChange={(event) => updateManualLyricsDraftLine(index, { timestamp: event.target.value })}
+                              placeholder="00:00.00"
+                              className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-[12px] font-mono text-white outline-none transition-colors placeholder:text-white/20 focus:border-brand-accent/40"
+                            />
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => stampManualLyricsDraftLine(index)}
+                                className="rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[9px] font-black uppercase tracking-[0.16em] text-white/55 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
+                              >
+                                Use current time
+                              </button>
+                              <div className="text-[9px] font-mono text-white/30 truncate">
+                                {formatManualLyricsTimestamp(parseManualLyricsTimestamp(line.timestamp) ?? line.time)}
+                              </div>
+                            </div>
+                          </div>
 
-        {lastAdded && (
-          <motion.div initial={{ opacity: 0, y: 100 }} animate={{ opacity: 1, y: -40 }} exit={{ opacity: 0, y: 100 }} className="fixed bottom-0 left-1/2 -translate-x-1/2 px-10 py-5 bg-brand-accent text-brand-dark font-black rounded-[2rem] shadow-neon-strong z-[700] flex items-center gap-6 whitespace-nowrap border-t-2 border-white/20">
-            <Zap size={24} fill="currentColor" />
-            <div className="flex flex-col leading-none">
-               <span className="text-[10px] uppercase tracking-[0.2em] opacity-80 mb-1 font-bold">Node Initialized</span>
-               <span className="text-base tracking-tight truncate uppercase">{lastAdded}</span>
-            </div>
-           </motion.div>
-        )}
-      </AnimatePresence>
-      </ToastPortal>
-      <AnimatePresence>
-        {showImmersiveLyricsOverlay && (
-          <motion.div 
-            initial={{ opacity: 0, scale: 1.1 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 1.1 }}
-            className={`fixed inset-0 z-[280] overflow-hidden backdrop-blur-[28px] ${isAuraMode ? 'bg-[#03100d]/92' : 'bg-[#030506]/96'}`}
-          >
-            <div className="absolute inset-0 pointer-events-none" style={{ animation: isAuraMode ? 'aura-liquid-spin 20s linear infinite' : 'none' }}>
-              <div className={`absolute inset-0 ${isAuraMode ? 'bg-[radial-gradient(circle_at_top,rgba(0,255,191,0.16),transparent_34%)]' : 'bg-[radial-gradient(circle_at_top,rgba(0,255,191,0.08),transparent_38%)]'}`} />
-              {isAuraMode && (
-                <>
-                  <div className="absolute left-[8%] top-[12%] h-44 w-44 rounded-full bg-brand-accent/18 blur-[90px]" />
-                  <div className="absolute right-[10%] top-[18%] h-40 w-40 rounded-full bg-emerald-300/12 blur-[90px]" />
-                  <div className="absolute bottom-[14%] left-1/2 h-56 w-56 -translate-x-1/2 rounded-full bg-brand-accent/12 blur-[110px]" />
-                </>
-              )}
-              <div className="absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-black/45 to-transparent" />
-              <div className="absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-black/55 to-transparent" />
-            </div>
+                          <div className="space-y-2 min-w-0">
+                            <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">Lyric line</div>
+                            <input
+                              value={line.text}
+                              onChange={(event) => updateManualLyricsDraftLine(index, { text: event.target.value })}
+                              placeholder="Write the lyric line here"
+                              className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-[12px] text-white outline-none transition-colors placeholder:text-white/20 focus:border-brand-accent/40"
+                            />
+                          </div>
 
-            <div className="pointer-events-none absolute inset-x-0 top-4 z-[315] flex justify-center px-5 md:top-6">
-              <div className={`w-full max-w-[min(82vw,980px)] rounded-[2rem] border px-5 py-4 md:px-8 md:py-6 ${isAuraMode ? 'border-brand-accent/25 bg-[#06100d]/62 shadow-[0_18px_70px_rgba(0,255,191,0.12)]' : 'border-white/10 bg-black/20 shadow-[0_16px_40px_rgba(0,0,0,0.3)]'} backdrop-blur-2xl`}>
-                <div className="w-full overflow-hidden" style={{ WebkitMaskImage: 'linear-gradient(to right, transparent, black 8%, black 92%, transparent)' }}>
-                  <div className="overlay-marquee-track flex items-center gap-[10vw] text-base font-black uppercase tracking-[0.26em] text-white sm:text-lg md:text-2xl lg:text-3xl">
-                    <span>{currentTrack?.title || 'Immersive Output'}</span>
-                    <span aria-hidden="true">{currentTrack?.title || 'Immersive Output'}</span>
-                    <span aria-hidden="true">{currentTrack?.title || 'Immersive Output'}</span>
-                    <span aria-hidden="true">{currentTrack?.title || 'Immersive Output'}</span>
+                          <div className="flex items-start justify-end md:pt-6">
+                            <button
+                              onClick={() => removeManualLyricsDraftLine(index)}
+                              className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-white/50 hover:border-red-500/40 hover:text-red-400 transition-all"
+                              title="Remove line"
+                            >
+                              <MinusCircle size={12} /> Remove
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="border-t border-white/10 bg-black/25 p-4 md:p-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-white/50">
+                      Saved as LRC for this track
+                    </div>
+                    <div className={`mt-1 text-[10px] font-bold uppercase tracking-[0.18em] ${manualLyricsDraftError ? 'text-red-400' : 'text-white/30'}`}>
+                      {manualLyricsDraftError || 'The app will prefer these saved lyrics the next time this song plays.'}
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-end gap-2 flex-wrap">
+                    <button
+                      onClick={appendStampedManualLyricsLine}
+                      className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/65 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
+                    >
+                      Stamp + Row
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (!isManualLyricsSaving) setIsManualLyricsEditorOpen(false);
+                      }}
+                      className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/65 hover:border-white/25 hover:text-white transition-all disabled:opacity-50"
+                      disabled={isManualLyricsSaving}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleSaveManualLyrics}
+                      disabled={isManualLyricsSaving}
+                      className="rounded-xl border border-brand-accent/30 bg-brand-accent px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-black shadow-neon transition-all hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isManualLyricsSaving ? 'Saving…' : 'Save Lyrics'}
+                    </button>
                   </div>
                 </div>
-                <div className="mt-3 text-center text-[10px] font-black uppercase tracking-[0.42em] text-brand-accent/80 md:text-[11px]">
-                  {currentTrack?.author || 'Unknown Artist'}
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Global Toast Overlay */}
+        <ToastPortal>
+          <AnimatePresence>
+            {sessionRestoreNotice && (
+              <motion.div
+                initial={{ opacity: 0, y: -20, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -16, scale: 0.96 }}
+                className="fixed top-20 left-1/2 -translate-x-1/2 px-6 py-3 bg-white/10 text-white font-black rounded-2xl border border-brand-accent/30 backdrop-blur-xl z-[700] flex items-center gap-3"
+              >
+                <Clock size={14} className="text-brand-accent" />
+                <span className="text-[10px] uppercase tracking-[0.2em]">{sessionRestoreNotice}</span>
+              </motion.div>
+            )}
+
+            {updateToast && (
+              <motion.div
+                initial={{ opacity: 0, y: -18, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -12, scale: 0.96 }}
+                className="fixed top-32 left-1/2 -translate-x-1/2 px-5 py-2.5 bg-[#06090d]/90 text-brand-accent font-black rounded-2xl border border-brand-accent/30 backdrop-blur-xl z-[700] flex items-center gap-3"
+              >
+                <RefreshCw size={12} className={`${updateInfo?.status === 'downloading' || updateInfo?.status === 'checking' ? 'animate-spin' : ''}`} />
+                <span className="text-[9px] uppercase tracking-[0.18em]">{updateToast}</span>
+              </motion.div>
+            )}
+
+            {skipReasonToast && (
+              <motion.div
+                initial={{ opacity: 0, y: 20, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 12, scale: 0.96 }}
+                className="fixed right-5 bottom-24 px-4 py-2 bg-black/70 text-brand-accent font-mono rounded-xl border border-brand-accent/30 backdrop-blur-xl z-[700]"
+              >
+                <span className="text-[10px] uppercase tracking-[0.16em]">skip: {skipReasonToast}</span>
+              </motion.div>
+            )}
+
+            {lastAdded && (
+              <motion.div initial={{ opacity: 0, y: 100 }} animate={{ opacity: 1, y: -40 }} exit={{ opacity: 0, y: 100 }} className="fixed bottom-0 left-1/2 -translate-x-1/2 px-10 py-5 bg-brand-accent text-brand-dark font-black rounded-[2rem] shadow-neon-strong z-[700] flex items-center gap-6 whitespace-nowrap border-t-2 border-white/20">
+                <Zap size={24} fill="currentColor" />
+                <div className="flex flex-col leading-none">
+                  <span className="text-[10px] uppercase tracking-[0.2em] opacity-80 mb-1 font-bold">Node Initialized</span>
+                  <span className="text-base tracking-tight truncate uppercase">{lastAdded}</span>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </ToastPortal>
+        <AnimatePresence>
+          {showImmersiveLyricsOverlay && (
+            <motion.div
+              initial={{ opacity: 0, scale: 1.1 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 1.1 }}
+              className={`fixed inset-0 z-[280] overflow-hidden backdrop-blur-[28px] ${isAuraMode ? 'bg-[#03100d]/92' : 'bg-[#030506]/96'}`}
+            >
+              <div className="absolute inset-0 pointer-events-none" style={{ animation: isAuraMode ? 'aura-liquid-spin 20s linear infinite' : 'none' }}>
+                <div className={`absolute inset-0 ${isAuraMode ? 'bg-[radial-gradient(circle_at_top,rgba(0,255,191,0.16),transparent_34%)]' : 'bg-[radial-gradient(circle_at_top,rgba(0,255,191,0.08),transparent_38%)]'}`} />
+                {isAuraMode && (
+                  <>
+                    <div className="absolute left-[8%] top-[12%] h-44 w-44 rounded-full bg-brand-accent/18 blur-[90px]" />
+                    <div className="absolute right-[10%] top-[18%] h-40 w-40 rounded-full bg-emerald-300/12 blur-[90px]" />
+                    <div className="absolute bottom-[14%] left-1/2 h-56 w-56 -translate-x-1/2 rounded-full bg-brand-accent/12 blur-[110px]" />
+                  </>
+                )}
+                <div className="absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-black/45 to-transparent" />
+                <div className="absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-black/55 to-transparent" />
+              </div>
+
+              <div className="pointer-events-none absolute inset-x-0 top-4 z-[315] flex justify-center px-5 md:top-6">
+                <div className={`w-full max-w-[min(82vw,980px)] rounded-[2rem] border px-5 py-4 md:px-8 md:py-6 ${isAuraMode ? 'border-brand-accent/25 bg-[#06100d]/62 shadow-[0_18px_70px_rgba(0,255,191,0.12)]' : 'border-white/10 bg-black/20 shadow-[0_16px_40px_rgba(0,0,0,0.3)]'} backdrop-blur-2xl`}>
+                  <div className="w-full overflow-hidden" style={{ WebkitMaskImage: 'linear-gradient(to right, transparent, black 8%, black 92%, transparent)' }}>
+                    <div className="overlay-marquee-track flex items-center gap-[10vw] text-base font-black uppercase tracking-[0.26em] text-white sm:text-lg md:text-2xl lg:text-3xl">
+                      <span>{currentTrack?.title || 'Immersive Output'}</span>
+                      <span aria-hidden="true">{currentTrack?.title || 'Immersive Output'}</span>
+                      <span aria-hidden="true">{currentTrack?.title || 'Immersive Output'}</span>
+                      <span aria-hidden="true">{currentTrack?.title || 'Immersive Output'}</span>
+                    </div>
+                  </div>
+                  <div className="mt-3 text-center text-[10px] font-black uppercase tracking-[0.42em] text-brand-accent/80 md:text-[11px]">
+                    {currentTrack?.author || 'Unknown Artist'}
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <div className="absolute right-4 top-4 z-[320] md:right-6 md:top-6">
-              <button 
-                onClick={() => setIsLyricsExpanded(false)}
-                className="flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/35 text-brand-accent shadow-[0_18px_42px_rgba(0,0,0,0.4)] backdrop-blur-xl transition-all hover:border-brand-accent/45 hover:bg-brand-accent/10 active:scale-90"
-                title="Return to Studio"
-              >
-                <Minimize2 size={18} />
-              </button>
-            </div>
+              <div className="absolute right-4 top-4 z-[320] md:right-6 md:top-6">
+                <button
+                  onClick={() => setIsLyricsExpanded(false)}
+                  className="flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/35 text-brand-accent shadow-[0_18px_42px_rgba(0,0,0,0.4)] backdrop-blur-xl transition-all hover:border-brand-accent/45 hover:bg-brand-accent/10 active:scale-90"
+                  title="Return to Studio"
+                >
+                  <Minimize2 size={18} />
+                </button>
+              </div>
 
-            <div className="relative z-10 flex h-full w-full min-h-0 flex-col">
-               <div className="flex-1 overflow-y-scroll overflow-x-hidden flex flex-col px-4 pb-10 pt-32 md:px-10 md:pb-14 md:pt-36 custom-scrollbar-heavy w-full relative" ref={expandedContainerRef} style={{ minHeight: "0px", perspective: '1200px' }}>
+              <div className="relative z-10 flex h-full w-full min-h-0 flex-col">
+                <div className="flex-1 overflow-y-scroll overflow-x-hidden flex flex-col px-4 pb-10 pt-32 md:px-10 md:pb-14 md:pt-36 custom-scrollbar-heavy w-full relative" ref={expandedContainerRef} style={{ minHeight: "0px", perspective: '1200px' }}>
                   <motion.div
                     aria-hidden
                     className="pointer-events-none absolute left-1/2 top-1/2 z-0 -translate-x-1/2 -translate-y-1/2 rounded-full"
@@ -13168,2336 +15079,1921 @@ function App() {
                     }}
                   />
 
-	                  <div className="flex flex-col gap-16 lg:gap-24 py-[36vh] items-center justify-center text-center w-full max-w-full mx-auto cursor-default px-3 sm:px-5" style={{ transformStyle: 'preserve-3d', transform: 'rotateX(5deg)' }}>
-	                    {lyrics.map((line, idx) => {
-	                      const isActive = idx === activeLyricIndex;
-	                      const distance = Math.abs(idx - activeLyricIndex);
-	                      const lyricText = String(line.text || '');
-	                      const lyricLength = lyricText.trim().length;
-	                      const lyricLineLayoutClass = 'max-w-[min(84vw,1080px)]';
-	                      const lyricStateClass = isActive
-	                        ? 'scale-100 opacity-100 text-white/42 drop-shadow-[0_0_34px_rgba(0,255,191,0.64)]'
-	                        : distance === 1
-	                          ? 'scale-100 opacity-60 text-white/58 blur-[0.1px]'
-	                          : distance === 2
-	                            ? 'scale-[0.995] opacity-30 text-white/28 blur-[0.75px]'
-	                            : 'scale-[0.97] opacity-12 text-white/12 blur-[1.4px]';
-	                      const activeLyricMax = lyricLength > 84 ? '3.35rem' : lyricLength > 64 ? '4.05rem' : lyricLength > 46 ? '4.8rem' : '5.8rem';
-	                      const nearLyricMax = lyricLength > 84 ? '2.45rem' : lyricLength > 64 ? '3rem' : lyricLength > 46 ? '3.65rem' : '4.35rem';
-	                      const farLyricMax = lyricLength > 84 ? '1.9rem' : lyricLength > 64 ? '2.25rem' : '3.2rem';
-	                      const lyricFontSize = isActive
-	                        ? `clamp(1.95rem, min(${lyricLength > 64 ? '3.8vw' : '4.8vw'}, 7.4vh), ${activeLyricMax})`
-	                        : distance === 1
-	                          ? `clamp(1.55rem, min(${lyricLength > 64 ? '3vw' : '3.8vw'}, 5.6vh), ${nearLyricMax})`
-	                          : `clamp(1.2rem, min(${lyricLength > 64 ? '2.25vw' : '2.8vw'}, 4.2vh), ${farLyricMax})`;
-	                      return (
-	                        <div
-	                          key={idx}
-	                          ref={isActive ? expandedActiveRef : null}
-	                          onClick={() => handleLyricLineSeek(line.time)}
-	                          className={`${lyricLineLayoutClass} immersive-lyric-line px-2 md:px-4 font-black cursor-pointer transition-[transform,opacity,filter,text-shadow] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] transform-gpu origin-center leading-[1.06] w-full min-w-0 break-words whitespace-normal [overflow-wrap:anywhere] z-20 will-change-[transform,opacity,filter] ${lyricStateClass} hover:scale-[1.015]`}
-	                          style={{
-	                            fontSize: lyricFontSize,
-	                            maxInlineSize: 'min(84vw, 1080px)',
-	                            transitionDelay: `${Math.min(distance, 3) * 18}ms`,
-	                            '--karaoke-fill': isActive ? '0%' : undefined,
-	                          }}
-	                        >
-	                          <span className={isActive ? 'immersive-karaoke-text immersive-karaoke-text-active' : 'immersive-karaoke-text'}>
-	                            {lyricText}
-	                          </span>
+                  <div className="flex flex-col gap-16 lg:gap-24 py-[36vh] items-center justify-center text-center w-full max-w-full mx-auto cursor-default px-3 sm:px-5" style={{ transformStyle: 'preserve-3d', transform: 'rotateX(5deg)' }}>
+                    {lyrics.map((line, idx) => {
+                      const isActive = idx === activeLyricIndex;
+                      const distance = Math.abs(idx - activeLyricIndex);
+                      const lyricText = String(line.text || '');
+                      const lyricLength = lyricText.trim().length;
+                      const lyricLineLayoutClass = 'max-w-[min(84vw,1080px)]';
+                      const lyricStateClass = isActive
+                        ? 'scale-100 opacity-100 text-white/42 drop-shadow-[0_0_34px_rgba(0,255,191,0.64)]'
+                        : distance === 1
+                          ? 'scale-100 opacity-60 text-white/58 blur-[0.1px]'
+                          : distance === 2
+                            ? 'scale-[0.995] opacity-30 text-white/28 blur-[0.75px]'
+                            : 'scale-[0.97] opacity-12 text-white/12 blur-[1.4px]';
+                      const activeLyricMax = lyricLength > 84 ? '3.35rem' : lyricLength > 64 ? '4.05rem' : lyricLength > 46 ? '4.8rem' : '5.8rem';
+                      const nearLyricMax = lyricLength > 84 ? '2.45rem' : lyricLength > 64 ? '3rem' : lyricLength > 46 ? '3.65rem' : '4.35rem';
+                      const farLyricMax = lyricLength > 84 ? '1.9rem' : lyricLength > 64 ? '2.25rem' : '3.2rem';
+                      const lyricFontSize = isActive
+                        ? `clamp(1.95rem, min(${lyricLength > 64 ? '3.8vw' : '4.8vw'}, 7.4vh), ${activeLyricMax})`
+                        : distance === 1
+                          ? `clamp(1.55rem, min(${lyricLength > 64 ? '3vw' : '3.8vw'}, 5.6vh), ${nearLyricMax})`
+                          : `clamp(1.2rem, min(${lyricLength > 64 ? '2.25vw' : '2.8vw'}, 4.2vh), ${farLyricMax})`;
+                      return (
+                        <div
+                          key={idx}
+                          ref={isActive ? expandedActiveRef : null}
+                          onClick={() => handleLyricLineSeek(line.time)}
+                          className={`${lyricLineLayoutClass} immersive-lyric-line px-2 md:px-4 font-black cursor-pointer transition-[transform,opacity,filter,text-shadow] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] transform-gpu origin-center leading-[1.06] w-full min-w-0 break-words whitespace-normal [overflow-wrap:anywhere] z-20 will-change-[transform,opacity,filter] ${lyricStateClass} hover:scale-[1.015]`}
+                          style={{
+                            fontSize: lyricFontSize,
+                            maxInlineSize: 'min(84vw, 1080px)',
+                            transitionDelay: `${Math.min(distance, 3) * 18}ms`,
+                            '--karaoke-fill': isActive ? '0%' : undefined,
+                          }}
+                        >
+                          <span className={isActive ? 'immersive-karaoke-text immersive-karaoke-text-active' : 'immersive-karaoke-text'}>
+                            {lyricText}
+                          </span>
                         </div>
                       );
                     })}
                   </div>
-               </div>
-
-               {isAutoScrollPaused && (
-                 <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-[250]">
-                   <button 
-                     onClick={handleResyncLyrics}
-                     className="flex items-center gap-3 px-8 py-4 bg-brand-accent text-black font-black uppercase tracking-[0.3em] rounded-full shadow-neon scale-110 active:scale-95 transition-all"
-                   >
-                     <RotateCcw size={18} /> Re-Sync
-                   </button>
-                 </div>
-               )}
-
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {isLockModalOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[245] flex items-center justify-center p-4"
-          >
-            <div className="absolute inset-0 bg-black/70 backdrop-blur-md" onClick={() => !isLockBusy && setIsLockModalOpen(false)} />
-            <motion.div
-              initial={{ y: 12, scale: 0.98, opacity: 0 }}
-              animate={{ y: 0, scale: 1, opacity: 1 }}
-              exit={{ y: 10, scale: 0.98, opacity: 0 }}
-              className="relative z-10 flex w-full max-w-lg max-h-[min(88vh,760px)] flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-[#0a0a0a]/95 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
-            >
-              <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
-                <div>
-                  <div className="text-[10px] font-black uppercase tracking-[0.28em] text-brand-accent">App Lock</div>
-                  <div className="text-[11px] text-white/45 mt-1">Secure Aether with password and optional Touch ID. Idle auto-lock stays enabled.</div>
                 </div>
-                <button
-                  onClick={() => !isLockBusy && setIsLockModalOpen(false)}
-                  className={sharedModalCloseButtonClass}
-                >
-                  <X size={16} />
-                </button>
-              </div>
 
-              <div className="flex-1 overflow-y-auto p-5 space-y-4">
-                {lockStatus.enabled ? (
-                  <>
-                    <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
-                      <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Status</div>
-                      <div className="text-[12px] text-brand-accent font-black">Enabled</div>
-                    </div>
-
-                    {lockStatus.touchIdAvailable && (
-                      <label className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 cursor-pointer">
-                        <span className="text-[11px] text-white/70">Use Touch ID</span>
-                        <input
-                          type="checkbox"
-                          checked={lockUseTouchId}
-                          onChange={(e) => handleToggleTouchIdLock(e.target.checked)}
-                          className="accent-brand-accent"
-                        />
-                      </label>
-                    )}
-
-                    <label className="block rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-[11px] text-white/70">Idle auto-lock</span>
-                        <span className="text-[11px] font-black text-brand-accent">{lockIdleMinutes}m</span>
-                      </div>
-                      <input
-                        type="range"
-                        min={1}
-                        max={60}
-                        step={1}
-                        value={lockIdleMinutes}
-                        onChange={(e) => {
-                          const parsed = parseInt(e.target.value || '5', 10);
-                          setLockIdleMinutes(Number.isFinite(parsed) ? Math.max(1, parsed) : 5);
-                        }}
-                        className="w-full accent-brand-accent"
-                      />
-                    </label>
-
-                    <input
-                      type="password"
-                      value={lockDisablePassword}
-                      onChange={(e) => setLockDisablePassword(e.target.value)}
-                      placeholder="Enter password to disable lock"
-                      className="w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50"
-                    />
+                {isAutoScrollPaused && (
+                  <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-[250]">
                     <button
-                      onClick={handleDisableLock}
-                      disabled={isLockBusy || !lockDisablePassword}
-                      className="w-full px-5 py-2.5 rounded-xl bg-red-500/20 text-red-300 border border-red-500/30 font-black text-sm disabled:opacity-50"
+                      onClick={handleResyncLyrics}
+                      className="flex items-center gap-3 px-8 py-4 bg-brand-accent text-black font-black uppercase tracking-[0.3em] rounded-full shadow-neon scale-110 active:scale-95 transition-all"
                     >
-                      Disable Lock
+                      <RotateCcw size={18} /> Re-Sync
                     </button>
-                  </>
-                ) : (
-                  <>
-                    <input
-                      type="password"
-                      value={lockPasswordInput}
-                      onChange={(e) => setLockPasswordInput(e.target.value)}
-                      placeholder="Set password"
-                      className="w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50"
-                    />
-                    <input
-                      type="password"
-                      value={lockPasswordConfirm}
-                      onChange={(e) => setLockPasswordConfirm(e.target.value)}
-                      placeholder="Confirm password"
-                      className="w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50"
-                    />
-                    {lockStatus.touchIdAvailable && (
-                      <label className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 cursor-pointer">
-                        <span className="text-[11px] text-white/70">Enable Touch ID unlock</span>
-                        <input
-                          type="checkbox"
-                          checked={lockUseTouchId}
-                          onChange={(e) => setLockUseTouchId(e.target.checked)}
-                          className="accent-brand-accent"
-                        />
-                      </label>
-                    )}
-                    <button
-                      onClick={handleEnableLock}
-                      disabled={isLockBusy || !lockPasswordInput || !lockPasswordConfirm}
-                      className="w-full px-5 py-2.5 rounded-xl bg-brand-accent text-black font-black text-sm disabled:opacity-50"
-                    >
-                      Enable Lock
-                    </button>
-                  </>
-                )}
-
-                {lockStatus.enabled && (
-                  <button
-                    onClick={() => { setIsAppLocked(true); setIsLockModalOpen(false); }}
-                    className="w-full px-5 py-2.5 rounded-xl border border-brand-accent/30 bg-brand-accent/10 text-brand-accent font-black text-sm"
-                  >
-                    Lock Now
-                  </button>
-                )}
-
-                {isStandalone && lockStatus.enabled && window.aether?.getLockRecoveryStatus && (
-                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">Recovery</div>
-                        <div className="mt-1 text-[11px] text-white/55">Set up recovery now so you can reset your lock later.</div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={refreshLockRecoveryStatus}
-                        className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/60 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
-                        title="Refresh recovery status"
-                      >
-                        Refresh
-                      </button>
-                    </div>
-
-                    {lockRecoveryStatusError && (
-                      <div className="mt-2 text-[11px] text-red-400">{lockRecoveryStatusError}</div>
-                    )}
-
-                    <div className="mt-3 space-y-3">
-                      <div className="rounded-2xl border border-white/10 bg-black/25 px-3 py-3">
-                        <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Backup Phrase</div>
-                        <div className="text-[11px] text-white/55">
-                          Status:{' '}
-                          {lockRecoveryStatus?.phrase?.enabled ? <span className="text-white/70">Enabled</span> : <span className="text-white/45">Not set</span>}
-                        </div>
-
-                        {phraseGenerated && (
-                          <div className="mt-3 rounded-2xl border border-brand-accent/20 bg-brand-accent/10 px-3 py-2">
-                            <div className="flex items-start justify-between gap-4">
-                              <div className="flex-1">
-                                <div className="text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent/80">Save this phrase now</div>
-                                <div className="mt-2 text-[12px] font-mono text-white/85 break-words select-all cursor-pointer" onClick={handleCopyPhrase} title="Click to copy">{phraseGenerated}</div>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={handleCopyPhrase}
-                                className={`mt-1 p-2 rounded-xl border transition-all ${phraseCopied ? 'border-brand-accent/40 bg-brand-accent/10 text-brand-accent' : 'border-white/10 bg-white/5 text-white/50 hover:text-brand-accent hover:border-brand-accent/40'}`}
-                                title="Copy phrase to clipboard"
-                              >
-                                {phraseCopied ? <Check size={14} /> : <Copy size={14} />}
-                              </button>
-                            </div>
-                            <div className="mt-2 text-[10px] text-white/45 border-t border-white/5 pt-2">It will not be shown again after closing this dialog.</div>
-                          </div>
-                        )}
-
-                        <div className="mt-3 flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={handleGenerateRecoveryPhrase}
-                            disabled={phraseBusy}
-                            className="rounded-xl bg-brand-accent text-black px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] disabled:opacity-50"
-                            title={lockRecoveryStatus?.phrase?.enabled ? 'Generate a new phrase (replaces the old one)' : 'Generate backup phrase'}
-                          >
-                            {phraseBusy ? 'Generating…' : (lockRecoveryStatus?.phrase?.enabled ? 'Regenerate' : 'Generate')}
-                          </button>
-                          <div className="text-[10px] text-white/35">Use this if you forget your lock password.</div>
-                        </div>
-                      </div>
-                    </div>
                   </div>
                 )}
 
-                {lockError && <div className="text-[11px] text-red-400">{lockError}</div>}
               </div>
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          )}
+        </AnimatePresence>
 
-      <AnimatePresence>
-        {isSpotifyImportOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[240] flex items-center justify-center p-4"
-          >
-            <div className="absolute inset-0 bg-black/70 backdrop-blur-md" onClick={() => !isSpotifyImporting && setIsSpotifyImportOpen(false)} />
+        <AnimatePresence>
+          {isLockModalOpen && (
             <motion.div
-              initial={{ y: 16, scale: 0.97, opacity: 0 }}
-              animate={{ y: 0, scale: 1, opacity: 1 }}
-              exit={{ y: 10, scale: 0.98, opacity: 0 }}
-              className="relative z-10 flex w-full max-w-xl max-h-[min(88vh,760px)] flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-[#0a0a0a]/95 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
-              style={{
-                '--music-import-accent': musicImportTheme.accent,
-                '--music-import-accent-soft': musicImportTheme.accentSoft,
-                '--music-import-accent-border': musicImportTheme.accentBorder,
-                '--music-import-accent-text': musicImportTheme.accentText,
-                '--music-import-accent-shadow': musicImportTheme.accentShadow,
-                '--music-import-cta-text': musicImportTheme.ctaText,
-              }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[245] flex items-center justify-center p-4"
             >
-              <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
-                <div>
-                  <div className="text-[10px] font-black uppercase tracking-[0.28em]" style={{ color: 'var(--music-import-accent-text)' }}>Import a Playlist</div>
-                  <div className="text-[11px] text-white/45 mt-1">Pick a source, paste a public playlist link, and Aether will match songs into your library.</div>
-                </div>
-                <button
-                  onClick={() => !isSpotifyImporting && setIsSpotifyImportOpen(false)}
-                  className={sharedModalCloseButtonClass}
-                  title="Close"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-5 space-y-4">
-                <div className="grid grid-cols-2 gap-3">
-                  {[
-                    ['spotify', 'Spotify', 'Public open.spotify.com playlist'],
-                    ['apple', 'Apple Music', 'Public music.apple.com playlist'],
-                  ].map(([provider, label, detail]) => (
-                    <button
-                      key={provider}
-                      type="button"
-                      disabled={isSpotifyImporting}
-                      onClick={() => {
-                        setMusicImportProvider(provider);
-                        setSpotifyImportUrl('');
-                        setSpotifyImportPlaylistName('');
-                        setSpotifyImportProgress({ stage: 'idle', progress: 0, message: `${label} selected. Paste a public playlist URL.` });
-                        setSpotifyImportLogs([]);
-                      }}
-                      className={`no-drag rounded-2xl border px-4 py-4 text-left transition-all ${musicImportProvider === provider ? 'text-white shadow-[0_0_22px_var(--music-import-accent-shadow)]' : 'border-white/10 bg-white/[0.035] text-white/60 hover:text-white'}`}
-                      style={musicImportProvider === provider ? { borderColor: 'var(--music-import-accent-border)', background: 'var(--music-import-accent-soft)' } : undefined}
-                    >
-                      <div className="flex items-center gap-2 text-[12px] font-black uppercase tracking-[0.18em]">
-                        <Music size={14} />
-                        <span>{label}</span>
-                      </div>
-                      <div className="mt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/35">{detail}</div>
-                    </button>
-                  ))}
-                </div>
-
-                <div>
-                  <label className="block text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">{musicImportProvider ? `${musicImportTheme.label} Playlist Link` : 'Playlist Link'}</label>
-                  <input
-                    value={spotifyImportUrl}
-                    onChange={(e) => setSpotifyImportUrl(e.target.value)}
-                    disabled={isSpotifyImporting || !musicImportProvider}
-                    placeholder={musicImportTheme.placeholder}
-                    className="no-drag w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none transition-all disabled:opacity-60"
-                    style={{ '--tw-ring-color': 'var(--music-import-accent)', caretColor: 'var(--music-import-accent)' }}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Save As</label>
-                  <input
-                    value={spotifyImportPlaylistName}
-                    onChange={(e) => setSpotifyImportPlaylistName(e.target.value)}
-                    disabled={isSpotifyImporting || !musicImportProvider}
-                    placeholder={musicImportProvider ? `${musicImportTheme.label} playlist name (optional)` : 'Choose a source first'}
-                    className="no-drag w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none transition-all disabled:opacity-60"
-                    style={{ caretColor: 'var(--music-import-accent)' }}
-                  />
-                  <div className="mt-2 text-[10px] text-white/35">Leave blank to use the playlist title Aether finds.</div>
-                </div>
-
-                <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4">
-                  <div className="flex items-center justify-between gap-3 mb-2">
-                    <span className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">Progress</span>
-                    <span className="text-[10px] font-mono" style={{ color: 'var(--music-import-accent-text)' }}>{Math.max(0, Math.min(100, spotifyImportProgress.progress || 0))}%</span>
+              <div className="absolute inset-0 bg-black/70 backdrop-blur-md" onClick={() => !isLockBusy && setIsLockModalOpen(false)} />
+              <motion.div
+                initial={{ y: 12, scale: 0.98, opacity: 0 }}
+                animate={{ y: 0, scale: 1, opacity: 1 }}
+                exit={{ y: 10, scale: 0.98, opacity: 0 }}
+                className="relative z-10 flex w-full max-w-lg max-h-[min(88vh,760px)] flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-[#0a0a0a]/95 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
+              >
+                <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.28em] text-brand-accent">App Lock</div>
+                    <div className="text-[11px] text-white/45 mt-1">Secure Aether with password and optional Touch ID. Idle auto-lock stays enabled.</div>
                   </div>
-                  <div className="h-2 rounded-full bg-white/10 overflow-hidden">
-                    <div
-                      className="h-full rounded-full transition-all duration-300"
-                      style={{ width: `${Math.max(4, Math.min(100, spotifyImportProgress.progress || 0))}%`, background: spotifyImportProgress.stage === 'error' ? '#ff3b4f' : 'var(--music-import-accent)' }}
-                    />
-                  </div>
-                  <div className="mt-3 text-[11px] text-white/60 min-h-[1.5em]">
-                    {spotifyImportProgress.message || (isSpotifyImporting ? 'Preparing import…' : 'Ready to import.')}
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3">
-                  <div className="mb-2 flex items-center justify-between gap-3">
-                    <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">Debug Log</div>
-                    <button type="button" onClick={copySpotifyImportDebugLog} className="rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-white/45 transition-colors hover:text-white">Copy</button>
-                  </div>
-                  <div className="custom-scrollbar-heavy max-h-28 select-text overflow-auto space-y-1 pr-1">
-                    {spotifyImportLogs.length === 0 ? (
-                      <div className="text-[10px] text-white/35">No logs yet.</div>
-                    ) : spotifyImportLogs.map((line, idx) => (
-                      <div key={`${line}-${idx}`} className="text-[10px] leading-4 font-mono text-white/55 break-words">{line}</div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-end gap-3 pt-1">
                   <button
-                    onClick={() => { if (!isSpotifyImporting) setIsSpotifyImportOpen(false); }}
-                    className="no-drag px-4 py-2 rounded-xl border border-white/10 bg-white/5 text-white/60 hover:text-white hover:border-white/20 transition-all text-sm"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleImportSpotifyPlaylist}
-                    disabled={isSpotifyImporting || !musicImportProvider || !spotifyImportUrl.trim()}
-                    className="no-drag px-5 py-2 rounded-xl font-black text-sm hover:scale-[1.01] active:scale-95 transition-all disabled:opacity-50 disabled:hover:scale-100"
-                    style={{ background: 'var(--music-import-accent)', color: 'var(--music-import-cta-text)' }}
-                  >
-                    {isSpotifyImporting ? 'Matching...' : musicImportProvider ? `Match ${musicImportTheme.label} Playlist` : 'Choose a Source'}
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-      <AnimatePresence>
-        {isMixtapeVaultOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[320] flex items-center justify-center bg-black/80 backdrop-blur-md p-4"
-            onClick={() => setIsMixtapeVaultOpen(false)}
-          >
-            <motion.div
-              initial={{ scale: 0.94, y: 10 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.96, y: 8 }}
-              ref={mixtapeVaultRef}
-              style={{
-                '--vault-bass': mixtapePulse.bass,
-                '--vault-mids': mixtapePulse.mids,
-                '--vault-highs': mixtapePulse.highs,
-                '--vault-energy': mixtapePulse.energy,
-                '--vault-scale': 1 + (mixtapePulse.energy * 0.1),
-                '--vault-spin': `${vaultPulse.spin || 0}deg`,
-                '--vault-glow': mixtapePulseReadout,
-                '--mixtape-progress': mixtapeProgressPct / 100,
-              }}
-              className="mixtape-vault-shell relative w-[min(94vw,920px)] rounded-[2rem] border border-brand-accent/25 bg-[#07090c]/96 shadow-[0_0_80px_rgba(0,255,191,0.14)] overflow-hidden"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-brand-accent/70 to-transparent" />
-
-              <div className="p-5 md:p-7">
-                <div className="relative mb-6 flex items-center justify-center text-center">
-                  <div className="min-w-0 px-14">
-                    <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border border-brand-accent/40 bg-brand-accent/10 shadow-[0_0_24px_rgba(0,255,191,0.12)]">
-                      <Music size={18} className="text-brand-accent" />
-                    </div>
-                    <h2 className="text-brand-accent font-black text-xl md:text-2xl tracking-[0.16em] uppercase leading-none">Mixtape Vault</h2>
-                    <span className="mt-2 block text-white/45 text-[9px] font-mono tracking-[0.2em] uppercase">Private live scene // tape deck</span>
-                    <div className="mx-auto mt-3 max-w-xl truncate text-[11px] font-black text-white/85">{currentTrack?.title || 'Aether Secret Session'}</div>
-                    <div className="mx-auto mt-1 max-w-sm truncate text-[9px] uppercase tracking-[0.22em] text-brand-accent/70">{currentTrack?.author || 'Unknown Artist'}</div>
-                  </div>
-                    <button
-                      onClick={() => setIsMixtapeVaultOpen(false)}
-                      className={`${sharedModalCloseButtonClass} absolute right-0 top-0`}
-                    >
-                      <X size={16} />
-                    </button>
-                </div>
-
-                {!isMixtapeVaultContentReady ? (
-                  <div className="flex h-72 flex-col items-center justify-center gap-3 rounded-2xl border border-white/10 bg-black/30 p-5 text-center md:p-6">
-                    <Loader2 size={26} className="animate-spin text-brand-accent/70" />
-                    <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/32">Preparing Analog Scene</div>
-                  </div>
-                ) : (
-                <div className="mixtape-console rounded-[1.75rem] border border-white/10 bg-black/30 p-4 md:p-5">
-                  <div className="grid gap-5 md:grid-cols-[0.9fr_1.1fr] items-stretch">
-                    <div className="mixtape-deck rounded-[1.5rem] border border-white/8 bg-white/[0.025] p-4 flex flex-col items-center justify-center">
-                      <div className="mixtape-record-stage">
-                        <div className={`mixtape-record ${isPlaying ? 'is-playing' : ''}`}>
-                          <div className="mixtape-record-grooves" />
-                          <img
-                            src={getProxyUrl(currentTrack?.thumbnail)}
-                            className="mixtape-record-art"
-                            alt=""
-                            draggable={false}
-                          />
-                          <div className="mixtape-record-pin" />
-                        </div>
-                        <div className={`mixtape-tonearm ${isPlaying ? 'is-playing' : ''}`}>
-                          <div className="mixtape-tonearm-head" />
-                        </div>
-                      </div>
-                      <div className="mt-4 grid w-full grid-cols-3 gap-2 text-center">
-                        <div className="rounded-2xl border border-white/8 bg-black/24 px-3 py-2">
-                          <div className="text-[8px] uppercase tracking-[0.2em] text-white/28">Bass</div>
-                          <div className="mt-1 font-mono text-[11px] text-brand-accent">{Math.round(clamp01(mixtapePulse.bass) * 100)}</div>
-                        </div>
-                        <div className="rounded-2xl border border-white/8 bg-black/24 px-3 py-2">
-                          <div className="text-[8px] uppercase tracking-[0.2em] text-white/28">Mids</div>
-                          <div className="mt-1 font-mono text-[11px] text-brand-accent">{Math.round(clamp01(mixtapePulse.mids) * 100)}</div>
-                        </div>
-                        <div className="rounded-2xl border border-white/8 bg-black/24 px-3 py-2">
-                          <div className="text-[8px] uppercase tracking-[0.2em] text-white/28">Highs</div>
-                          <div className="mt-1 font-mono text-[11px] text-brand-accent">{Math.round(clamp01(mixtapePulse.highs) * 100)}</div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="rounded-[1.5rem] border border-white/8 bg-black/24 p-4 flex flex-col justify-between min-w-0">
-                      <div className="min-w-0">
-                        <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/28">Now Playing</div>
-                        <div className="mt-3 text-lg md:text-xl font-black uppercase tracking-tight text-white truncate">{currentTrack?.title || 'Aether Secret Session'}</div>
-                        <div className="mt-1 text-[10px] font-black uppercase tracking-[0.22em] text-brand-accent/70 truncate">{currentTrack?.author || 'Unknown Artist'}</div>
-                      </div>
-
-                      <div className="my-5">
-                        <div className="mixtape-meter grid grid-cols-8 gap-1 items-end h-16">
-                          {mixtapeSpectrum.map((bin, idx) => {
-                            const h = 12 + (bin * 52);
-                            return (
-                              <div
-                                key={idx}
-                                className="mixtape-meter-cell rounded-md bg-brand-accent/75 transition-[height,opacity] duration-200 ease-out"
-                                style={{ height: `${h}px`, opacity: 0.35 + (bin * 0.55) + (mixtapePulseReadout * 0.18), '--meter-index': idx }}
-                              />
-                            );
-                          })}
-                        </div>
-                        <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/[0.06]">
-                          <div
-                            className="h-full rounded-full bg-brand-accent shadow-[0_0_18px_rgba(0,255,191,0.28)] transition-[width] duration-200"
-                            style={{ width: `${Math.min(100, Math.max(isPlaying ? 3 : 0, mixtapeProgressPct))}%` }}
-                          />
-                        </div>
-                        <div className="mt-2 flex items-center justify-between text-[9px] font-mono text-white/34">
-                          <span>{formatTime(mixtapePositionMs)}</span>
-                          <span>{mixtapeDurationMs ? formatTime(mixtapeDurationMs) : '--:--'}</span>
-                        </div>
-                      </div>
-
-                      <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
-                        <div className="rounded-2xl border border-white/8 bg-white/[0.025] px-4 py-3 min-w-0">
-                          <div className="text-[8px] font-black uppercase tracking-[0.22em] text-white/28">Live Lyric</div>
-                          <div className="mt-1 line-clamp-2 text-sm font-black leading-snug text-brand-accent">{mixtapeLiveLyric}</div>
-                          <div className="mt-2 truncate font-mono text-[9px] uppercase tracking-[0.18em] text-white/34">
-                            Pulse {mixtapeEnergyPct}% / {vaultPulse.stamp || 'AETHER-PULSE'}
-                          </div>
-                        </div>
-                        <button
-                          onClick={copyVaultSceneEmbed}
-                          className="h-12 rounded-2xl border border-brand-accent/35 bg-brand-accent/12 px-5 text-[10px] font-black uppercase tracking-[0.22em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black active:scale-95"
-                        >
-                          Copy Live Scene Link
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                )}
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-      <AnimatePresence>
-        {isSharedSceneOpen && sharedScene && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[320] flex items-center justify-center bg-black/80 backdrop-blur-md p-4"
-            onClick={() => setIsSharedSceneOpen(false)}
-          >
-            <motion.div
-              initial={{ scale: 0.95, y: 12 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.96, y: 8 }}
-              className="relative w-[min(92vw,760px)] rounded-3xl border border-brand-accent/30 bg-[#07090c]/95 shadow-[0_0_70px_rgba(0,255,191,0.15)] overflow-hidden"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="p-6 md:p-8 flex flex-col gap-6">
-                <div className="flex justify-between items-start gap-4">
-                  <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent mt-1">Aether Shared Scene</div>
-                  <button
-                    onClick={() => setIsSharedSceneOpen(false)}
+                    onClick={() => !isLockBusy && setIsLockModalOpen(false)}
                     className={sharedModalCloseButtonClass}
                   >
                     <X size={16} />
                   </button>
                 </div>
-                <div className="rounded-2xl border border-white/10 bg-black/30 p-4 md:p-5 flex flex-col md:flex-row gap-4 md:gap-5">
-                  <img
-                    src={sharedScene.thumbnail || (sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : null)}
-                    alt="scene"
-                    className="w-full md:w-40 h-40 rounded-2xl object-cover border border-white/10"
-                    onError={(e) => {
-                      const fallback = sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : '';
-                      if (fallback && e.currentTarget.src !== fallback) e.currentTarget.src = fallback;
-                    }}
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="font-black text-brand-accent text-lg truncate">{sharedScene.title || 'Aether Scene'}</div>
-                    <div className="text-[11px] uppercase tracking-[0.2em] text-white/55 mt-1 truncate">{sharedScene.author || 'Unknown Artist'}</div>
-                    <div className="mt-4 text-white/80 text-sm leading-relaxed italic break-words">“{sharedScene.lyric || 'No lyric locked yet'}”</div>
-                    <div className="mt-4 text-[10px] uppercase tracking-[0.18em] text-white/45">
-                      {formatTime(Number(sharedScene.at || 0))} / {formatTime(Number(sharedScene.total || 0))} • {sharedScene.state || 'paused'} • {sharedScene.mode || 'bars'}
-                    </div>
-                    <div className="mt-2 text-[10px] uppercase tracking-[0.18em] text-white/45">
-                      Pulse {Number(sharedScene?.pulse?.e || 0)}% • Bass {Number(sharedScene?.pulse?.b || 0)}% • Mids {Number(sharedScene?.pulse?.m || 0)}% • Highs {Number(sharedScene?.pulse?.h || 0)}%
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-      <AnimatePresence>
-        {isAuraStageOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[330] overflow-hidden bg-[#020405]/96 backdrop-blur-2xl"
-          >
-            <div className="absolute inset-0" onClick={() => setIsAuraStageOpen(false)} />
-            {currentTrack?.thumbnail && (
-              <>
-                <img src={getProxyUrl(currentTrack.thumbnail)} alt="" className="absolute inset-0 h-full w-full object-cover opacity-[0.18] blur-[54px] scale-110" />
-                <img src={getProxyUrl(currentTrack.thumbnail)} alt="" className="aura-stage-parallax absolute left-1/2 top-1/2 h-[min(72vw,72vh)] w-[min(72vw,72vh)] -translate-x-1/2 -translate-y-1/2 rounded-[3rem] object-cover opacity-20 shadow-[0_40px_120px_rgba(0,0,0,0.55)]" />
-              </>
-            )}
-            <div className="aura-stage-rings pointer-events-none absolute inset-0" />
-            <div className="aura-stage-grid pointer-events-none absolute inset-0" />
 
-            <motion.div
-              initial={{ scale: 0.96, y: 16 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.96, y: 16 }}
-              className="relative z-10 flex h-full flex-col p-4 md:p-8"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-center justify-between gap-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-brand-accent/30 bg-brand-accent/12 text-brand-accent shadow-[0_0_28px_rgba(0,255,191,0.14)]">
-                    <Layers size={18} />
-                  </div>
-                  <div>
-                    <div className="text-[10px] font-black uppercase tracking-[0.28em] text-brand-accent">Aura Stage 2.0</div>
-                    <div className="mt-1 text-[11px] uppercase tracking-[0.18em] text-white/35">Depth lyric stage // beat field</div>
-                  </div>
+                <div className="flex-1 overflow-y-auto p-5 space-y-4">
+                  {lockStatus.enabled ? (
+                    <>
+                      <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                        <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Status</div>
+                        <div className="text-[12px] text-brand-accent font-black">Enabled</div>
+                      </div>
+
+                      {lockStatus.touchIdAvailable && (
+                        <label className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 cursor-pointer">
+                          <span className="text-[11px] text-white/70">Use Touch ID</span>
+                          <input
+                            type="checkbox"
+                            checked={lockUseTouchId}
+                            onChange={(e) => handleToggleTouchIdLock(e.target.checked)}
+                            className="accent-brand-accent"
+                          />
+                        </label>
+                      )}
+
+                      <label className="block rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[11px] text-white/70">Idle auto-lock</span>
+                          <span className="text-[11px] font-black text-brand-accent">{lockIdleMinutes}m</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={1}
+                          max={60}
+                          step={1}
+                          value={lockIdleMinutes}
+                          onChange={(e) => {
+                            const parsed = parseInt(e.target.value || '5', 10);
+                            setLockIdleMinutes(Number.isFinite(parsed) ? Math.max(1, parsed) : 5);
+                          }}
+                          className="w-full accent-brand-accent"
+                        />
+                      </label>
+
+                      <input
+                        type="password"
+                        value={lockDisablePassword}
+                        onChange={(e) => setLockDisablePassword(e.target.value)}
+                        placeholder="Enter password to disable lock"
+                        className="w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50"
+                      />
+                      <button
+                        onClick={handleDisableLock}
+                        disabled={isLockBusy || !lockDisablePassword}
+                        className="w-full px-5 py-2.5 rounded-xl bg-red-500/20 text-red-300 border border-red-500/30 font-black text-sm disabled:opacity-50"
+                      >
+                        Disable Lock
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <input
+                        type="password"
+                        value={lockPasswordInput}
+                        onChange={(e) => setLockPasswordInput(e.target.value)}
+                        placeholder="Set password"
+                        className="w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50"
+                      />
+                      <input
+                        type="password"
+                        value={lockPasswordConfirm}
+                        onChange={(e) => setLockPasswordConfirm(e.target.value)}
+                        placeholder="Confirm password"
+                        className="w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-brand-accent/50"
+                      />
+                      {lockStatus.touchIdAvailable && (
+                        <label className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 cursor-pointer">
+                          <span className="text-[11px] text-white/70">Enable Touch ID unlock</span>
+                          <input
+                            type="checkbox"
+                            checked={lockUseTouchId}
+                            onChange={(e) => setLockUseTouchId(e.target.checked)}
+                            className="accent-brand-accent"
+                          />
+                        </label>
+                      )}
+                      <button
+                        onClick={handleEnableLock}
+                        disabled={isLockBusy || !lockPasswordInput || !lockPasswordConfirm}
+                        className="w-full px-5 py-2.5 rounded-xl bg-brand-accent text-black font-black text-sm disabled:opacity-50"
+                      >
+                        Enable Lock
+                      </button>
+                    </>
+                  )}
+
+                  {lockStatus.enabled && (
+                    <button
+                      onClick={() => { setIsAppLocked(true); setIsLockModalOpen(false); }}
+                      className="w-full px-5 py-2.5 rounded-xl border border-brand-accent/30 bg-brand-accent/10 text-brand-accent font-black text-sm"
+                    >
+                      Lock Now
+                    </button>
+                  )}
+
+                  {isStandalone && lockStatus.enabled && window.aether?.getLockRecoveryStatus && (
+                    <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">Recovery</div>
+                          <div className="mt-1 text-[11px] text-white/55">Set up recovery now so you can reset your lock later.</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={refreshLockRecoveryStatus}
+                          className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/60 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
+                          title="Refresh recovery status"
+                        >
+                          Refresh
+                        </button>
+                      </div>
+
+                      {lockRecoveryStatusError && (
+                        <div className="mt-2 text-[11px] text-red-400">{lockRecoveryStatusError}</div>
+                      )}
+
+                      <div className="mt-3 space-y-3">
+                        <div className="rounded-2xl border border-white/10 bg-black/25 px-3 py-3">
+                          <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Backup Phrase</div>
+                          <div className="text-[11px] text-white/55">
+                            Status:{' '}
+                            {lockRecoveryStatus?.phrase?.enabled ? <span className="text-white/70">Enabled</span> : <span className="text-white/45">Not set</span>}
+                          </div>
+
+                          {phraseGenerated && (
+                            <div className="mt-3 rounded-2xl border border-brand-accent/20 bg-brand-accent/10 px-3 py-2">
+                              <div className="flex items-start justify-between gap-4">
+                                <div className="flex-1">
+                                  <div className="text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent/80">Save this phrase now</div>
+                                  <div className="mt-2 text-[12px] font-mono text-white/85 break-words select-all cursor-pointer" onClick={handleCopyPhrase} title="Click to copy">{phraseGenerated}</div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={handleCopyPhrase}
+                                  className={`mt-1 p-2 rounded-xl border transition-all ${phraseCopied ? 'border-brand-accent/40 bg-brand-accent/10 text-brand-accent' : 'border-white/10 bg-white/5 text-white/50 hover:text-brand-accent hover:border-brand-accent/40'}`}
+                                  title="Copy phrase to clipboard"
+                                >
+                                  {phraseCopied ? <Check size={14} /> : <Copy size={14} />}
+                                </button>
+                              </div>
+                              <div className="mt-2 text-[10px] text-white/45 border-t border-white/5 pt-2">It will not be shown again after closing this dialog.</div>
+                            </div>
+                          )}
+
+                          <div className="mt-3 flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={handleGenerateRecoveryPhrase}
+                              disabled={phraseBusy}
+                              className="rounded-xl bg-brand-accent text-black px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] disabled:opacity-50"
+                              title={lockRecoveryStatus?.phrase?.enabled ? 'Generate a new phrase (replaces the old one)' : 'Generate backup phrase'}
+                            >
+                              {phraseBusy ? 'Generating…' : (lockRecoveryStatus?.phrase?.enabled ? 'Regenerate' : 'Generate')}
+                            </button>
+                            <div className="text-[10px] text-white/35">Use this if you forget your lock password.</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {lockError && <div className="text-[11px] text-red-400">{lockError}</div>}
                 </div>
-                <div className="flex items-center gap-2">
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {isSpotifyImportOpen && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[240] flex items-center justify-center p-4"
+            >
+              <div className="absolute inset-0 bg-black/70 backdrop-blur-md" onClick={() => !isSpotifyImporting && setIsSpotifyImportOpen(false)} />
+              <motion.div
+                initial={{ y: 16, scale: 0.97, opacity: 0 }}
+                animate={{ y: 0, scale: 1, opacity: 1 }}
+                exit={{ y: 10, scale: 0.98, opacity: 0 }}
+                className="relative z-10 flex w-full max-w-xl max-h-[min(88vh,760px)] flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-[#0a0a0a]/95 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
+                style={{
+                  '--music-import-accent': musicImportTheme.accent,
+                  '--music-import-accent-soft': musicImportTheme.accentSoft,
+                  '--music-import-accent-border': musicImportTheme.accentBorder,
+                  '--music-import-accent-text': musicImportTheme.accentText,
+                  '--music-import-accent-shadow': musicImportTheme.accentShadow,
+                  '--music-import-cta-text': musicImportTheme.ctaText,
+                }}
+              >
+                <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.28em]" style={{ color: 'var(--music-import-accent-text)' }}>Import a Playlist</div>
+                    <div className="text-[11px] text-white/45 mt-1">Pick a source, paste a public playlist link, and Aether will match songs into your library.</div>
+                  </div>
                   <button
-                    onClick={openGestureLab}
-                    className={`flex h-10 w-10 items-center justify-center rounded-2xl border transition-all ${isGestureControlEnabled ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
-                    title="Gesture Lab"
+                    onClick={() => !isSpotifyImporting && setIsSpotifyImportOpen(false)}
+                    className={sharedModalCloseButtonClass}
+                    title="Close"
                   >
-                    <Hand size={15} />
-                  </button>
-                  <button
-                    onClick={openFeedbackPanel}
-                    className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/55 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
-                    title="Send Feedback"
-                  >
-                    <MessageSquare size={15} />
-                  </button>
-                  <button onClick={() => setIsAuraStageOpen(false)} className={sharedModalCloseButtonClass} title="Close">
                     <X size={16} />
                   </button>
                 </div>
-              </div>
 
-              <div className="relative flex flex-1 items-center justify-center py-6">
-                <div className="aura-stage-depth-stack w-full max-w-6xl">
-                  <div className="grid min-h-[60vh] grid-cols-1 items-center gap-8 lg:grid-cols-[0.9fr_1.1fr]">
-                    <div className="flex items-center justify-center">
-                      <motion.div
-                        animate={{ scale: auraStagePulseScale, rotate: livePulseReadout * 1.8 }}
-                        transition={{ duration: 0.16, ease: 'easeOut' }}
-                        className="aura-stage-art relative aspect-square w-[min(72vw,420px)] overflow-hidden rounded-[2.6rem] border border-white/12 bg-white/[0.03] shadow-[0_36px_110px_rgba(0,0,0,0.48)]"
+                <div className="flex-1 overflow-y-auto p-5 space-y-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    {[
+                      ['spotify', 'Spotify', 'Public open.spotify.com playlist'],
+                      ['apple', 'Apple Music', 'Public music.apple.com playlist'],
+                    ].map(([provider, label, detail]) => (
+                      <button
+                        key={provider}
+                        type="button"
+                        disabled={isSpotifyImporting}
+                        onClick={() => {
+                          setMusicImportProvider(provider);
+                          setSpotifyImportUrl('');
+                          setSpotifyImportPlaylistName('');
+                          setSpotifyImportProgress({ stage: 'idle', progress: 0, message: `${label} selected. Paste a public playlist URL.` });
+                          setSpotifyImportLogs([]);
+                        }}
+                        className={`no-drag rounded-2xl border px-4 py-4 text-left transition-all ${musicImportProvider === provider ? 'text-white shadow-[0_0_22px_var(--music-import-accent-shadow)]' : 'border-white/10 bg-white/[0.035] text-white/60 hover:text-white'}`}
+                        style={musicImportProvider === provider ? { borderColor: 'var(--music-import-accent-border)', background: 'var(--music-import-accent-soft)' } : undefined}
                       >
-                        {currentTrack?.thumbnail ? (
-                          <img src={getProxyUrl(currentTrack.thumbnail)} alt="" className="h-full w-full object-cover" />
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center text-brand-accent/45"><Music size={72} strokeWidth={1.2} /></div>
-                        )}
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-white/8" />
-                        <div className="absolute bottom-4 left-4 right-4">
-                          <div className="text-[9px] font-black uppercase tracking-[0.28em] text-brand-accent/85">Now Playing</div>
-                          <div className="mt-1 truncate text-lg font-black uppercase tracking-tight text-white">{currentTrack?.title || 'No track selected'}</div>
-                          <div className="mt-1 truncate text-[10px] font-black uppercase tracking-[0.24em] text-white/48">{currentTrack?.author || 'Search and queue a track'}</div>
+                        <div className="flex items-center gap-2 text-[12px] font-black uppercase tracking-[0.18em]">
+                          <Music size={14} />
+                          <span>{label}</span>
                         </div>
-                      </motion.div>
-                    </div>
+                        <div className="mt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/35">{detail}</div>
+                      </button>
+                    ))}
+                  </div>
 
-                    <div className="min-w-0 text-center lg:text-left">
-                      <div className="mb-5 flex flex-wrap items-center justify-center gap-2 lg:justify-start">
-                        <span className="rounded-full border border-brand-accent/25 bg-brand-accent/10 px-3 py-1 text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent">Pulse {Math.round(livePulseReadout * 100)}%</span>
-                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[9px] font-black uppercase tracking-[0.22em] text-white/45">{auraPreset}</span>
-                        {isGestureControlEnabled && <span className="rounded-full border border-brand-accent/20 bg-brand-accent/8 px-3 py-1 text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent/75">Gesture on</span>}
-                        {isFaceControlEnabled && <span className="rounded-full border border-brand-accent/20 bg-brand-accent/8 px-3 py-1 text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent/75">Face on</span>}
-                      </div>
-                      <AnimatePresence mode="wait">
-                        <motion.div
-                          key={`aura-stage-lyric-${activeLyricIndex}-${compactLyric || 'idle'}`}
-                          initial={{ opacity: 0, y: 22, filter: 'blur(10px)' }}
-                          animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-                          exit={{ opacity: 0, y: -14, filter: 'blur(8px)' }}
-                          transition={{ duration: 0.32, ease: 'easeOut' }}
-                          className="aura-stage-lyric text-4xl font-black leading-[0.98] tracking-normal text-white sm:text-6xl lg:text-7xl"
-                        >
-                          {compactLyric || currentTrack?.title || 'Aether is standing by'}
-                        </motion.div>
-                      </AnimatePresence>
-                      {nextLyric && (
-                        <div className="mt-5 text-base font-semibold leading-snug text-white/44 sm:text-xl">
-                          {nextLyric}
-                        </div>
-                      )}
+                  <div>
+                    <label className="block text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">{musicImportProvider ? `${musicImportTheme.label} Playlist Link` : 'Playlist Link'}</label>
+                    <input
+                      value={spotifyImportUrl}
+                      onChange={(e) => setSpotifyImportUrl(e.target.value)}
+                      disabled={isSpotifyImporting || !musicImportProvider}
+                      placeholder={musicImportTheme.placeholder}
+                      className="no-drag w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none transition-all disabled:opacity-60"
+                      style={{ '--tw-ring-color': 'var(--music-import-accent)', caretColor: 'var(--music-import-accent)' }}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Save As</label>
+                    <input
+                      value={spotifyImportPlaylistName}
+                      onChange={(e) => setSpotifyImportPlaylistName(e.target.value)}
+                      disabled={isSpotifyImporting || !musicImportProvider}
+                      placeholder={musicImportProvider ? `${musicImportTheme.label} playlist name (optional)` : 'Choose a source first'}
+                      className="no-drag w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none transition-all disabled:opacity-60"
+                      style={{ caretColor: 'var(--music-import-accent)' }}
+                    />
+                    <div className="mt-2 text-[10px] text-white/35">Leave blank to use the playlist title Aether finds.</div>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4">
+                    <div className="flex items-center justify-between gap-3 mb-2">
+                      <span className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">Progress</span>
+                      <span className="text-[10px] font-mono" style={{ color: 'var(--music-import-accent-text)' }}>{Math.max(0, Math.min(100, spotifyImportProgress.progress || 0))}%</span>
+                    </div>
+                    <div className="h-2 rounded-full bg-white/10 overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all duration-300"
+                        style={{ width: `${Math.max(4, Math.min(100, spotifyImportProgress.progress || 0))}%`, background: spotifyImportProgress.stage === 'error' ? '#ff3b4f' : 'var(--music-import-accent)' }}
+                      />
+                    </div>
+                    <div className="mt-3 text-[11px] text-white/60 min-h-[1.5em]">
+                      {spotifyImportProgress.message || (isSpotifyImporting ? 'Preparing import…' : 'Ready to import.')}
                     </div>
                   </div>
-                </div>
-              </div>
 
-              <div className="mx-auto w-full max-w-5xl rounded-[1.6rem] border border-white/10 bg-black/36 px-4 py-4 backdrop-blur-2xl">
-                <PlaybackProgressIsland
-                  durationMs={auraStageDurationMs}
-                  getPositionMs={getActivePlaybackPositionMs}
-                  onSeek={handleSeek}
-                  accent={trackProgressAccent}
-                  glow={trackProgressGlow}
-                  barClassName="mb-3 h-1.5 w-full cursor-pointer overflow-hidden rounded-full bg-white/12"
-                  timeRowClassName="flex items-center justify-between gap-4 text-[10px] font-mono text-white/42"
-                  middleContent={(
-                  <div className="flex items-center gap-5">
-                    <button onClick={() => handleControl('previous')} className="text-white/55 transition-colors hover:text-brand-accent active:scale-90" title="Previous">
-                      <Rewind size={22} fill="currentColor" />
+                  <div className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">Debug Log</div>
+                      <button type="button" onClick={copySpotifyImportDebugLog} className="rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-white/45 transition-colors hover:text-white">Copy</button>
+                    </div>
+                    <div className="custom-scrollbar-heavy max-h-28 select-text overflow-auto space-y-1 pr-1">
+                      {spotifyImportLogs.length === 0 ? (
+                        <div className="text-[10px] text-white/35">No logs yet.</div>
+                      ) : spotifyImportLogs.map((line, idx) => (
+                        <div key={`${line}-${idx}`} className="text-[10px] leading-4 font-mono text-white/55 break-words">{line}</div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-3 pt-1">
+                    <button
+                      onClick={() => { if (!isSpotifyImporting) setIsSpotifyImportOpen(false); }}
+                      className="no-drag px-4 py-2 rounded-xl border border-white/10 bg-white/5 text-white/60 hover:text-white hover:border-white/20 transition-all text-sm"
+                    >
+                      Cancel
                     </button>
                     <button
-                      onClick={() => handleControl(isPlaying ? 'pause' : 'resume')}
-                      className="flex h-14 w-14 items-center justify-center rounded-2xl text-black transition-all hover:scale-[1.03] active:scale-95"
-                      style={{ background: trackControlAccent, boxShadow: `0 0 28px ${trackControlGlow}` }}
-                      title={isPlaying ? 'Pause' : 'Play'}
+                      onClick={handleImportSpotifyPlaylist}
+                      disabled={isSpotifyImporting || !musicImportProvider || !spotifyImportUrl.trim()}
+                      className="no-drag px-5 py-2 rounded-xl font-black text-sm hover:scale-[1.01] active:scale-95 transition-all disabled:opacity-50 disabled:hover:scale-100"
+                      style={{ background: 'var(--music-import-accent)', color: 'var(--music-import-cta-text)' }}
                     >
-                      {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" className="ml-1" />}
-                    </button>
-                    <button onClick={() => handleControl('skip')} className="text-white/55 transition-colors hover:text-brand-accent active:scale-90" title="Next">
-                      <FastForward size={22} fill="currentColor" />
+                      {isSpotifyImporting ? 'Matching...' : musicImportProvider ? `Match ${musicImportTheme.label} Playlist` : 'Choose a Source'}
                     </button>
                   </div>
-                  )}
-                />
-              </div>
+                </div>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {(inspectTrack || isPlaylistInspect) && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[340] flex items-center justify-center bg-black/82 p-4 backdrop-blur-xl"
-          >
-            <div className="absolute inset-0" onClick={() => setInspectTarget(null)} />
+          )}
+        </AnimatePresence>
+        <AnimatePresence>
+          {isMixtapeVaultOpen && (
             <motion.div
-              initial={{ scale: 0.96, y: 18 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.96, y: 18 }}
-              className="relative z-10 flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-[2rem] border border-brand-accent/20 bg-[#080c10]/96 shadow-[0_28px_100px_rgba(0,0,0,0.55)]"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[320] flex items-center justify-center bg-black/80 backdrop-blur-md p-4"
+              onClick={() => setIsMixtapeVaultOpen(false)}
             >
-              <div className="flex items-start justify-between gap-4 border-b border-white/10 bg-black/22 p-5">
-                <div className="flex min-w-0 items-center gap-4">
-                  {isPlaylistInspect ? (
-                    <div className="relative h-16 w-16 flex-none overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04]">
-                      {inspectPlaylistTracks.length > 1 ? (
-                        <div className="grid h-full w-full grid-cols-2">
-                          {inspectPlaylistTracks.slice(0, 4).map((track, index) => (
-                            track.thumbnail ? (
-                              <img key={`${inspectPlaylistName}-inspect-cover-${index}`} src={getProxyUrl(track.thumbnail)} alt="" className="h-full w-full object-cover" />
-                            ) : (
-                              <div key={`${inspectPlaylistName}-inspect-cover-${index}`} className="flex h-full w-full items-center justify-center bg-brand-accent/10 text-brand-accent"><Music size={12} /></div>
-                            )
-                          ))}
-                        </div>
-                      ) : inspectPrimaryTrack?.thumbnail ? (
-                        <img src={getProxyUrl(inspectPrimaryTrack.thumbnail)} alt="" className="h-full w-full object-cover" />
-                      ) : (
-                        <div className="flex h-full w-full items-center justify-center text-brand-accent"><ListMusic size={18} /></div>
-                      )}
-                      <div className="absolute bottom-1 right-1 rounded-full border border-brand-accent/25 bg-black/76 px-1.5 py-0.5 text-[8px] font-black text-brand-accent">{inspectPlaylistTracks.length}</div>
+              <motion.div
+                initial={{ scale: 0.94, y: 10 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.96, y: 8 }}
+                ref={mixtapeVaultRef}
+                style={{
+                  '--vault-bass': mixtapePulse.bass,
+                  '--vault-mids': mixtapePulse.mids,
+                  '--vault-highs': mixtapePulse.highs,
+                  '--vault-energy': mixtapePulse.energy,
+                  '--vault-scale': 1 + (mixtapePulse.energy * 0.1),
+                  '--vault-spin': `${vaultPulse.spin || 0}deg`,
+                  '--vault-glow': mixtapePulseReadout,
+                  '--mixtape-progress': mixtapeProgressPct / 100,
+                }}
+                className="mixtape-vault-shell relative w-[min(94vw,760px)] lg:w-[min(94vw,1360px)] lg:min-h-[clamp(680px,82vh,820px)] lg:aspect-[1.6/1] rounded-[2rem] border border-brand-accent/25 bg-[#07090c]/96 shadow-[0_0_80px_rgba(0,255,191,0.14)] overflow-hidden flex flex-col"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-brand-accent/70 to-transparent" />
+
+                <div className="p-6 md:p-8 flex-1 flex flex-col min-h-0">
+                  <div className="relative mb-8 flex items-center justify-center text-center">
+                    <div className="min-w-0 px-14">
+                      <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-[1.25rem] border border-brand-accent/30 bg-brand-accent/10 shadow-[0_0_30px_rgba(0,255,191,0.15)]">
+                        <Music size={22} className="text-brand-accent" />
+                      </div>
+                      <h2 className="text-brand-accent font-black text-2xl md:text-3xl tracking-[0.2em] uppercase leading-none">Mixtape Vault</h2>
+                      <span className="mt-3 block text-white/40 text-[10px] font-mono tracking-[0.25em] uppercase">Private Listening Room</span>
+                      <div className="mx-auto mt-4 max-w-xl truncate text-sm font-black text-white/90">{currentTrack?.title || 'Aether Secret Session'}</div>
+                      <div className="mx-auto mt-1 max-w-sm truncate text-[10px] uppercase tracking-[0.25em] text-brand-accent/80">{currentTrack?.author || 'Unknown Artist'}</div>
+                    </div>
+                    <button
+                      onClick={() => setIsMixtapeVaultOpen(false)}
+                      className={`${sharedModalCloseButtonClass} absolute right-0 top-0`}
+                    >
+                      <X size={18} />
+                    </button>
+                  </div>
+
+                  {!isMixtapeVaultContentReady ? (
+                    <div className="flex h-[400px] flex-col items-center justify-center gap-4 rounded-3xl border border-white/10 bg-black/40 p-5 text-center">
+                      <Loader2 size={32} className="animate-spin text-brand-accent/70" />
+                      <div className="text-[11px] font-black uppercase tracking-[0.3em] text-white/40">Preparing Analog Scene</div>
                     </div>
                   ) : (
-                    <img src={getProxyUrl(inspectTrack.thumbnail)} alt="" className="h-16 w-16 rounded-2xl border border-white/10 object-cover" />
+                    <MixtapeVaultContent cassetteSide={cassetteSide} mixtapePulse={mixtapePulse} mixtapePulseReadout={mixtapePulseReadout} mixtapeSpectrum={mixtapeSpectrum} clamp01={clamp01} currentTrack={currentTrack} isPlaying={isPlaying} handleControl={handleControl} mixtapePositionMs={mixtapePositionMs} mixtapeDurationMs={mixtapeDurationMs} mixtapeProgressPct={mixtapeProgressPct} handleSeek={handleSeek} formatTime={formatTime} volume={volume} setVolume={handleVolumeChange} mixtapeLiveLyric={mixtapeLiveLyric} nextLyric={nextLyric} mixtapeEnergyPct={mixtapeEnergyPct} copyVaultSceneEmbed={copyVaultSceneEmbed} />
                   )}
-                  <div className="min-w-0">
-                    <div className="text-[9px] font-black uppercase tracking-[0.3em] text-brand-accent">{isPlaylistInspect ? 'Inspect Playlist' : 'Inspect Track'}</div>
-                    <div className="mt-1 truncate text-xl font-black uppercase tracking-tight text-white">{isPlaylistInspect ? inspectPlaylistName : (inspectTrack.title || 'Unknown Track')}</div>
-                    <div className="mt-1 truncate text-[11px] font-black uppercase tracking-[0.22em] text-white/42">
-                      {isPlaylistInspect ? `${inspectPlaylistTracks.length} tracks // ${inspectPlaylistArtistCount} artists` : (inspectTrack.author || 'Unknown Artist')}
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        <AnimatePresence>
+          {isSharedSceneOpen && sharedScene && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[320] flex items-center justify-center bg-black/80 backdrop-blur-md p-4"
+              onClick={() => setIsSharedSceneOpen(false)}
+            >
+              <motion.div
+                initial={{ scale: 0.95, y: 12 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.96, y: 8 }}
+                className="relative w-[min(92vw,760px)] rounded-3xl border border-brand-accent/30 bg-[#07090c]/95 shadow-[0_0_70px_rgba(0,255,191,0.15)] overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="p-6 md:p-8 flex flex-col gap-6">
+                  <div className="flex justify-between items-start gap-4">
+                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent mt-1">Aether Shared Scene</div>
+                    <button
+                      onClick={() => setIsSharedSceneOpen(false)}
+                      className={sharedModalCloseButtonClass}
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-black/30 p-4 md:p-5 flex flex-col md:flex-row gap-4 md:gap-5">
+                    <img
+                      src={sharedScene.thumbnail || (sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : null)}
+                      alt="scene"
+                      className="w-full md:w-40 h-40 rounded-2xl object-cover border border-white/10"
+                      onError={(e) => {
+                        const fallback = sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : '';
+                        if (fallback && e.currentTarget.src !== fallback) e.currentTarget.src = fallback;
+                      }}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="font-black text-brand-accent text-lg truncate">{sharedScene.title || 'Aether Scene'}</div>
+                      <div className="text-[11px] uppercase tracking-[0.2em] text-white/55 mt-1 truncate">{sharedScene.author || 'Unknown Artist'}</div>
+                      <div className="mt-4 text-white/80 text-sm leading-relaxed italic break-words">“{sharedScene.lyric || 'No lyric locked yet'}”</div>
+                      <div className="mt-4 text-[10px] uppercase tracking-[0.18em] text-white/45">
+                        {formatTime(Number(sharedScene.at || 0))} / {formatTime(Number(sharedScene.total || 0))} • {sharedScene.state || 'paused'} • {sharedScene.mode || 'bars'}
+                      </div>
+                      <div className="mt-2 text-[10px] uppercase tracking-[0.18em] text-white/45">
+                        Pulse {Number(sharedScene?.pulse?.e || 0)}% • Bass {Number(sharedScene?.pulse?.b || 0)}% • Mids {Number(sharedScene?.pulse?.m || 0)}% • Highs {Number(sharedScene?.pulse?.h || 0)}%
+                      </div>
                     </div>
                   </div>
                 </div>
-                <button onClick={() => setInspectTarget(null)} className={sharedModalCloseButtonClass} title="Close">
-                  <X size={16} />
-                </button>
-              </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        <AnimatePresence>
+          {isAuraStageOpen && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[330] overflow-hidden bg-[#020405]/96 backdrop-blur-2xl"
+            >
+              <div className="absolute inset-0" onClick={() => setIsAuraStageOpen(false)} />
+              {currentTrack?.thumbnail && (
+                <>
+                  <img src={getProxyUrl(currentTrack.thumbnail)} alt="" className="absolute inset-0 h-full w-full object-cover opacity-[0.18] blur-[54px] scale-110" />
+                  <img src={getProxyUrl(currentTrack.thumbnail)} alt="" className="aura-stage-parallax absolute left-1/2 top-1/2 h-[min(72vw,72vh)] w-[min(72vw,72vh)] -translate-x-1/2 -translate-y-1/2 rounded-[3rem] object-cover opacity-20 shadow-[0_40px_120px_rgba(0,0,0,0.55)]" />
+                </>
+              )}
+              <div className="aura-stage-rings pointer-events-none absolute inset-0" />
+              <div className="aura-stage-grid pointer-events-none absolute inset-0" />
 
-              <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-5 md:flex-row">
-                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1 custom-scrollbar-heavy">
-                  <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-                    <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Context</div>
-                    <div className="mt-3 grid grid-cols-2 gap-2 text-center">
-                      {isPlaylistInspect ? (
-                        <>
-                          <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectPlaylistTracks.length}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Tracks</div></div>
-                          <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectPlaylistQueuedCount}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Queued</div></div>
-                          <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{formatTime(inspectPlaylistDurationMs)}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Length</div></div>
-                          <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectPlaylistArtistCount}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Artists</div></div>
-                        </>
-                      ) : (
-                        <>
-                          <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectQueueIndex >= 0 ? inspectQueueIndex + 1 : '-'}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Queue</div></div>
-                          <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{formatTime(inspectDurationMs)}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Length</div></div>
-                          <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectVaultNames.length}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Vaults</div></div>
-                          <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{lyrics.length}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Lyrics</div></div>
-                        </>
-                      )}
+              <motion.div
+                initial={{ scale: 0.96, y: 16 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.96, y: 16 }}
+                className="relative z-10 flex h-full flex-col p-4 md:p-8"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-brand-accent/30 bg-brand-accent/12 text-brand-accent shadow-[0_0_28px_rgba(0,255,191,0.14)]">
+                      <Layers size={18} />
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-black uppercase tracking-[0.28em] text-brand-accent">Aura Stage 2.0</div>
+                      <div className="mt-1 text-[11px] uppercase tracking-[0.18em] text-white/35">Depth lyric stage // beat field</div>
                     </div>
                   </div>
-                  <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-                    {isPlaylistInspect ? (
-                      <>
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Playlist Tracks</div>
-                          <button
-                            disabled={!inspectPlaylistTracklistText}
-                            onClick={() => handleCopyDiagnosticsValue(inspectPlaylistTracklistText, 'Tracklist copied')}
-                            className="rounded-xl border border-brand-accent/20 bg-brand-accent/8 px-3 py-2 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent/80 transition-all hover:bg-brand-accent hover:text-black disabled:opacity-35 disabled:hover:bg-brand-accent/8 disabled:hover:text-brand-accent/80"
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={openGestureLab}
+                      className={`flex h-10 w-10 items-center justify-center rounded-2xl border transition-all ${isGestureControlEnabled ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                      title="Gesture Lab"
+                    >
+                      <Hand size={15} />
+                    </button>
+                    <button
+                      onClick={openFeedbackPanel}
+                      className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/55 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
+                      title="Send Feedback"
+                    >
+                      <MessageSquare size={15} />
+                    </button>
+                    <button onClick={() => setIsAuraStageOpen(false)} className={sharedModalCloseButtonClass} title="Close">
+                      <X size={16} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="relative flex flex-1 items-center justify-center py-6">
+                  <div className="aura-stage-depth-stack w-full max-w-6xl">
+                    <div className="grid min-h-[60vh] grid-cols-1 items-center gap-8 lg:grid-cols-[0.9fr_1.1fr]">
+                      <div className="flex items-center justify-center">
+                        <motion.div
+                          animate={{ scale: auraStagePulseScale, rotate: livePulseReadout * 1.8 }}
+                          transition={{ duration: 0.16, ease: 'easeOut' }}
+                          className="aura-stage-art relative aspect-square w-[min(72vw,420px)] overflow-hidden rounded-[2.6rem] border border-white/12 bg-white/[0.03] shadow-[0_36px_110px_rgba(0,0,0,0.48)]"
+                        >
+                          {currentTrack?.thumbnail ? (
+                            <img src={getProxyUrl(currentTrack.thumbnail)} alt="" className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center text-brand-accent/45"><Music size={72} strokeWidth={1.2} /></div>
+                          )}
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-white/8" />
+                          <div className="absolute bottom-4 left-4 right-4">
+                            <div className="text-[9px] font-black uppercase tracking-[0.28em] text-brand-accent/85">Now Playing</div>
+                            <div className="mt-1 truncate text-lg font-black uppercase tracking-tight text-white">{currentTrack?.title || 'No track selected'}</div>
+                            <div className="mt-1 truncate text-[10px] font-black uppercase tracking-[0.24em] text-white/48">{currentTrack?.author || 'Search and queue a track'}</div>
+                          </div>
+                        </motion.div>
+                      </div>
+
+                      <div className="min-w-0 text-center lg:text-left">
+                        <div className="mb-5 flex flex-wrap items-center justify-center gap-2 lg:justify-start">
+                          <span className="rounded-full border border-brand-accent/25 bg-brand-accent/10 px-3 py-1 text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent">Pulse {Math.round(livePulseReadout * 100)}%</span>
+                          <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[9px] font-black uppercase tracking-[0.22em] text-white/45">{auraPreset}</span>
+                          {isGestureControlEnabled && <span className="rounded-full border border-brand-accent/20 bg-brand-accent/8 px-3 py-1 text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent/75">Gesture on</span>}
+                          {isFaceControlEnabled && <span className="rounded-full border border-brand-accent/20 bg-brand-accent/8 px-3 py-1 text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent/75">Face on</span>}
+                        </div>
+                        <AnimatePresence mode="wait">
+                          <motion.div
+                            key={`aura-stage-lyric-${activeLyricIndex}-${compactLyric || 'idle'}`}
+                            initial={{ opacity: 0, y: 22, filter: 'blur(10px)' }}
+                            animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+                            exit={{ opacity: 0, y: -14, filter: 'blur(8px)' }}
+                            transition={{ duration: 0.32, ease: 'easeOut' }}
+                            className="aura-stage-lyric text-4xl font-black leading-[0.98] tracking-normal text-white sm:text-6xl lg:text-7xl"
                           >
-                            Copy List
-                          </button>
-                        </div>
-                        <div className="mt-3 max-h-[38vh] space-y-2 overflow-y-auto pr-1 custom-scrollbar">
-                          {inspectPlaylistTracks.map((track, index) => {
-                            const rowSourceUrl = getInspectSourceUrl(track);
-                            return (
-                              <div key={`${normalizeTrackIdentity(track)}-${index}`} className="flex items-center gap-3 rounded-xl border border-white/8 bg-black/24 p-2">
-                                <div className="w-6 text-center text-[10px] font-black text-brand-accent/75">{index + 1}</div>
-                                {track.thumbnail ? (
-                                  <img src={getProxyUrl(track.thumbnail)} alt="" className="h-10 w-10 flex-none rounded-lg border border-white/10 object-cover" />
-                                ) : (
-                                  <div className="flex h-10 w-10 flex-none items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-brand-accent"><Music size={13} /></div>
-                                )}
-                                <div className="min-w-0 flex-1">
-                                  <div className="truncate text-[11px] font-black uppercase tracking-tight text-white/82">{track.title || 'Unknown Track'}</div>
-                                  <div className="mt-0.5 truncate text-[9px] font-black uppercase tracking-[0.18em] text-white/32">{track.author || 'Unknown Artist'}</div>
-                                </div>
-                                <div className="flex flex-none items-center gap-1">
-                                  <button onClick={() => handleAdd(track)} className="rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1.5 text-[8px] font-black uppercase tracking-[0.14em] text-white/50 transition-all hover:border-brand-accent/35 hover:text-brand-accent" title="Queue Track">Queue</button>
-                                  <button onClick={() => openTrackInspect(track, `playlist:${inspectPlaylistName}`)} className="rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1.5 text-[8px] font-black uppercase tracking-[0.14em] text-white/50 transition-all hover:border-brand-accent/35 hover:text-brand-accent" title="Inspect Track">Inspect</button>
-                                  <button disabled={!rowSourceUrl} onClick={() => handleCopyDiagnosticsValue(rowSourceUrl, 'Source copied')} className="rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1.5 text-[8px] font-black uppercase tracking-[0.14em] text-white/50 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35" title="Copy Source URL">Copy</button>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Source</div>
-                          <button
-                            disabled={!inspectSourceUrl}
-                            onClick={() => handleCopyDiagnosticsValue(inspectSourceUrl, 'Source copied')}
-                            className="rounded-xl border border-brand-accent/20 bg-brand-accent/8 px-3 py-2 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent/80 transition-all hover:bg-brand-accent hover:text-black disabled:opacity-35 disabled:hover:bg-brand-accent/8 disabled:hover:text-brand-accent/80"
-                          >
-                            Copy URL
-                          </button>
-                        </div>
-                        <div className="no-drag mt-3 select-text break-all rounded-xl border border-white/8 bg-black/28 p-3 text-[11px] font-mono leading-5 text-white/62" style={{ WebkitUserSelect: 'text', userSelect: 'text' }}>
-                          {inspectSourceUrl || 'No source URL captured'}
-                        </div>
-                        {inspectVaultNames.length > 0 && (
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            {inspectVaultNames.map((name) => (
-                              <span key={`inspect-vault-${name}`} className="rounded-full border border-brand-accent/20 bg-brand-accent/8 px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent/75">{name}</span>
-                            ))}
+                            {compactLyric || currentTrack?.title || 'Aether is standing by'}
+                          </motion.div>
+                        </AnimatePresence>
+                        {nextLyric && (
+                          <div className="mt-5 text-base font-semibold leading-snug text-white/44 sm:text-xl">
+                            {nextLyric}
                           </div>
                         )}
-                      </>
-                    )}
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                <div className="flex w-full flex-shrink-0 flex-col gap-3 overflow-y-auto custom-scrollbar-heavy md:w-[320px]">
-                  <div className="rounded-2xl border border-white/8 bg-gradient-to-b from-brand-accent/8 to-white/[0.02] p-4">
-                    <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Actions</div>
-                    <div className="mt-3 grid grid-cols-2 gap-2">
-                      {isPlaylistInspect ? (
-                        <>
-                          <button onClick={() => playInspectPlaylist(false)} className="rounded-xl border border-brand-accent/25 bg-brand-accent/12 px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black">Play Playlist</button>
-                          <button onClick={queueInspectPlaylist} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Queue All</button>
-                          <button onClick={() => playInspectPlaylist(true)} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Shuffle Play</button>
-                          <button onClick={() => openLibraryOverlay({ type: 'queue', items: inspectPlaylistTracks })} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Vault Copy</button>
-                          <button disabled={!inspectPlaylistSourceText} onClick={() => handleCopyDiagnosticsValue(inspectPlaylistSourceText, 'Playlist URLs copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Copy URLs</button>
-                          <button disabled={!inspectPlaylistTracklistText} onClick={() => handleCopyDiagnosticsValue(inspectPlaylistTracklistText, 'Tracklist copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Copy List</button>
-                        </>
-                      ) : (
-                        <>
-                          <button onClick={() => { setQueue((prev) => [normalizeQueueTrack(inspectTrack) || inspectTrack, ...(Array.isArray(prev) ? prev.filter((track) => normalizeTrackIdentity(track) !== normalizeTrackIdentity(inspectTrack)) : [])]); setIsManualStop(false); setIsPlaying(true); setInspectTarget(null); }} className="rounded-xl border border-brand-accent/25 bg-brand-accent/12 px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black">Play Now</button>
-                          <button onClick={() => handleAdd(inspectTrack)} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Queue</button>
-                          <button onClick={() => toggleFavoriteTrack(inspectTrack)} className={`rounded-xl border px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${isTrackFavorite(inspectTrack) ? 'border-rose-300/30 bg-rose-400/14 text-rose-200' : 'border-white/10 bg-white/[0.04] text-white/58 hover:border-rose-300/35 hover:text-rose-300'}`}>{isTrackFavorite(inspectTrack) ? 'Unfavorite' : 'Favorite'}</button>
-                          <button onClick={() => openLibraryOverlay({ type: 'track', items: [inspectTrack] })} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Vault</button>
-                          <button disabled={!inspectSourceUrl} onClick={() => { if (inspectSourceUrl) { if (isStandalone && window.aether?.openExternal) window.aether.openExternal(inspectSourceUrl); else window.open(inspectSourceUrl, '_blank', 'noopener,noreferrer'); } }} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Source</button>
-                          <button disabled={!inspectSourceUrl} onClick={() => handleCopyDiagnosticsValue(inspectSourceUrl, 'Source copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Copy URL</button>
-                          <button onClick={() => handleCopyDiagnosticsValue(`${inspectTrack.title || 'Unknown Track'}\n${inspectTrack.author || 'Unknown Artist'}${inspectSourceUrl ? `\n${inspectSourceUrl}` : ''}`, 'Track info copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Copy Info</button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex-1 rounded-2xl border border-white/8 bg-black/24 p-4">
+                <div className="mx-auto w-full max-w-5xl rounded-[1.6rem] border border-white/10 bg-black/36 px-4 py-4 backdrop-blur-2xl">
+                  <PlaybackProgressIsland
+                    durationMs={auraStageDurationMs}
+                    getPositionMs={getActivePlaybackPositionMs}
+                    onSeek={handleSeek}
+                    accent={trackProgressAccent}
+                    glow={trackProgressGlow}
+                    barClassName="mb-3 h-1.5 w-full cursor-pointer overflow-hidden rounded-full bg-white/12"
+                    timeRowClassName="flex items-center justify-between gap-4 text-[10px] font-mono text-white/42"
+                    middleContent={(
+                      <div className="flex items-center gap-5">
+                        <button onClick={() => handleControl('previous')} className="text-white/55 transition-colors hover:text-brand-accent active:scale-90" title="Previous">
+                          <Rewind size={22} fill="currentColor" />
+                        </button>
+                        <button
+                          onClick={() => handleControl(isPlaying ? 'pause' : 'resume')}
+                          className="flex h-14 w-14 items-center justify-center rounded-2xl text-black transition-all hover:scale-[1.03] active:scale-95"
+                          style={{ background: trackControlAccent, boxShadow: `0 0 28px ${trackControlGlow}` }}
+                          title={isPlaying ? 'Pause' : 'Play'}
+                        >
+                          {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" className="ml-1" />}
+                        </button>
+                        <button onClick={() => handleControl('skip')} className="text-white/55 transition-colors hover:text-brand-accent active:scale-90" title="Next">
+                          <FastForward size={22} fill="currentColor" />
+                        </button>
+                      </div>
+                    )}
+                  />
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {(inspectTrack || isPlaylistInspect) && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[340] flex items-center justify-center bg-black/82 p-4 backdrop-blur-xl"
+            >
+              <div className="absolute inset-0" onClick={() => setInspectTarget(null)} />
+              <motion.div
+                initial={{ scale: 0.96, y: 18 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.96, y: 18 }}
+                className="relative z-10 flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-[2rem] border border-brand-accent/20 bg-[#080c10]/96 shadow-[0_28px_100px_rgba(0,0,0,0.55)]"
+              >
+                <div className="flex items-start justify-between gap-4 border-b border-white/10 bg-black/22 p-5">
+                  <div className="flex min-w-0 items-center gap-4">
                     {isPlaylistInspect ? (
-                      <>
-                        <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Playlist Signal</div>
-                        <div className="mt-4 text-2xl font-black leading-tight text-white/90">
-                          {inspectPlaylistTracks.length} tracks in {inspectPlaylistName}
-                        </div>
-                        <div className="mt-4 grid gap-2">
-                          {inspectPlaylistTracks.slice(0, 4).map((track, index) => (
-                            <div key={`${inspectPlaylistName}-signal-${normalizeTrackIdentity(track)}-${index}`} className="truncate rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-white/48">
-                              {index + 1}. {track.title || 'Unknown Track'}
-                            </div>
-                          ))}
-                        </div>
-                        <div className="mt-4 text-[10px] uppercase tracking-[0.2em] text-white/32">
-                          Opened from {inspectTarget?.source || 'playlist'} // {new Date(inspectTarget?.openedAt || Date.now()).toLocaleTimeString()}
-                        </div>
-                      </>
+                      <div className="relative h-16 w-16 flex-none overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04]">
+                        {inspectPlaylistTracks.length > 1 ? (
+                          <div className="grid h-full w-full grid-cols-2">
+                            {inspectPlaylistTracks.slice(0, 4).map((track, index) => (
+                              track.thumbnail ? (
+                                <img key={`${inspectPlaylistName}-inspect-cover-${index}`} src={getProxyUrl(track.thumbnail)} alt="" className="h-full w-full object-cover" />
+                              ) : (
+                                <div key={`${inspectPlaylistName}-inspect-cover-${index}`} className="flex h-full w-full items-center justify-center bg-brand-accent/10 text-brand-accent"><Music size={12} /></div>
+                              )
+                            ))}
+                          </div>
+                        ) : inspectPrimaryTrack?.thumbnail ? (
+                          <img src={getProxyUrl(inspectPrimaryTrack.thumbnail)} alt="" className="h-full w-full object-cover" />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center text-brand-accent"><ListMusic size={18} /></div>
+                        )}
+                        <div className="absolute bottom-1 right-1 rounded-full border border-brand-accent/25 bg-black/76 px-1.5 py-0.5 text-[8px] font-black text-brand-accent">{inspectPlaylistTracks.length}</div>
+                      </div>
                     ) : (
-                      <>
-                        <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Live Lyric</div>
-                        <div className="mt-4 text-2xl font-black leading-tight text-white/90">
-                          {compactLyric || 'No synced lyric locked right now.'}
-                        </div>
-                        <div className="mt-4 text-[10px] uppercase tracking-[0.2em] text-white/32">
-                          Opened from {inspectTarget?.source || 'track'} // {new Date(inspectTarget?.openedAt || Date.now()).toLocaleTimeString()}
-                        </div>
-                      </>
+                      <img src={getProxyUrl(inspectTrack.thumbnail)} alt="" className="h-16 w-16 rounded-2xl border border-white/10 object-cover" />
                     )}
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {isGestureLabOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[345] flex items-center justify-center bg-black/82 p-4 backdrop-blur-xl"
-          >
-            <div className="absolute inset-0" onClick={() => setIsGestureLabOpen(false)} />
-            <motion.div
-              initial={{ scale: 0.96, y: 18 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.96, y: 18 }}
-              className="relative z-10 flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-[2rem] border border-brand-accent/20 bg-[#080c10]/96 shadow-[0_28px_100px_rgba(0,0,0,0.55)]"
-            >
-              <div className="flex items-start justify-between gap-4 border-b border-white/10 bg-black/22 p-5">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/10 text-brand-accent">
-                    <Hand size={18} />
-                  </div>
-                  <div>
-                    <div className="text-[10px] font-black uppercase tracking-[0.3em] text-brand-accent">Gesture + Face Lab</div>
-                    <div className="mt-1 text-[11px] uppercase tracking-[0.18em] text-white/40">Pointer, swipe, and camera face/hand controls</div>
-                  </div>
-                </div>
-                <button onClick={() => setIsGestureLabOpen(false)} className={sharedModalCloseButtonClass} title="Close">
-                  <X size={16} />
-                </button>
-              </div>
-              <div className="overflow-y-auto p-5 custom-scrollbar">
-                <button
-                  onClick={() => {
-                    setIsGestureControlEnabled((prev) => {
-                      const next = !prev;
-                      if (!next) setIsFaceControlEnabled(false);
-                      return next;
-                    });
-                  }}
-                  className={`mb-4 flex w-full items-center justify-between rounded-2xl border px-4 py-4 text-left transition-all ${isGestureControlEnabled ? 'border-brand-accent/35 bg-brand-accent/12 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/70 hover:border-brand-accent/35 hover:text-brand-accent'}`}
-                >
-                  <span>
-                    <span className="block text-[11px] font-black uppercase tracking-[0.22em]">Gesture controls</span>
-                    <span className="mt-1 block text-[11px] font-semibold text-white/42">Pointer motion drives stage depth. Fast swipes control playback.</span>
-                  </span>
-                  <span className="rounded-full border border-current px-3 py-1 text-[9px] font-black uppercase tracking-[0.2em]">{isGestureControlEnabled ? 'On' : 'Off'}</span>
-                </button>
-                <button
-                  onClick={() => {
-                    const next = !isFaceControlEnabled;
-                    if (next) setIsGestureControlEnabled(true);
-                    setIsFaceControlEnabled(next);
-                  }}
-                  className={`mb-4 flex w-full items-center justify-between rounded-2xl border px-4 py-4 text-left transition-all ${isFaceControlEnabled ? 'border-brand-accent/35 bg-brand-accent/12 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/70 hover:border-brand-accent/35 hover:text-brand-accent'}`}
-                >
-                  <span className="flex items-center gap-3">
-                    <Camera size={18} className="shrink-0" />
-                    <span>
-                      <span className="block text-[11px] font-black uppercase tracking-[0.22em]">Camera controls</span>
-                      <span className="mt-1 block text-[11px] font-semibold text-white/42">Camera tracks face position and hand swipes for app control.</span>
-                    </span>
-                  </span>
-                  <span className="rounded-full border border-current px-3 py-1 text-[9px] font-black uppercase tracking-[0.2em]">{isFaceControlEnabled ? 'On' : 'Off'}</span>
-                </button>
-                <div className="mb-4 rounded-2xl border border-white/8 bg-black/24 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-[9px] font-black uppercase tracking-[0.24em] text-white/30">Camera Status</div>
-                      <div className="mt-1 text-[11px] font-bold text-white/55">{faceControlStatus}</div>
-                    </div>
-                    <div className="text-right text-[10px] font-mono text-brand-accent/75">
-                      FACE {faceControlSignal.x.toFixed(2)}, {faceControlSignal.y.toFixed(2)}<br />
-                      HAND {cameraHandSignal.x.toFixed(2)}, {cameraHandSignal.y.toFixed(2)}
+                    <div className="min-w-0">
+                      <div className="text-[9px] font-black uppercase tracking-[0.3em] text-brand-accent">{isPlaylistInspect ? 'Inspect Playlist' : 'Inspect Track'}</div>
+                      <div className="mt-1 truncate text-xl font-black uppercase tracking-tight text-white">{isPlaylistInspect ? inspectPlaylistName : (inspectTrack.title || 'Unknown Track')}</div>
+                      <div className="mt-1 truncate text-[11px] font-black uppercase tracking-[0.22em] text-white/42">
+                        {isPlaylistInspect ? `${inspectPlaylistTracks.length} tracks // ${inspectPlaylistArtistCount} artists` : (inspectTrack.author || 'Unknown Artist')}
+                      </div>
                     </div>
                   </div>
-                  <div className="mt-3 space-y-2">
-                    <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
-                      <div className="h-full rounded-full bg-brand-accent transition-all" style={{ width: `${Math.round(clamp01(faceControlSignal.confidence) * 100)}%` }} />
-                    </div>
-                    <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
-                      <div className="h-full rounded-full bg-brand-accent/65 transition-all" style={{ width: `${Math.round(clamp01(cameraHandSignal.motion) * 100)}%` }} />
-                    </div>
-                    <div className="text-[9px] font-black uppercase tracking-[0.18em] text-white/28">Hand {cameraHandSignal.last}</div>
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                  {[
-                    [MousePointer2, 'Pointer depth', 'Move pointer/finger to tilt the Aura Stage layers.'],
-                    [ChevronLeft, 'Swipe left', 'Skip to the next track.'],
-                    [ChevronRight, 'Swipe right', 'Restart or go to the previous track.'],
-                    [Hand, '2-finger swipe L/R', 'Two fingers slide left or right to change tracks.'],
-                    [Volume2, '2-finger swipe U/D', 'Two fingers slide up or down to adjust volume.'],
-                    [Fingerprint, 'Pinch in', 'Two-finger pinch to pause playback.'],
-                    [Fingerprint, 'Spread out', 'Two-finger spread to resume playback.'],
-                    [MousePointer2, 'Double-tap', 'Quickly tap twice on empty space to toggle play/pause.'],
-                    [Hand, 'Camera wave L/R', 'Wave your hand left or right for track controls.'],
-                    [Volume2, 'Camera wave U/D', 'Wave your hand up or down for volume control.'],
-                    [Camera, 'Look left/right', 'Turn your head left/right to change tracks (hold to confirm).'],
-                    [Eye, 'Look up/down', 'Tilt your head up/down to adjust volume.'],
-                  ].map(([Icon, title, detail]) => (
-                    <div key={title} className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-                      <Icon size={18} className="text-brand-accent" />
-                      <div className="mt-3 text-[11px] font-black uppercase tracking-[0.2em] text-white/80">{title}</div>
-                      <div className="mt-1 text-[11px] leading-5 text-white/42">{detail}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {isFeedbackOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[350] flex items-center justify-center bg-black/82 p-4 backdrop-blur-xl"
-          >
-            <div className="absolute inset-0" onClick={() => !isFeedbackSending && setIsFeedbackOpen(false)} />
-            <motion.div
-              initial={{ scale: 0.96, y: 18 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.96, y: 18 }}
-              className="relative z-10 w-full max-w-2xl overflow-hidden rounded-[2rem] border border-brand-accent/20 bg-[#080c10]/96 shadow-[0_28px_100px_rgba(0,0,0,0.55)]"
-            >
-              <div className="flex items-start justify-between gap-4 border-b border-white/10 bg-black/22 p-5">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/10 text-brand-accent">
-                    <MessageSquare size={18} />
-                  </div>
-                  <div>
-                    <div className="text-[10px] font-black uppercase tracking-[0.3em] text-brand-accent">Send Feedback</div>
-                    <div className="mt-1 text-[11px] uppercase tracking-[0.18em] text-white/40">Issues open on GitHub unless a feedback endpoint is configured.</div>
-                  </div>
-                </div>
-                <button onClick={() => setIsFeedbackOpen(false)} disabled={isFeedbackSending} className={sharedModalCloseButtonClass} title="Close">
-                  <X size={16} />
-                </button>
-              </div>
-              <div className="space-y-4 p-5">
-                <div className="grid grid-cols-3 gap-2">
-                  {['Problem', 'Improvement', 'Idea'].map((type) => (
-                    <button
-                      key={type}
-                      onClick={() => updateFeedbackDraft({ type })}
-                      className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${feedbackDraft.type === type ? 'border-brand-accent/40 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
-                    >
-                      {type}
-                    </button>
-                  ))}
-                </div>
-                <input
-                  value={feedbackDraft.summary}
-                  onChange={(e) => updateFeedbackDraft({ summary: e.target.value })}
-                  placeholder="Short title"
-                  className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-white outline-none transition-all placeholder:text-white/24 focus:border-brand-accent/45"
-                />
-                <textarea
-                  value={feedbackDraft.details}
-                  onChange={(e) => updateFeedbackDraft({ details: e.target.value })}
-                  placeholder="What happened, or what should be better?"
-                  className="min-h-[150px] w-full resize-none rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm leading-6 text-white outline-none transition-all placeholder:text-white/24 focus:border-brand-accent/45"
-                />
-                <input
-                  value={feedbackDraft.contact}
-                  onChange={(e) => updateFeedbackDraft({ contact: e.target.value })}
-                  placeholder="Contact handle/email optional"
-                  className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white outline-none transition-all placeholder:text-white/24 focus:border-brand-accent/45"
-                />
-                {feedbackStatus && (
-                  <div className="rounded-2xl border border-white/8 bg-black/24 px-4 py-3 text-[11px] font-semibold leading-5 text-white/58">
-                    {feedbackStatus}
-                  </div>
-                )}
-                <div className="flex items-center justify-between gap-3">
-                  <div className="text-[10px] uppercase tracking-[0.2em] text-white/30">
-                    Build {BUILD_VERSION} // {platform || 'web'}
-                  </div>
-                  <button
-                    onClick={submitFeedback}
-                    disabled={isFeedbackSending || !feedbackDraft.summary.trim() || !feedbackDraft.details.trim()}
-                    className="flex items-center gap-2 rounded-2xl bg-brand-accent px-5 py-3 text-[11px] font-black uppercase tracking-[0.2em] text-black transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-45 disabled:hover:scale-100"
-                  >
-                    {isFeedbackSending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-                    Send
+                  <button onClick={() => setInspectTarget(null)} className={sharedModalCloseButtonClass} title="Close">
+                    <X size={16} />
                   </button>
                 </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
-      <AnimatePresence>
-          {isLibraryOverlayOpen && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="studio-library-shell fixed inset-0 z-[300] flex items-center justify-center p-3 md:p-6">
-              <div className="absolute inset-0 bg-black/78 backdrop-blur-[24px]" onClick={() => { setIsLibraryOverlayOpen(false); setLibraryActionTarget(null); }} />
-              <div className="studio-library-backdrop absolute inset-0 pointer-events-none overflow-hidden" />
-              <motion.div initial={{ scale: 0.965, y: 18 }} animate={{ scale: 1, y: 0 }} className="studio-library-modal w-full max-w-[1540px] h-[92vh] bg-[#070a0d]/86 border border-white/10 rounded-[2.25rem] relative z-10 overflow-hidden flex flex-col shadow-[0_32px_110px_rgba(0,0,0,0.62)]">
-                <div className="studio-library-glow-line absolute inset-x-0 top-0 h-px" />
-                <div className="studio-library-topbar flex items-center justify-between gap-4 p-5 md:p-6 border-b border-white/8">
-                    <div className="flex items-center gap-4 min-w-0">
-                      <div className="w-11 h-11 rounded-2xl bg-brand-accent/10 border border-brand-accent/25 flex items-center justify-center shrink-0">
-                        <HardDrive size={18} className="text-brand-accent" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-[9px] font-black uppercase tracking-[0.32em] text-white/30">Neural Library Overlay</div>
-                        <div className="text-xl md:text-2xl font-black uppercase tracking-tight text-brand-accent truncate">Studio Library</div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 flex-wrap justify-end">
-                      {isStandalone && <button onClick={handleImportVault} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all" title="Import Vault (.aether)">Import</button>}
-                      <button onClick={handleGenerateSmartMix} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all" title="Generate Smart Mix">Smart Mix</button>
-                      <button onClick={handleCleanVault} disabled={isVaultCleaning} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all disabled:opacity-40" title="Clean Vault">Clean</button>
-                      <button onClick={() => { setIsLibraryOverlayOpen(false); setLibraryActionTarget(null); }} className="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close">
-                        <X size={18} />
-                      </button>
-                    </div>
-                 </div>
-
-                 <div className="studio-library-workspace flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[minmax(380px,0.92fr)_minmax(520px,1.38fr)] gap-4 p-3 md:p-5 overflow-hidden">
-                    <div className="studio-library-column studio-library-left border border-white/8 rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 h-full">
-                      <div className="px-4 py-4 border-b border-white/8 flex items-center justify-between bg-black/20">
-                        <div>
-                          <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Library Desk</div>
-                          <div className="text-[12px] font-black uppercase tracking-widest text-brand-accent">Vault Actions</div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <button onClick={() => setIsLibraryOverlayOpen(false)} className="p-2 rounded-xl bg-white/5 border border-white/10 text-white/40 hover:text-brand-accent hover:border-brand-accent/40 transition-all" title="Close Overlay">
-                            <X size={14} />
-                          </button>
-                          <button onClick={() => { setIsCreatingPlaylist(true); setNewPlaylistName((prev) => prev || ''); }} className="p-2 rounded-xl bg-brand-accent/10 border border-brand-accent/20 text-brand-accent hover:bg-brand-accent hover:text-black transition-all shadow-[0_0_18px_rgba(0,255,191,0.14)]" title="Create New Vault">
-                            <Plus size={14} />
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="studio-library-action-dock shrink-0 min-h-0 p-3 space-y-2">
-                        <div className="flex items-center gap-3 rounded-2xl bg-black/18 border border-brand-accent/18 p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
-                          {libraryActionTarget?.type === 'queue' ? (
-                            <div className="w-12 h-12 rounded-xl bg-brand-accent/10 border border-brand-accent/20 flex items-center justify-center text-brand-accent font-black text-[10px]">Q</div>
-                          ) : (
-                            <img src={getProxyUrl(libraryActionTarget?.items?.[0]?.thumbnail || currentTrack?.thumbnail)} className="w-12 h-12 rounded-xl object-cover border border-white/10" alt="" />
-                          )}
-                          <div className="min-w-0">
-                            <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/35">Ready to Save</div>
-                            <div className="font-black uppercase tracking-tight text-white truncate">
-                              {libraryActionTarget?.type === 'queue'
-                                ? `Queue Buffer (${libraryActionTarget.items.length})`
-                                : (libraryActionTarget?.items?.[0]?.title || currentTrack?.title || 'Create Empty Vault')}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2 p-1.5 rounded-2xl bg-black/28 border border-white/8 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
-                          <input
-                            ref={libraryOverlayCreateInputRef}
-                            className="bg-transparent border-none outline-none text-[12px] font-black text-brand-accent uppercase tracking-widest placeholder:text-brand-accent/30 w-full px-2 py-2"
-                            placeholder="New vault name..."
-                            value={newPlaylistName}
-                            onChange={(e) => setNewPlaylistName(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' && newPlaylistName.trim()) {
-                                handleAddToPlaylist(newPlaylistName.trim(), pendingLibraryItems);
-                                setNewPlaylistName('');
-                                setIsCreatingPlaylist(false);
-                              }
-                            }}
-                          />
-                          <button
-                            onClick={() => {
-                              if (newPlaylistName.trim()) {
-                                handleAddToPlaylist(newPlaylistName.trim(), pendingLibraryItems);
-                                setNewPlaylistName('');
-                                setIsCreatingPlaylist(false);
-                              }
-                            }}
-                            disabled={!newPlaylistName.trim()}
-                            className="p-2 rounded-lg bg-brand-accent/20 text-brand-accent hover:bg-brand-accent hover:text-black transition-all shadow-neon disabled:opacity-30 disabled:cursor-not-allowed"
-                          >
-                            <Plus size={16} />
-                          </button>
-                        </div>
-                        {!libraryActionTarget && !currentTrack && (
-                          <div className="text-[9px] uppercase tracking-[0.18em] text-white/28">No active track. Creates an empty vault.</div>
-                        )}
-                      </div>
-
-                      <div className="studio-library-controls shrink-0 border-y border-white/8 bg-black/28 p-4 space-y-3">
-                        <div className="relative">
-                          <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
-                          <input
-                            value={librarySearchTerm}
-                            onChange={(e) => setLibrarySearchTerm(e.target.value)}
-                            placeholder={libraryBrowseMode === 'songs' ? 'Search songs, artists, vaults...' : 'Search vaults, songs, artists...'}
-                            className="no-drag w-full rounded-2xl border border-white/10 bg-white/[0.035] py-2.5 pl-9 pr-9 text-[12px] font-bold text-white outline-none transition-colors placeholder:text-white/25 focus:border-brand-accent/35 focus:bg-brand-accent/[0.045]"
-                          />
-                          {librarySearchTerm && (
-                            <button
-                              onClick={() => setLibrarySearchTerm('')}
-                              className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-xl text-white/35 transition-colors hover:text-brand-accent"
-                              title="Clear library search"
-                            >
-                              <X size={13} />
-                            </button>
-                          )}
-                        </div>
-                        <div className="grid grid-cols-2 rounded-2xl border border-white/8 bg-black/28 p-1">
-                          {libraryModeOptions.map((option) => (
-                            <button
-                              key={option.id}
-                              onClick={() => setLibraryBrowseMode(option.id)}
-                              className={`rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${libraryBrowseMode === option.id ? 'bg-brand-accent text-black shadow-[0_0_18px_rgba(0,255,191,0.18)]' : 'text-white/42 hover:text-brand-accent'}`}
-                            >
-                              {option.label}
-                            </button>
-                          ))}
-                        </div>
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between gap-3 text-[8px] font-black uppercase tracking-[0.2em] text-white/24">
-                            <span>Filter</span>
-                            <span>{libraryBrowseMode === 'songs' ? 'Track View' : 'Vault View'}</span>
-                          </div>
-                          <div className="flex flex-wrap gap-1.5">
-                            {(libraryBrowseMode === 'songs' ? librarySongFilterOptions : libraryPlaylistFilterOptions).map((option) => {
-                              const active = libraryBrowseMode === 'songs' ? librarySongFilter === option.id : libraryFilter === option.id;
-                              return (
-                                <button
-                                  key={option.id}
-                                  onClick={() => libraryBrowseMode === 'songs' ? setLibrarySongFilter(option.id) : setLibraryFilter(option.id)}
-                                  className={`rounded-xl border px-2.5 py-1.5 text-[9px] font-black uppercase tracking-[0.14em] transition-all ${active ? 'border-brand-accent/45 bg-brand-accent/15 text-brand-accent' : 'border-white/8 bg-white/[0.025] text-white/42 hover:border-brand-accent/25 hover:text-brand-accent'}`}
-                                >
-                                  {option.label}
-                                </button>
-                              );
-                            })}
-                          </div>
-                          <div className="flex items-center justify-between gap-3 text-[8px] font-black uppercase tracking-[0.2em] text-white/24">
-                            <span>Sort</span>
-                            <span>{libraryBrowseMode === 'songs' ? libraryVisibleSongEntries.length : libraryVisiblePlaylistNames.length + (showFavoriteLibraryCard ? 1 : 0)} shown</span>
-                          </div>
-                          <div className="flex flex-wrap gap-1.5">
-                            {(libraryBrowseMode === 'songs' ? librarySongSortOptions : libraryPlaylistSortOptions).map((option) => {
-                              const active = libraryBrowseMode === 'songs' ? librarySongSort === option.id : librarySort === option.id;
-                              return (
-                                <button
-                                  key={option.id}
-                                  onClick={() => libraryBrowseMode === 'songs' ? setLibrarySongSort(option.id) : setLibrarySort(option.id)}
-                                  className={`rounded-xl border px-2.5 py-1.5 text-[9px] font-black uppercase tracking-[0.14em] transition-all ${active ? 'border-brand-accent/45 bg-brand-accent/15 text-brand-accent' : 'border-white/8 bg-white/[0.025] text-white/42 hover:border-brand-accent/25 hover:text-brand-accent'}`}
-                                >
-                                  {option.label}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                        <div className="flex items-center justify-between text-[9px] font-black uppercase tracking-[0.2em] text-white/28">
-                          <span>{libraryBrowseMode === 'songs' ? `${libraryVisibleSongEntries.length} songs` : `${libraryVisiblePlaylistNames.length + (showFavoriteLibraryCard ? 1 : 0)} vaults`}</span>
-                          <span>{librarySearchNeedle ? 'Filtered' : libraryBrowseMode === 'songs' ? 'Song Index' : 'Browse'}</span>
-                        </div>
-                      </div>
-
-                      <div className="studio-library-list flex-1 min-h-0 overflow-y-auto custom-scrollbar-heavy overscroll-contain p-4 space-y-3 pb-10">
-                        {libraryBrowseMode === 'songs' ? (
+                <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-5 md:flex-row">
+                  <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1 custom-scrollbar-heavy">
+                    <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                      <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Context</div>
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-center">
+                        {isPlaylistInspect ? (
                           <>
-                            {libraryVisibleSongEntries.map((entry) => {
-                              const track = entry.track;
-                              return (
-                                <div
-                                  key={`library-song-${entry.key}`}
-                                  onClick={() => openTrackInspect(track, 'studio-library')}
-                                  className="performance-list-item group rounded-2xl border border-white/8 bg-black/20 p-3 transition-all cursor-pointer hover:border-brand-accent/30 hover:bg-white/[0.03]"
-                                >
-                                  <div className="flex items-center gap-3">
-                                    <img src={getProxyUrl(track.thumbnail)} className="h-12 w-12 rounded-xl border border-white/10 object-cover bg-white/[0.03]" alt="" />
-                                    <div className="min-w-0 flex-1">
-                                      <div className="text-[11px] font-black uppercase tracking-widest text-white truncate group-hover:text-brand-accent transition-colors">{track.title || 'Unknown Track'}</div>
-                                      <div className="mt-1 text-[9px] uppercase tracking-[0.22em] text-white/30 truncate">{track.author || 'Unknown Artist'}</div>
-                                      <div className="mt-1 text-[8px] uppercase tracking-[0.16em] text-white/22 truncate">{entry.playlists.slice(0, 2).join(' / ')}{entry.playlists.length > 2 ? ` +${entry.playlists.length - 2}` : ''}</div>
-                                    </div>
-                                    <div className="flex items-center gap-1">
-                                      <button onClick={(e) => { e.stopPropagation(); handleAdd(track); }} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent/70 hover:text-brand-accent hover:bg-brand-accent/20 transition-all" title="Add to queue"><Plus size={12} /></button>
-                                      <button onClick={(e) => { e.stopPropagation(); toggleFavoriteTrack(track); }} className={`p-2 rounded-lg transition-all ${isTrackFavorite(track) ? 'bg-rose-400/12 text-rose-300' : 'bg-white/5 text-white/35 hover:text-rose-300'}`} title={isTrackFavorite(track) ? 'Remove from Favorites' : 'Add to Favorites'}><Heart size={12} fill={isTrackFavorite(track) ? 'currentColor' : 'none'} /></button>
-                                      <button onClick={(e) => { e.stopPropagation(); openTrackInspect(track, 'studio-library'); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title="Inspect"><Eye size={12} /></button>
-                                      <button onClick={(e) => { e.stopPropagation(); handleRemoveTrackEverywhere(track); }} className="p-2 rounded-lg bg-white/5 text-red-400/50 hover:text-red-400 transition-all" title="Delete from every vault"><Trash2 size={12} /></button>
-                                    </div>
-                                  </div>
-                                  <div className="mt-2 flex items-center justify-between text-[8px] uppercase tracking-[0.18em] text-white/25">
-                                    <span>{getTrackPlayCount(track)} plays</span>
-                                    <span>{getTrackLastListenedMs(track) ? 'Recently played' : getTrackAddedMs(track) ? 'Added' : 'Indexed'}</span>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                            {libraryVisibleSongEntries.length === 0 && (
-                              <div className="rounded-2xl border border-white/8 bg-black/20 p-5 text-center">
-                                <Search size={22} className="mx-auto text-white/25" />
-                                <div className="mt-3 text-[10px] font-black uppercase tracking-[0.22em] text-white/38">No songs match</div>
-                                <button onClick={() => { setLibrarySearchTerm(''); setLibrarySongFilter('all'); }} className="mt-3 rounded-xl border border-brand-accent/25 bg-brand-accent/10 px-3 py-2 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent transition-colors hover:bg-brand-accent hover:text-black">Reset songs</button>
-                              </div>
-                            )}
+                            <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectPlaylistTracks.length}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Tracks</div></div>
+                            <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectPlaylistQueuedCount}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Queued</div></div>
+                            <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{formatTime(inspectPlaylistDurationMs)}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Length</div></div>
+                            <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectPlaylistArtistCount}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Artists</div></div>
                           </>
                         ) : (
                           <>
-                        {showFavoriteLibraryCard && (
-                        <div
-                          onClick={() => setViewingPlaylist(FAVORITES_PLAYLIST_ID)}
-                          className={`performance-list-item group rounded-2xl border p-3 transition-all cursor-pointer ${viewingPlaylist === FAVORITES_PLAYLIST_ID ? 'border-rose-300/40 bg-rose-400/12 shadow-[0_0_18px_rgba(251,113,133,0.09)]' : 'border-rose-300/15 bg-rose-400/[0.035] hover:border-rose-300/35 hover:bg-rose-400/[0.06]'}`}
-                        >
-                          <div className="flex items-center justify-between gap-3 mb-2">
-                            <div className="min-w-0">
-                              <div className="text-[9px] font-black uppercase tracking-[0.26em] text-rose-200/45">Built-in Vault</div>
-                              <div className="font-black uppercase tracking-tight truncate group-hover:text-rose-300 transition-colors">{FAVORITES_PLAYLIST_NAME}</div>
-                            </div>
-                            <div className="flex items-center gap-1">
-                              {viewingPlaylist === FAVORITES_PLAYLIST_ID && (
-                                <span className="px-2 py-1 rounded-md bg-rose-400/12 border border-rose-300/25 text-rose-200 text-[8px] font-black uppercase tracking-[0.2em]">Focused</span>
-                              )}
-                              <button onClick={(e) => { e.stopPropagation(); handleFavoritePlayAll(false); }} className="p-2 rounded-lg bg-rose-400/10 text-rose-200/80 hover:text-rose-100 hover:bg-rose-400/20 transition-all" title="Play Favorites"><Play size={12} /></button>
-                              <button onClick={(e) => { e.stopPropagation(); handleFavoritePlayAll(true); }} className="p-2 rounded-lg bg-rose-400/10 text-rose-200/80 hover:text-rose-100 hover:bg-rose-400/20 transition-all" title="Shuffle Favorites"><Shuffle size={12} /></button>
-                              <button onClick={(e) => { e.stopPropagation(); handleFavoriteAddAll(); }} className="p-2 rounded-lg bg-white/5 text-rose-200/70 hover:text-rose-100 hover:bg-rose-400/20 transition-all" title="Add Favorites to Queue"><Plus size={12} /></button>
-                              {isStandalone && <button onClick={(e) => { e.stopPropagation(); handleExportVault(FAVORITES_PLAYLIST_ID); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-rose-200 transition-all" title="Export Favorites"><Download size={12} /></button>}
-                            </div>
-                          </div>
-                          <div className="flex items-center justify-between text-[9px] uppercase tracking-[0.2em] text-white/30">
-                            <span>{favoriteTracksList.length} nodes</span>
-                            <span>{favoriteTracksList.length > 0 ? 'Ready' : 'Empty'}</span>
-                          </div>
-                        </div>
-                        )}
-                        {libraryVisiblePlaylistNames.map((name) => (
-                          <div
-                            key={name}
-                            draggable
-                            onClick={() => setViewingPlaylist(name)}
-                            onDragStart={(e) => {
-                              setDraggedPlaylistName(name);
-                              e.dataTransfer.effectAllowed = 'move';
-                              e.dataTransfer.setData('text/plain', name);
-                            }}
-                            onDragEnd={() => setDraggedPlaylistName(null)}
-                            onDragOver={(e) => {
-                              e.preventDefault();
-                              e.dataTransfer.dropEffect = 'move';
-                            }}
-                            onDrop={(e) => {
-                              e.preventDefault();
-                              const droppedName = e.dataTransfer.getData('text/plain');
-                              reorderPlaylistByDrag(name, droppedName || draggedPlaylistName);
-                            }}
-                            className={`performance-list-item group rounded-2xl border p-3 transition-all cursor-pointer ${draggedPlaylistName === name ? 'border-brand-accent/40 bg-brand-accent/12 shadow-[0_0_18px_rgba(0,255,191,0.08)]' : (viewingPlaylist === name ? 'border-brand-accent/35 bg-brand-accent/10 shadow-[0_0_18px_rgba(0,255,191,0.09)]' : 'border-white/8 bg-black/20 hover:border-brand-accent/30 hover:bg-white/[0.03]')}`}
-                          >
-                            <div className="flex items-center justify-between gap-3 mb-2">
-                              <div className="min-w-0">
-                                <div className="text-[9px] font-black uppercase tracking-[0.26em] text-white/25">Vault Node</div>
-                                {isRenamingPlaylist === name ? (
-                                  <input
-                                    autoFocus
-                                    className="no-drag w-full rounded-md border border-brand-accent/30 bg-white/5 px-2 py-1 text-[11px] font-black uppercase tracking-tight text-brand-accent outline-none"
-                                    value={renameValue}
-                                    onClick={(e) => e.stopPropagation()}
-                                    onChange={(e) => setRenameValue(e.target.value)}
-                                    onBlur={() => handleRenamePlaylist(name, renameValue)}
-                                    onKeyDown={(e) => {
-                                      if (e.key === 'Enter') handleRenamePlaylist(name, renameValue);
-                                      if (e.key === 'Escape') setIsRenamingPlaylist(null);
-                                    }}
-                                  />
-                                ) : (
-                                  <div className="font-black uppercase tracking-tight truncate group-hover:text-brand-accent transition-colors">{name}</div>
-                                )}
-                              </div>
-                              <div className="flex items-center gap-1">
-                                {viewingPlaylist === name && (
-                                  <span className="px-2 py-1 rounded-md bg-brand-accent/12 border border-brand-accent/25 text-brand-accent text-[8px] font-black uppercase tracking-[0.2em]">Focused</span>
-                                )}
-                                <button onClick={(e) => { e.stopPropagation(); handleAddToPlaylist(name, pendingLibraryItems); }} disabled={!canAddPendingToVault} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent/70 hover:text-brand-accent hover:bg-brand-accent/20 transition-all disabled:opacity-30 disabled:cursor-not-allowed" title={`Add pending context to ${name}`}><Plus size={12} /></button>
-                                <button onClick={(e) => { e.stopPropagation(); setIsRenamingPlaylist(name); setRenameValue(name); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title={`Rename ${name}`}><Edit3 size={12} /></button>
-                                <button onClick={(e) => { e.stopPropagation(); movePlaylist(name, -1); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title="Move up"><ChevronLeft size={12} /></button>
-                                <button onClick={(e) => { e.stopPropagation(); movePlaylist(name, 1); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title="Move down"><ChevronRight size={12} /></button>
-                                {isStandalone && <button onClick={(e) => { e.stopPropagation(); handleExportVault(name); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title={`Export ${name} to .aether`}><Download size={12} /></button>}
-                                <button onClick={(e) => { e.stopPropagation(); handleDeletePlaylist(name); }} className="p-2 rounded-lg bg-white/5 text-red-400/60 hover:text-red-400 transition-all" title={`Delete ${name}`}><Trash2 size={12} /></button>
-                              </div>
-                            </div>
-                            <div className="flex items-center justify-between text-[9px] uppercase tracking-[0.2em] text-white/30">
-                              <span>{(playlists[name] || []).length} nodes</span>
-                              <span>{playlists[name]?.length > 0 ? 'Ready' : 'Empty'}</span>
-                            </div>
-                          </div>
-                        ))}
-                        {!showFavoriteLibraryCard && libraryVisiblePlaylistNames.length === 0 && (
-                          <div className="rounded-2xl border border-white/8 bg-black/20 p-5 text-center">
-                            <Search size={22} className="mx-auto text-white/25" />
-                            <div className="mt-3 text-[10px] font-black uppercase tracking-[0.22em] text-white/38">No vault matches</div>
-                            <button onClick={() => { setLibrarySearchTerm(''); setLibraryFilter('all'); }} className="mt-3 rounded-xl border border-brand-accent/25 bg-brand-accent/10 px-3 py-2 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent transition-colors hover:bg-brand-accent hover:text-black">Reset filters</button>
-                          </div>
-                        )}
+                            <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectQueueIndex >= 0 ? inspectQueueIndex + 1 : '-'}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Queue</div></div>
+                            <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{formatTime(inspectDurationMs)}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Length</div></div>
+                            <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectVaultNames.length}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Vaults</div></div>
+                            <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{lyrics.length}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Lyrics</div></div>
                           </>
                         )}
                       </div>
                     </div>
-
-                    <div className="studio-library-column studio-library-focus border border-white/8 rounded-[1.75rem] overflow-hidden flex flex-col min-h-0 h-full">
-                      {viewingPlaylist ? (
-                        <div key={viewingPlaylist} className="flex flex-col min-h-0 flex-1">
-                          <div className="px-4 py-4 border-b border-white/8 flex items-center justify-between bg-black/20">
-                            <div className="min-w-0">
-                              <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Focused Vault</div>
-                              {isRenamingPlaylist === viewingPlaylist && !isViewingFavorites ? (
-                                <input
-                                  autoFocus
-                                  className="no-drag mt-1 w-full max-w-sm rounded-xl border border-brand-accent/35 bg-black/35 px-3 py-2 text-lg font-black uppercase tracking-tight text-brand-accent outline-none"
-                                  value={renameValue}
-                                  onChange={(e) => setRenameValue(e.target.value)}
-                                  onBlur={() => handleRenamePlaylist(viewingPlaylist, renameValue)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') handleRenamePlaylist(viewingPlaylist, renameValue);
-                                    if (e.key === 'Escape') setIsRenamingPlaylist(null);
-                                  }}
-                                />
-                              ) : (
-                                <div className={`text-lg font-black uppercase tracking-tight truncate ${isViewingFavorites ? 'text-rose-300' : 'text-brand-accent'}`}>{focusedVaultName}</div>
-                              )}
-                              <div className="mt-1 text-[9px] uppercase tracking-[0.22em] text-white/35">{focusedVaultVisibleTracks.length}/{focusedVaultTracks.length} tracks</div>
-                            </div>
-                            <div className="flex items-center gap-2 flex-wrap justify-end">
-                              <select
-                                value={libraryTrackSort}
-                                onChange={(e) => setLibraryTrackSort(e.target.value)}
-                                className="no-drag rounded-lg border border-white/10 bg-[#0b0f12] px-2 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-white/55 outline-none focus:border-brand-accent/35"
-                                title="Sort tracks"
-                              >
-                                <option value="original">Original</option>
-                                <option value="title">Title</option>
-                                <option value="artist">Artist</option>
-                                <option value="listened-desc">Recently Played</option>
-                                <option value="added-desc">Recently Added</option>
-                                <option value="plays-desc">Most Played</option>
-                                <option value="duration-desc">Longest</option>
-                                <option value="duration-asc">Shortest</option>
-                              </select>
-                              <button onClick={() => handlePlaylistPlayAll(viewingPlaylist, false)} className={`p-2 rounded-lg transition-all ${isViewingFavorites ? 'bg-rose-400/10 text-rose-200/80 hover:bg-rose-400/20' : 'bg-brand-accent/10 text-brand-accent hover:bg-brand-accent hover:text-black'}`} title={`Play ${focusedVaultName}`}><Play size={12} /></button>
-                              <button onClick={() => handlePlaylistPlayAll(viewingPlaylist, true)} className="p-2 rounded-lg bg-white/5 text-white/40 hover:text-brand-accent transition-all" title={`Shuffle ${focusedVaultName}`}><Shuffle size={12} /></button>
-                              {!isViewingFavorites && (
-                                <button onClick={() => { setIsRenamingPlaylist(viewingPlaylist); setRenameValue(viewingPlaylist); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title={`Rename ${viewingPlaylist}`}><Edit3 size={12} /></button>
-                              )}
-                              <button onClick={() => handlePlaylistAddAll(viewingPlaylist)} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent hover:bg-brand-accent hover:text-black transition-all" title={`Add all tracks from ${focusedVaultName} to queue`}><Plus size={12} /></button>
-                              {isStandalone && <button onClick={() => handleExportVault(viewingPlaylist)} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title={`Export ${focusedVaultName} to .aether`}><Download size={12} /></button>}
-                              <button onClick={() => handleDeletePlaylist(viewingPlaylist)} className="p-2 rounded-lg bg-white/5 text-red-400/60 hover:text-red-400 transition-all" title={isViewingFavorites ? 'Clear Favorites' : `Delete ${viewingPlaylist}`}><Trash2 size={12} /></button>
-                              <button onClick={() => setViewingPlaylist(null)} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-red-400 transition-all" title="Back"><ChevronLeft size={12} /></button>
-                            </div>
+                    <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                      {isPlaylistInspect ? (
+                        <>
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Playlist Tracks</div>
+                            <button
+                              disabled={!inspectPlaylistTracklistText}
+                              onClick={() => handleCopyDiagnosticsValue(inspectPlaylistTracklistText, 'Tracklist copied')}
+                              className="rounded-xl border border-brand-accent/20 bg-brand-accent/8 px-3 py-2 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent/80 transition-all hover:bg-brand-accent hover:text-black disabled:opacity-35 disabled:hover:bg-brand-accent/8 disabled:hover:text-brand-accent/80"
+                            >
+                              Copy List
+                            </button>
                           </div>
-                          <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 pb-24 space-y-2 bg-gradient-to-b from-brand-accent/5 to-transparent overscroll-contain">
-                            {focusedVaultVisibleTracks.map((track, tidx) => (
-                              <div key={`${viewingPlaylist}-${tidx}`} className="performance-list-item group rounded-2xl border border-white/8 bg-black/20 p-3 flex items-center gap-3 hover:border-brand-accent/30 hover:bg-white/[0.03] transition-all">
-                                <img src={getProxyUrl(track.thumbnail)} className="w-11 h-11 rounded-xl object-cover border border-white/10" alt="" />
-                                <div className="flex-1 min-w-0">
-                                  <div className="text-[11px] font-black uppercase tracking-widest truncate group-hover:text-brand-accent transition-colors">{track.title}</div>
-                                  <div className="text-[9px] uppercase tracking-[0.22em] text-white/30 truncate mt-1">{track.author}</div>
+                          <div className="mt-3 max-h-[38vh] space-y-2 overflow-y-auto pr-1 custom-scrollbar">
+                            {inspectPlaylistTracks.map((track, index) => {
+                              const rowSourceUrl = getInspectSourceUrl(track);
+                              return (
+                                <div key={`${normalizeTrackIdentity(track)}-${index}`} className="flex items-center gap-3 rounded-xl border border-white/8 bg-black/24 p-2">
+                                  <div className="w-6 text-center text-[10px] font-black text-brand-accent/75">{index + 1}</div>
+                                  {track.thumbnail ? (
+                                    <img src={getProxyUrl(track.thumbnail)} alt="" className="h-10 w-10 flex-none rounded-lg border border-white/10 object-cover" />
+                                  ) : (
+                                    <div className="flex h-10 w-10 flex-none items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-brand-accent"><Music size={13} /></div>
+                                  )}
+                                  <div className="min-w-0 flex-1">
+                                    <div className="truncate text-[11px] font-black uppercase tracking-tight text-white/82">{track.title || 'Unknown Track'}</div>
+                                    <div className="mt-0.5 truncate text-[9px] font-black uppercase tracking-[0.18em] text-white/32">{track.author || 'Unknown Artist'}</div>
+                                  </div>
+                                  <div className="flex flex-none items-center gap-1">
+                                    <button onClick={() => handleAdd(track)} className="rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1.5 text-[8px] font-black uppercase tracking-[0.14em] text-white/50 transition-all hover:border-brand-accent/35 hover:text-brand-accent" title="Queue Track">Queue</button>
+                                    <button onClick={() => openTrackInspect(track, `playlist:${inspectPlaylistName}`)} className="rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1.5 text-[8px] font-black uppercase tracking-[0.14em] text-white/50 transition-all hover:border-brand-accent/35 hover:text-brand-accent" title="Inspect Track">Inspect</button>
+                                    <button disabled={!rowSourceUrl} onClick={() => handleCopyDiagnosticsValue(rowSourceUrl, 'Source copied')} className="rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1.5 text-[8px] font-black uppercase tracking-[0.14em] text-white/50 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35" title="Copy Source URL">Copy</button>
+                                  </div>
                                 </div>
-                                <button onClick={() => handleAdd(track)} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent hover:bg-brand-accent hover:text-black transition-all" title="Add to queue"><Plus size={12} /></button>
-                                <button onClick={() => toggleFavoriteTrack(track)} className={`p-2 rounded-lg transition-all ${isTrackFavorite(track) ? 'bg-rose-400/12 text-rose-300' : 'bg-white/5 text-white/35 hover:text-rose-300'}`} title={isTrackFavorite(track) ? 'Remove from Favorites' : 'Add to Favorites'}><Heart size={12} fill={isTrackFavorite(track) ? 'currentColor' : 'none'} /></button>
-                                <button onClick={() => handleRemoveTrackFromPlaylist(viewingPlaylist, track, tidx)} className="p-2 rounded-lg bg-white/5 text-red-400/50 hover:text-red-400 transition-all" title="Remove"><Trash2 size={12} /></button>
-                              </div>
-                            ))}
-                            {focusedVaultVisibleTracks.length === 0 && (
-                              <div className="rounded-2xl border border-white/8 bg-black/20 p-8 text-center">
-                                <Search size={24} className="mx-auto text-white/25" />
-                                <div className="mt-3 text-[10px] font-black uppercase tracking-[0.22em] text-white/38">No tracks match this search</div>
-                              </div>
-                            )}
+                              );
+                            })}
                           </div>
-                        </div>
+                        </>
                       ) : (
-                        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 pb-24 flex flex-col gap-3 bg-gradient-to-b from-brand-accent/5 to-transparent overscroll-contain">
-                          <div className="rounded-2xl border border-white/8 bg-black/20 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
-                            <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Library Stats</div>
-                            <div className="mt-3 grid grid-cols-3 gap-3 text-center">
-                              <div className="rounded-xl bg-white/5 border border-white/8 p-3"><div className="text-brand-accent font-black text-lg">{libraryInsights.unique}</div><div className="text-[8px] uppercase tracking-[0.24em] text-white/30">Unique</div></div>
-                              <div className="rounded-xl bg-white/5 border border-white/8 p-3"><div className="text-brand-accent font-black text-lg">{libraryInsights.total}</div><div className="text-[8px] uppercase tracking-[0.24em] text-white/30">Total</div></div>
-                              <div className="rounded-xl bg-white/5 border border-white/8 p-3"><div className="text-brand-accent font-black text-lg">{libraryInsights.duplicates}</div><div className="text-[8px] uppercase tracking-[0.24em] text-white/30">Dupes</div></div>
-                            </div>
-                          </div>
-                          <div className="text-[10px] uppercase tracking-[0.2em] text-white/25 text-center">Select a vault node to focus it here.</div>
-                          {isDoodleMode && (
-                            <div className="flex items-center justify-center gap-2 opacity-70">
-                              <img src={catDoodlePeek} alt="doodle" className="h-8 w-auto select-none pointer-events-none" draggable={false} />
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                 </div>
-              </motion.div>
-           </motion.div>
-        )}
-      </AnimatePresence>
-
-      
-      {/* GESTURE NOTICE TOAST */}
-      <ToastPortal>
-      <AnimatePresence>
-        {gestureNotice && (
-          <motion.div
-            key={gestureNotice}
-            initial={{ opacity: 0, y: 30, scale: 0.92 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 16, scale: 0.95 }}
-            transition={{ type: 'spring', stiffness: 420, damping: 30 }}
-            className="fixed bottom-24 left-1/2 z-[700] flex -translate-x-1/2 items-center gap-2.5 rounded-2xl border border-brand-accent/30 bg-[#06100d]/94 px-4 py-2.5 text-[10px] font-black uppercase tracking-[0.2em] text-brand-accent shadow-[0_0_28px_rgba(0,255,191,0.18),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl"
-          >
-            <span>{gestureNotice}</span>
-          </motion.div>
-        )}
-      </AnimatePresence>
-      </ToastPortal>
-
-      <ToastPortal>
-      <AnimatePresence>
-        {volumeToast && (
-          <motion.div 
-            initial={{ opacity: 0, y: 50, scale: 0.9 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 20, scale: 0.9 }}
-            className="fixed bottom-32 left-1/2 -translate-x-1/2 z-[700] bg-brand-dark/95 backdrop-blur-xl border border-brand-accent/30 px-6 py-3 rounded-2xl flex items-center gap-4 shadow-[0_0_30px_rgba(0,255,191,0.2)]"
-          >
-            <div className="text-brand-accent font-black text-[10px] tracking-widest uppercase">Volume</div>
-            <div className="w-48 h-1 bg-white/10 rounded-full overflow-hidden">
-                <div className="h-full bg-brand-accent shadow-[0_0_10px_#00ffbf]" style={{ width: `${volume * 100}%` }} />
-            </div>
-            <div className="text-white font-mono text-[10px] w-8">{`${Math.round(volume * 100)}%`}</div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-      </ToastPortal>
-
-      <AnimatePresence>
-        {isPlayerOverlayOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[290] flex items-center justify-center p-4 md:p-6"
-          >
-            <div className="absolute inset-0 bg-black/85 backdrop-blur-xl" onClick={() => setIsPlayerOverlayOpen(false)} />
-            <motion.div
-              initial={{ scale: 0.96, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.96, y: 20 }}
-              className="w-full max-w-5xl max-h-[88vh] overflow-hidden rounded-[2rem] border border-brand-accent/20 bg-[#090b0f]/95 shadow-[0_0_90px_rgba(0,255,191,0.14)] relative z-10 flex flex-col"
-            >
-              <div className="p-5 md:p-6 border-b border-white/10 relative">
-                <div className="text-center px-16">
-                  <div className="text-[9px] font-black uppercase tracking-[0.32em] text-white/30">Player Overlay</div>
-                  {String(currentTrack?.title || 'Nothing Playing').length > 44 ? (
-                    <div className="overlay-marquee mt-1 text-xl md:text-2xl font-black uppercase tracking-tight text-brand-accent">
-                      <div className="overlay-marquee-track">
-                        <span>{currentTrack?.title || 'Nothing Playing'}</span>
-                        <span aria-hidden="true">{currentTrack?.title || 'Nothing Playing'}</span>
-                        <span aria-hidden="true">{currentTrack?.title || 'Nothing Playing'}</span>
-                        <span aria-hidden="true">{currentTrack?.title || 'Nothing Playing'}</span>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="mt-1 text-xl md:text-2xl font-black uppercase tracking-tight text-brand-accent truncate">{currentTrack?.title || 'Nothing Playing'}</div>
-                  )}
-                  <div className="text-[11px] uppercase tracking-[0.22em] text-white/40 truncate mt-1">{currentTrack?.author || 'Awaiting signal'}</div>
-                </div>
-                <button onClick={() => setIsPlayerOverlayOpen(false)} className="absolute right-5 md:right-6 top-1/2 -translate-y-1/2 w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close">
-                  <X size={18} />
-                </button>
-              </div>
-
-              <div className="p-4 md:p-6 overflow-hidden flex-1 min-h-0">
-                <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-5 flex flex-col items-center justify-center gap-4 min-h-0 min-w-0 h-full">
-                  <img
-                    src={getProxyUrl(currentTrack?.thumbnail)}
-                    className="w-full max-w-[320px] aspect-square rounded-[1.75rem] object-cover border border-white/10 shadow-[0_0_50px_rgba(0,255,191,0.12)]"
-                    alt=""
-                  />
-                  <div className="text-center min-w-0 w-full">
-                    <div className="text-[9px] uppercase tracking-[0.28em] text-white/25">Now Playing</div>
-                    {String(compactLyric || 'Lyric sync loading…').length > 56 ? (
-                      <div className="overlay-marquee mt-1 text-lg font-black tracking-tight text-white/95">
-                        <div className="overlay-marquee-track">
-                          <span>{compactLyric || 'Lyric sync loading…'}</span>
-                          <span aria-hidden="true">{compactLyric || 'Lyric sync loading…'}</span>
-                          <span aria-hidden="true">{compactLyric || 'Lyric sync loading…'}</span>
-                          <span aria-hidden="true">{compactLyric || 'Lyric sync loading…'}</span>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="mt-1 text-lg font-black tracking-tight text-white/95 truncate">{compactLyric || 'Lyric sync loading…'}</div>
-                    )}
-                    <div className="text-[10px] uppercase tracking-[0.2em] text-white/35 truncate mt-1">{currentTrack?.author || 'No source'}</div>
-                  </div>
-                  <div className="w-full">
-                    <PlaybackProgressIsland
-                      durationMs={currentTrack?.totalDurationMs || currentTrack?.duration || 0}
-                      getPositionMs={getActivePlaybackPositionMs}
-                      onSeek={handleSeek}
-                      accent={trackProgressAccent}
-                      glow={trackProgressGlow}
-                      barClassName="h-2 rounded-full bg-white/10 overflow-hidden cursor-pointer"
-                      fillClassName="h-full w-full bg-brand-accent shadow-[0_0_10px_#00ffbf]"
-                      timeRowClassName="mt-2 flex items-center justify-between text-[10px] font-mono text-white/35"
-                    />
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    
-      {/* GLOBAL BACKGROUND ELEMENTS (NOVA */}
-            {/* OAUTH INTERCEPT OVERLAY */}
-            <AnimatePresence>
-              {oauthPrompt && (
-                <motion.div 
-                  initial={{ opacity: 0 }} 
-                  animate={{ opacity: 1 }} 
-                  exit={{ opacity: 0 }} 
-                  className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-brand-dark/95 backdrop-blur-[30px]"
-                >
-                  <motion.div 
-                    initial={{ scale: 0.95, y: 20 }} 
-                    animate={{ scale: 1, y: 0 }} 
-                    exit={{ scale: 0.95, y: 20 }}
-                    className="w-full max-w-lg glass-card bg-brand-dark/80 border-brand-accent/40 rounded-3xl flex flex-col items-center justify-center overflow-hidden relative z-10 px-8 py-10 text-center"
-                  >
-                    <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-transparent via-brand-accent to-transparent opacity-50" />
-                    
-                    <div className="w-16 h-16 rounded-full bg-brand-accent/10 border border-brand-accent/30 flex items-center justify-center mb-6 shadow-[0_0_40px_rgba(0,255,191,0.2)]">
-                      <Lock size={28} className="text-brand-accent" />
-                    </div>
-
-                    <h2 className="text-2xl font-black uppercase tracking-tighter text-white mb-2">Authentication Required</h2>
-                    <p className="text-brand-text-dim text-sm mb-8 leading-relaxed max-w-sm">
-                      YouTube is temporarily blocking anonymous requests from your network. Please upload a valid `cookies.txt` file to verify your session and unblock downloads.
-                    </p>
-
-                    <div className="flex flex-col w-full gap-3">
-                      <button 
-                        onClick={handleImportCookies}
-                        className="w-full py-4 rounded-xl bg-brand-accent text-brand-dark font-black tracking-[0.2em] uppercase hover:bg-white hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-3"
-                      >
-                       <Upload size={18} /> Upload cookies.txt
-                      </button>
-                      <button 
-                        onClick={() => {
-                          if (isStandalone && window.aether?.openExternal) {
-                            window.aether.openExternal("https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies");
-                          } else {
-                            window.open("https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies", '_blank');
-                          }
-                        }}
-                        className="w-full py-2 rounded-xl bg-transparent text-brand-accent/70 font-bold tracking-[0.1em] uppercase hover:text-brand-accent transition-all text-[11px] mb-2"
-                      >
-                        How to export cookies?
-                      </button>
-                      <button 
-                        onClick={() => setOauthPrompt(null)}
-                        className="w-full py-3 rounded-xl bg-transparent border border-white/10 text-white/50 font-bold tracking-[0.2em] uppercase hover:bg-white/5 hover:text-white transition-all text-sm"
-                      >
-                        Dismiss Overlay
-                      </button>
-                    </div>
-
-                    <div className="mt-8 text-[10px] text-white/30 uppercase tracking-widest flex items-center justify-center gap-2">
-                      <AlertTriangle size={12} className="text-yellow-500/50" /> Downloads are paused until authentication
-                    </div>
-                  </motion.div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* FULL DISCOVERY OVERLAY */}
-            <AnimatePresence>
-              {isViewingFullDiscovery && (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  className="fixed inset-0 z-[250] flex items-center justify-center p-4"
-                >
-                  <div className="absolute inset-0 bg-brand-dark/90 backdrop-blur-[20px]" onClick={() => setIsViewingFullDiscovery(false)} />
-                  <motion.div
-                    initial={{ scale: 0.95, y: 20 }}
-                    animate={{ scale: 1, y: 0 }}
-                    exit={{ scale: 0.95, y: 20 }}
-                    className="w-full max-w-2xl max-h-[80vh] glass-card bg-brand-dark/60 border-brand-accent/20 rounded-3xl flex flex-col overflow-hidden relative z-10"
-                  >
-                    <div className="flex items-center justify-between p-6 border-b border-brand-accent/10">
-                      <div className="flex items-center gap-3">
-                        <Globe size={20} className="text-brand-accent" />
-                        <div>
-                          <h2 className="text-lg font-black uppercase tracking-tighter text-white">Neural Discovery</h2>
-                          <p className="text-brand-accent text-xs font-bold tracking-widest uppercase opacity-60">{discoveryItems.length} {discoveryModeLabel}{discoveryItems.length !== 1 ? 'S' : ''}</p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {(searchResults.length > 0 || hasCompletedSearch) && (
-                          <button
-                            onClick={clearDiscoveryResults}
-                            className="px-3 py-2 rounded-lg bg-white/5 hover:bg-red-500/20 text-[10px] font-black uppercase tracking-[0.22em] text-white/50 hover:text-red-400 transition-all"
-                          >
-                            Flush
-                          </button>
-                        )}
-                        <button
-                          onClick={() => setIsViewingFullDiscovery(false)}
-                          className="p-2 rounded-lg bg-white/5 hover:bg-red-500/20 text-white/50 hover:text-red-500 transition-all"
-                        >
-                          <X size={18} />
-                        </button>
-                      </div>
-                    </div>
-                    <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
-                      <div className="flex flex-col gap-2">
-                        {!isFullDiscoveryContentReady ? (
-                          <div className="h-40 flex flex-col items-center justify-center gap-3 text-center opacity-40">
-                            <Loader2 size={26} className="animate-spin text-brand-accent/60" />
-                            <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/28">Preparing Discovery</div>
-                          </div>
-                        ) : discoveryItems.length > 0 ? discoveryItems.map((track, idx) => (
-                          <motion.div
-                            key={`discovery-full-${track.id}-${idx}`}
-                            className="performance-list-item group glass-card p-4 flex items-center gap-4 rounded-xl transition-all bg-white/5 border border-white/10 hover:border-brand-accent/30 hover:bg-brand-accent/5"
-                          >
-                            <div className="text-brand-accent font-black text-sm w-6">{idx + 1}</div>
-                            <img src={getProxyUrl(track.thumbnail)} className="w-10 h-10 rounded-lg object-cover" alt="" />
-                            <div className="flex-1 min-w-0">
-                              <div className="text-[12px] font-black truncate uppercase tracking-widest">{track.title}</div>
-                              <div className="text-[10px] font-bold text-white/40 truncate uppercase mt-1">{track.author}</div>
-                            </div>
+                        <>
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Source</div>
                             <button
-                              onClick={() => openTrackInspect(track, isSearchActive ? 'discovery' : 'recommendation')}
-                              className="opacity-0 group-hover:opacity-100 p-2 rounded-lg bg-white/5 hover:bg-brand-accent/20 hover:text-brand-accent text-white/45 transition-all"
-                              title="Inspect Track"
+                              disabled={!inspectSourceUrl}
+                              onClick={() => handleCopyDiagnosticsValue(inspectSourceUrl, 'Source copied')}
+                              className="rounded-xl border border-brand-accent/20 bg-brand-accent/8 px-3 py-2 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent/80 transition-all hover:bg-brand-accent hover:text-black disabled:opacity-35 disabled:hover:bg-brand-accent/8 disabled:hover:text-brand-accent/80"
                             >
-                              <Eye size={14} />
-                            </button>
-                            <button
-                              onClick={() => handleAdd(track)}
-                              className="opacity-0 group-hover:opacity-100 p-2 rounded-lg bg-brand-accent/20 hover:bg-brand-accent/40 text-brand-accent transition-all"
-                              title="Add to Queue"
-                            >
-                              <Plus size={14} />
-                            </button>
-                            <button
-                              onClick={() => toggleFavoriteTrack(track)}
-                              className={`opacity-0 group-hover:opacity-100 p-2 rounded-lg transition-all ${isTrackFavorite(track) ? 'bg-rose-400/15 text-rose-300' : 'bg-white/5 hover:bg-rose-400/15 hover:text-rose-300 text-white/45'}`}
-                              title={isTrackFavorite(track) ? 'Remove from Favorites' : 'Add to Favorites'}
-                            >
-                              <Heart size={14} fill={isTrackFavorite(track) ? 'currentColor' : 'none'} />
-                            </button>
-                            <button
-                              onClick={() => openLibraryOverlay({ type: 'track', items: [track] })}
-                              className="opacity-0 group-hover:opacity-100 p-2 rounded-lg bg-white/5 hover:bg-brand-accent/20 hover:text-brand-accent text-white/45 transition-all"
-                              title="Save to Vault"
-                            >
-                              <HardDrive size={14} />
-                            </button>
-                          </motion.div>
-                        )) : hasCompletedSearch ? (
-                          <div className="h-40 flex flex-col items-center justify-center gap-3 text-center">
-                            <Search size={28} className="text-brand-accent/60" strokeWidth={1.4} />
-                            <div>
-                              <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/55">No Results Found</div>
-                              <div className="mt-2 text-[9px] font-bold uppercase tracking-[0.22em] text-white/30">Flush discovery to return to the default panel state.</div>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="h-40 flex flex-col items-center justify-center gap-3 text-center opacity-40">
-                            <Search size={28} className="text-white/30" strokeWidth={1.2} />
-                            <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/28">Awaiting Content</div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </motion.div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* FULL QUEUE OVERLAY */}
-            <AnimatePresence>
-              {isViewingFullQueue && (
-                <motion.div 
-                  initial={{ opacity: 0 }} 
-                  animate={{ opacity: 1 }} 
-                  exit={{ opacity: 0 }} 
-                  className="fixed inset-0 z-[250] flex items-center justify-center p-4"
-                >
-                  <div className="absolute inset-0 bg-brand-dark/90 backdrop-blur-[20px]" onClick={() => setIsViewingFullQueue(false)} />
-                  <motion.div 
-                    initial={{ scale: 0.95, y: 20 }} 
-                    animate={{ scale: 1, y: 0 }} 
-                    exit={{ scale: 0.95, y: 20 }}
-                    className="w-full max-w-2xl max-h-[80vh] glass-card bg-brand-dark/60 border-brand-accent/20 rounded-3xl flex flex-col overflow-hidden relative z-10"
-                  >
-                    <div className="flex items-center justify-between p-6 border-b border-brand-accent/10">
-                      <div className="flex items-center gap-3">
-                        <ListMusic size={20} className="text-brand-accent" />
-                        <div>
-                          <h2 className="text-lg font-black uppercase tracking-tighter text-white">Queue Buffer</h2>
-                          <p className="text-brand-accent text-xs font-bold tracking-widest uppercase opacity-60">{queue.length} TRACK{queue.length !== 1 ? 'S' : ''}</p>
-                        </div>
-                      </div>
-                      <button 
-                        onClick={() => setIsViewingFullQueue(false)}
-                        className="p-2 rounded-lg bg-white/5 hover:bg-red-500/20 text-white/50 hover:text-red-500 transition-all"
-                      >
-                        <X size={18} />
-                      </button>
-                    </div>
-                    <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
-                      <div className="flex flex-col gap-2">
-                        {!isFullQueueContentReady ? (
-                          <div className="h-40 flex flex-col items-center justify-center gap-3 text-center opacity-40">
-                            <Loader2 size={26} className="animate-spin text-brand-accent/60" />
-                            <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/28">Preparing Queue</div>
-                          </div>
-                        ) : queue.map((track, idx) => {
-                          const warmupId = resolveWarmupTrackId(track);
-                          const isDownloaded = warmupId ? downloadedTracks.includes(warmupId) : downloadedTracks.includes(track.id);
-                          return (
-                          <motion.div 
-                            key={`${track.id}-${idx}`}
-                            draggable
-                            onDragStart={(e) => {
-                              setDraggedQueueIndex(idx);
-                              e.dataTransfer.effectAllowed = 'move';
-                              e.dataTransfer.setData('text/plain', String(idx));
-                            }}
-                            onDragEnd={() => setDraggedQueueIndex(null)}
-                            onDragOver={(e) => {
-                              e.preventDefault();
-                              e.dataTransfer.dropEffect = 'move';
-                            }}
-                            onDrop={(e) => {
-                              e.preventDefault();
-                              const droppedIndex = Number(e.dataTransfer.getData('text/plain'));
-                              reorderQueueByDrag(idx, Number.isInteger(droppedIndex) ? droppedIndex : draggedQueueIndex);
-                            }}
-                            className={`performance-list-item group glass-card p-4 flex items-center gap-4 rounded-xl transition-all cursor-move border ${draggedQueueIndex === idx ? 'bg-brand-accent/15 border-brand-accent/45' : idx === 0 ? 'bg-brand-accent/10 border-brand-accent/30 shadow-[0_0_20px_rgba(0,255,191,0.2)]' : 'bg-white/5 border-white/10 hover:border-brand-accent/20'}`}
-                          >
-                            <div className="text-brand-accent font-black text-sm w-6">{idx + 1}</div>
-                            <img src={getProxyUrl(track.thumbnail)} className="w-10 h-10 rounded-lg object-cover" alt="" />
-                            <div className="flex-1 min-w-0">
-                              <div className="text-[12px] font-black truncate uppercase tracking-widest">{track.title}</div>
-                              <div className="text-[10px] font-bold text-white/40 truncate uppercase mt-1">{track.author}</div>
-                            </div>
-                            {isDownloaded && (
-                              <span className="text-[8px] font-black uppercase tracking-widest text-red-500 border border-red-500/50 px-2 py-0.5 rounded-full">READY</span>
-                            )}
-                            {idx !== 0 && (
-                              <button 
-                                onClick={() => {
-                                  const newQueue = [...queue];
-                                  const [removed] = newQueue.splice(idx, 1);
-                                  newQueue.splice(idx - 1, 0, removed);
-                                  setQueue(newQueue);
-                                }}
-                                className="opacity-0 group-hover:opacity-100 p-2 hover:text-brand-accent transition-all"
-                                title="Move up"
-                              >
-                                <ChevronLeft size={14} />
-                              </button>
-                            )}
-                            {idx !== queue.length - 1 && (
-                              <button 
-                                onClick={() => {
-                                  const newQueue = [...queue];
-                                  const [removed] = newQueue.splice(idx, 1);
-                                  newQueue.splice(idx + 1, 0, removed);
-                                  setQueue(newQueue);
-                                }}
-                                className="opacity-0 group-hover:opacity-100 p-2 hover:text-brand-accent transition-all"
-                                title="Move down"
-                              >
-                                <ChevronRight size={14} />
-                              </button>
-                            )}
-                            {idx !== 0 && (
-                              <button 
-                                onClick={() => setQueue(queue.filter((_, i) => i !== idx))}
-                                className="opacity-0 group-hover:opacity-100 p-2 hover:text-red-500 transition-all"
-                                title="Remove"
-                              >
-                                <Trash2 size={14} className="text-red-500/40 hover:text-red-500" />
-                              </button>
-                            )}
-                          </motion.div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </motion.div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* FULL PLAYLIST OVERLAY */}
-            <AnimatePresence>
-              {isViewingFullPlaylist && (
-                <motion.div 
-                  initial={{ opacity: 0 }} 
-                  animate={{ opacity: 1 }} 
-                  exit={{ opacity: 0 }} 
-                  className="fixed inset-0 z-[250] flex items-center justify-center p-4"
-                >
-                  <div className="absolute inset-0 bg-brand-dark/90 backdrop-blur-[20px]" onClick={() => setIsViewingFullPlaylist(null)} />
-                  <motion.div 
-                    initial={{ scale: 0.95, y: 20 }} 
-                    animate={{ scale: 1, y: 0 }} 
-                    exit={{ scale: 0.95, y: 20 }}
-                    className="w-full max-w-2xl max-h-[80vh] glass-card bg-brand-dark/60 border-brand-accent/20 rounded-3xl flex flex-col overflow-hidden relative z-10"
-                  >
-                    <div className="flex items-center justify-between p-6 border-b border-brand-accent/10">
-                      <div className="flex items-center gap-3">
-                        <ListMusic size={20} className="text-brand-accent" />
-                        <div>
-                          <h2 className="text-lg font-black uppercase tracking-tighter text-white">Vault: {isViewingFullPlaylist}</h2>
-                          <div className="flex gap-2 items-center">
-                            <p className="text-brand-accent text-xs font-bold tracking-widest uppercase opacity-60">{(playlists[isViewingFullPlaylist] || []).length} TRACK{(playlists[isViewingFullPlaylist] || []).length !== 1 ? 'S' : ''}</p>
-                            <button 
-                              onClick={() => {
-                                  const list = [...(playlists[isViewingFullPlaylist] || [])];
-                                  const shuffled = list.sort(() => Math.random() - 0.5);
-                                  setQueue(shuffled);
-                                  seekActivePlaybackTo(0);
-                                  setIsPlaying(true);
-                                  setIsViewingFullPlaylist(null);
-                                  closeHeaderSurfaces();
-                              }}
-                              className="px-2 py-0.5 rounded border border-brand-accent/30 text-brand-accent text-[9px] hover:bg-brand-accent/20 transition-all font-black uppercase flex items-center gap-1"
-                            >
-                              <Shuffle size={10} /> Play Shuffled
+                              Copy URL
                             </button>
                           </div>
-                        </div>
-                      </div>
-                      <button 
-                        onClick={() => setIsViewingFullPlaylist(null)}
-                        className="p-2 rounded-lg bg-white/5 hover:bg-red-500/20 text-white/50 hover:text-red-500 transition-all"
-                      >
-                        <X size={18} />
-                      </button>
-                    </div>
-                    <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
-                      <div className="flex flex-col gap-2">
-                        {!isFullPlaylistContentReady ? (
-                          <div className="h-40 flex flex-col items-center justify-center gap-3 text-center opacity-40">
-                            <Loader2 size={26} className="animate-spin text-brand-accent/60" />
-                            <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/28">Preparing Vault</div>
+                          <div className="no-drag mt-3 select-text break-all rounded-xl border border-white/8 bg-black/28 p-3 text-[11px] font-mono leading-5 text-white/62" style={{ WebkitUserSelect: 'text', userSelect: 'text' }}>
+                            {inspectSourceUrl || 'No source URL captured'}
                           </div>
-                        ) : (playlists[isViewingFullPlaylist] || []).map((track, idx) => (
-                          <motion.div 
-                            key={`${isViewingFullPlaylist}-${track.id}-${idx}`}
-                            className="performance-list-item group glass-card p-4 flex items-center gap-4 rounded-xl transition-all bg-white/5 border border-white/10 hover:border-brand-accent/30 hover:bg-brand-accent/5"
-                          >
-                            <div className="text-brand-accent font-black text-sm w-6">{idx + 1}</div>
-                            <img src={getProxyUrl(track.thumbnail)} className="w-10 h-10 rounded-lg object-cover" alt="" />
-                            <div className="flex-1 min-w-0">
-                              <div className="text-[12px] font-black truncate uppercase tracking-widest">{track.title}</div>
-                              <div className="text-[10px] font-bold text-white/40 truncate uppercase mt-1">{track.author}</div>
-                            </div>
-                            <button 
-                              onClick={() => handleAdd(track)}
-                              className="opacity-0 group-hover:opacity-100 p-2 rounded-lg bg-brand-accent/20 hover:bg-brand-accent/40 text-brand-accent transition-all"
-                              title="Add to Queue"
-                            >
-                              <Plus size={14} />
-                            </button>
-                            <button 
-                              onClick={() => handleRemoveFromPlaylist(isViewingFullPlaylist, idx)}
-                              className="opacity-0 group-hover:opacity-100 p-2 hover:text-red-500 transition-all"
-                              title="Remove from Vault"
-                            >
-                              <Trash2 size={14} className="text-red-500/40 hover:text-red-500" />
-                            </button>
-                          </motion.div>
-                        ))}
-                      </div>
-                    </div>
-                  </motion.div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-      <div className="fixed inset-0 pointer-events-none z-[-2] overflow-hidden select-none bg-black">
-         {/* Baseline Neural Glow (Optimized) */}
-         <div className="absolute inset-0 bg-brand-accent/5 backdrop-blur-[60px] animate-pulse" />
-         
-         {/* Global Neural Aura (Pulse) - NOVA Optimized */}
-         <div className="absolute inset-0 flex items-center justify-center scale-150 transform-gpu will-change-transform">
-            <canvas 
-               ref={pulseCanvasRef} 
-               width={400} 
-               height={400} 
-            className={`aether-visualizer-canvas w-[800px] h-[800px] transition-opacity duration-1000 ${visualizerMode === 'pulse' ? 'opacity-55' : 'opacity-0'}`}
-            />
-         </div>
-         <div className="absolute inset-0 bg-black/60" />
-            </div>
-
-
-
-
-      {/* ── DUAL MODE: slide-in video panel ── */}
-      <AnimatePresence>
-        {showVisualStage && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.985 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.985 }}
-            transition={{ duration: 0.28, ease: 'easeOut' }}
-            className={`fixed ${dualVisualStageZClass} pointer-events-none transition-all duration-500 ease-out ${videoMode === 'cinema' ? 'inset-0' : ''}`}
-            style={videoMode === 'cinema'
-              ? undefined
-              : isVerticalStack
-                ? { left: 16, right: 16, bottom: 16, height: '40vh' }
-                : { top: chromeTopOffset, right: 16, bottom: 16, width: dualVisualStageWidth }}
-            onMouseMove={handleVisualStagePointerActivity}
-            onPointerDown={handleVisualStagePointerActivity}
-          >
-            <div className={`absolute inset-0 transition-all duration-700 delay-100 ${videoMode === 'cinema' ? (isVideoReady ? 'bg-black/96 backdrop-blur-md' : 'bg-transparent') : 'bg-transparent'}`} />
-
-            <div className="relative h-full w-full pointer-events-auto">
-              <div
-                 className={`relative flex h-full w-full overflow-hidden transition-all duration-1000 ${
-                   !isVideoReady && videoMode ? 'opacity-0 scale-[0.98]' : 'opacity-100 scale-100'
-                 } ${videoMode === 'cinema' ? 'rounded-none bg-black' : 'rounded-[2.25rem] border border-white/[0.08] bg-[#06090d]/92 backdrop-blur-[28px] shadow-[0_28px_90px_rgba(0,0,0,0.5)]'}`}
-              >
-                <div className={`relative flex-1 min-h-0 ${videoMode === 'cinema' ? '' : 'm-3 rounded-[1.8rem] overflow-hidden border border-white/[0.08] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.02)]'}`}>
-                  {currentTrack?.thumbnail && (
-                    <img
-                      src={getProxyUrl(currentTrack.thumbnail)}
-                      alt=""
-                      className="absolute inset-0 h-full w-full object-cover scale-110 blur-[40px] opacity-35"
-                    />
-                  )}
-                  <div className="absolute inset-0 bg-[#020406]" />
-                  <div
-                    className="absolute inset-0"
-                    style={{
-                      background: `radial-gradient(120% 120% at 50% 0%, ${themeColor}20 0%, rgba(0,0,0,0) 48%), linear-gradient(180deg, rgba(5,7,10,0.18) 0%, rgba(5,7,10,0.52) 58%, rgba(5,7,10,0.92) 100%)`,
-                    }}
-                  />
-
-                  <video
-                    ref={(el) => { localVideoRef.current = el; }}
-                    playsInline
-                    onCanPlay={() => setIsVideoReady(true)}
-                    className={`absolute inset-0 h-full w-full ${visualVideoFit === 'cover' ? 'object-cover' : 'object-contain'}`}
-                  />
-
-                  {isAudioBuffering && (
-                    <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/45 backdrop-blur-sm">
-                      <div className="rounded-full border border-white/10 bg-black/45 p-4 shadow-[0_0_40px_rgba(0,0,0,0.35)]">
-                        <Loader2 size={videoMode === 'cinema' ? 34 : 28} className="animate-spin text-brand-accent" />
-                      </div>
-                    </div>
-                  )}
-
-                  <motion.div
-                    animate={{ opacity: visualStageHeaderVisible ? 1 : 0, y: visualStageHeaderVisible ? 0 : -14 }}
-                    transition={{ duration: 0.22 }}
-                    className="absolute left-0 right-0 top-0 z-20 p-4 md:p-5"
-                    style={{ pointerEvents: visualStageHeaderVisible ? 'auto' : 'none' }}
-                  >
-                    <div className="mx-auto flex w-full flex-col gap-3 rounded-[1.4rem] border border-white/10 bg-black/38 px-3 py-3 backdrop-blur-2xl shadow-[0_18px_60px_rgba(0,0,0,0.25)] md:px-4">
-                      <div className="flex w-full items-start justify-between gap-2 md:gap-4">
-                        <div className="flex min-w-0 flex-1 items-start gap-2 md:gap-3">
-                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/12 text-brand-accent shadow-[0_0_20px_rgba(0,255,191,0.15)]">
-                            {videoMode === 'cinema' ? <Clapperboard size={15} /> : <Columns2 size={15} />}
-                          </div>
-                          
-                          {videoMode === 'cinema' ? (
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.24em]">
-                                <span className="text-brand-accent/85">Cinema Mode</span>
-                              </div>
-                              {visualStageTitleMarquee ? (
-                                <div className="overlay-marquee mt-1 font-black uppercase tracking-tight text-white/95 text-sm md:text-lg max-w-[min(60vw,720px)]">
-                                  <div className="overlay-marquee-track">
-                                    <span>{visualStageTitle}</span>
-                                    <span aria-hidden="true">{visualStageTitle}</span>
-                                    <span aria-hidden="true">{visualStageTitle}</span>
-                                    <span aria-hidden="true">{visualStageTitle}</span>
-                                  </div>
-                                </div>
-                              ) : (
-                                <div className="mt-1 font-black uppercase tracking-tight text-white/95 line-clamp-2 text-sm md:text-lg max-w-[min(60vw,720px)]">
-                                  {visualStageTitle}
-                                </div>
-                              )}
-                              <div className="mt-1 text-[10px] font-black uppercase tracking-[0.26em] text-brand-accent/72 truncate">
-                                {currentTrack.author}
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="flex min-w-0 flex-col justify-center text-[8px] font-black uppercase tracking-[0.14em] h-9 md:text-[9px] md:tracking-[0.18em]">
-                              <span className="text-brand-accent/85 leading-tight">Dual</span>
-                              <span className="text-brand-accent/55 leading-tight">Visual</span>
-                            </div>
-                          )}
-                        </div>
-
-                      <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 max-w-[68%]">
-                        <button
-                          onClick={() => setShowVisualLyrics((prev) => !prev)}
-                          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border transition-all ${showVisualLyrics ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
-                          title={showVisualLyrics ? 'Hide visual lyrics' : 'Show visual lyrics'}
-                        >
-                          <BookOpen size={15} />
-                        </button>
-                        <button
-                          onClick={() => setVisualVideoFit((prev) => (prev === 'contain' ? 'cover' : 'contain'))}
-                          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border transition-all ${visualVideoFit === 'contain' ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
-                          title={visualVideoFit === 'contain' ? 'Fill frame' : 'Show full frame'}
-                        >
-                          <Monitor size={15} />
-                        </button>
-                        <div className="relative" ref={qualityDropdownRef}>
-                          <button
-                            onClick={() => setIsQualityDropdownOpen((p) => !p)}
-                            className={`flex h-10 min-w-16 shrink-0 items-center justify-center rounded-2xl border px-3 transition-all ${isQualityDropdownOpen ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent shadow-[0_0_12px_rgba(0,255,191,0.1)]' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
-                            title="Video Quality"
-                          >
-                            <span className="text-[9px] font-black uppercase tracking-[0.04em]">{videoQuality}p</span>
-                          </button>
-
-                          {isQualityDropdownOpen && (
-                            <div className="absolute right-0 top-full mt-2 w-28 rounded-2xl border border-white/12 bg-[#080c10]/95 backdrop-blur-2xl p-1.5 shadow-[0_12px_40px_rgba(0,0,0,0.45)]">
-                              {['480', '720', '1080'].map((q) => (
-                                <button
-                                  key={`quality-${q}`}
-                                  onClick={() => {
-                                    setVideoQuality(q);
-                                    setIsQualityDropdownOpen(false);
-                                  }}
-                                  className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left transition-all ${videoQuality === q ? 'bg-brand-accent/12 text-brand-accent' : 'text-white/60 hover:bg-white/5 hover:text-white'}`}
-                                >
-                                  <span className="text-[10px] font-black uppercase tracking-[0.1em]">{q}p</span>
-                                  {videoQuality === q && <div className="h-1.5 w-1.5 rounded-full bg-brand-accent shadow-[0_0_8px_rgba(0,255,191,0.5)]" />}
-                                </button>
+                          {inspectVaultNames.length > 0 && (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {inspectVaultNames.map((name) => (
+                                <span key={`inspect-vault-${name}`} className="rounded-full border border-brand-accent/20 bg-brand-accent/8 px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent/75">{name}</span>
                               ))}
                             </div>
                           )}
-                        </div>
-                        {videoMode === 'cinema' && (
-                          <button
-                            onClick={() => setVisualControlsPinned((prev) => !prev)}
-                            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border transition-all ${visualControlsPinned ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
-                            title={visualControlsPinned ? 'Unpin controls' : 'Pin controls'}
-                          >
-                            <Lock size={15} />
-                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex w-full flex-shrink-0 flex-col gap-3 overflow-y-auto custom-scrollbar-heavy md:w-[320px]">
+                    <div className="rounded-2xl border border-white/8 bg-gradient-to-b from-brand-accent/8 to-white/[0.02] p-4">
+                      <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Actions</div>
+                      <div className="mt-3 grid grid-cols-2 gap-2">
+                        {isPlaylistInspect ? (
+                          <>
+                            <button onClick={() => playInspectPlaylist(false)} className="rounded-xl border border-brand-accent/25 bg-brand-accent/12 px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black">Play Playlist</button>
+                            <button onClick={queueInspectPlaylist} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Queue All</button>
+                            <button onClick={() => playInspectPlaylist(true)} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Shuffle Play</button>
+                            <button onClick={() => openLibraryOverlay({ type: 'queue', items: inspectPlaylistTracks })} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Vault Copy</button>
+                            <button disabled={!inspectPlaylistSourceText} onClick={() => handleCopyDiagnosticsValue(inspectPlaylistSourceText, 'Playlist URLs copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Copy URLs</button>
+                            <button disabled={!inspectPlaylistTracklistText} onClick={() => handleCopyDiagnosticsValue(inspectPlaylistTracklistText, 'Tracklist copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Copy List</button>
+                          </>
+                        ) : (
+                          <>
+                            <button onClick={() => { setQueue((prev) => [normalizeQueueTrack(inspectTrack) || inspectTrack, ...(Array.isArray(prev) ? prev.filter((track) => normalizeTrackIdentity(track) !== normalizeTrackIdentity(inspectTrack)) : [])]); setIsManualStop(false); setIsPlaying(true); setInspectTarget(null); }} className="rounded-xl border border-brand-accent/25 bg-brand-accent/12 px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black">Play Now</button>
+                            <button onClick={() => handleAdd(inspectTrack)} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Queue</button>
+                            <button onClick={() => toggleFavoriteTrack(inspectTrack)} className={`rounded-xl border px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${isTrackFavorite(inspectTrack) ? 'border-rose-300/30 bg-rose-400/14 text-rose-200' : 'border-white/10 bg-white/[0.04] text-white/58 hover:border-rose-300/35 hover:text-rose-300'}`}>{isTrackFavorite(inspectTrack) ? 'Unfavorite' : 'Favorite'}</button>
+                            <button onClick={() => openLibraryOverlay({ type: 'track', items: [inspectTrack] })} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Vault</button>
+                            <button disabled={!inspectSourceUrl} onClick={() => { if (inspectSourceUrl) { if (isStandalone && window.aether?.openExternal) window.aether.openExternal(inspectSourceUrl); else window.open(inspectSourceUrl, '_blank', 'noopener,noreferrer'); } }} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Source</button>
+                            <button disabled={!inspectSourceUrl} onClick={() => handleCopyDiagnosticsValue(inspectSourceUrl, 'Source copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Copy URL</button>
+                            <button onClick={() => handleCopyDiagnosticsValue(`${inspectTrack.title || 'Unknown Track'}\n${inspectTrack.author || 'Unknown Artist'}${inspectSourceUrl ? `\n${inspectSourceUrl}` : ''}`, 'Track info copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Copy Info</button>
+                          </>
                         )}
-                        <button
-                          onClick={() => switchVideoMode(videoMode === 'cinema' ? 'dual' : 'cinema')}
-                          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/55 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
-                          title={videoMode === 'cinema' ? 'Back to Dual View' : 'Expand to Cinema'}
-                        >
-                          {videoMode === 'cinema' ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-                        </button>
-                        <button
-                          onClick={exitVideoMode}
-                          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/55 transition-all hover:border-white/25 hover:text-white"
-                          title={videoMode === 'cinema' ? 'Exit Cinema (Esc)' : 'Return to Audio'}
-                        >
-                          <X size={16} />
-                        </button>
                       </div>
                     </div>
-                    {videoMode === 'dual' && visualStageHeaderVisible && (
-                      <div className="min-w-0 w-full pl-1">
-                        {visualStageTitleMarquee ? (
-                          <div className="overlay-marquee font-black uppercase tracking-tight text-white/95 text-sm md:text-base">
-                            <div className="overlay-marquee-track">
-                              <span>{visualStageTitle}</span>
-                              <span aria-hidden="true">{visualStageTitle}</span>
-                              <span aria-hidden="true">{visualStageTitle}</span>
-                              <span aria-hidden="true">{visualStageTitle}</span>
-                            </div>
+                    <div className="flex-1 rounded-2xl border border-white/8 bg-black/24 p-4">
+                      {isPlaylistInspect ? (
+                        <>
+                          <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Playlist Signal</div>
+                          <div className="mt-4 text-2xl font-black leading-tight text-white/90">
+                            {inspectPlaylistTracks.length} tracks in {inspectPlaylistName}
                           </div>
-                        ) : (
-                          <div className="font-black uppercase tracking-tight text-white/95 line-clamp-2 text-sm md:text-base">
-                            {visualStageTitle}
+                          <div className="mt-4 grid gap-2">
+                            {inspectPlaylistTracks.slice(0, 4).map((track, index) => (
+                              <div key={`${inspectPlaylistName}-signal-${normalizeTrackIdentity(track)}-${index}`} className="truncate rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-white/48">
+                                {index + 1}. {track.title || 'Unknown Track'}
+                              </div>
+                            ))}
                           </div>
-                        )}
-                        <div className="mt-1 text-[10px] font-black uppercase tracking-[0.26em] text-brand-accent/72 truncate">
-                          {currentTrack.author}
+                          <div className="mt-4 text-[10px] uppercase tracking-[0.2em] text-white/32">
+                            Opened from {inspectTarget?.source || 'playlist'} // {new Date(inspectTarget?.openedAt || Date.now()).toLocaleTimeString()}
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Live Lyric</div>
+                          <div className="mt-4 text-2xl font-black leading-tight text-white/90">
+                            {compactLyric || 'No synced lyric locked right now.'}
+                          </div>
+                          <div className="mt-4 text-[10px] uppercase tracking-[0.2em] text-white/32">
+                            Opened from {inspectTarget?.source || 'track'} // {new Date(inspectTarget?.openedAt || Date.now()).toLocaleTimeString()}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {isGestureLabOpen && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[345] flex items-center justify-center bg-black/82 p-4 backdrop-blur-xl"
+            >
+              <div className="absolute inset-0" onClick={() => setIsGestureLabOpen(false)} />
+              <motion.div
+                initial={{ scale: 0.96, y: 18 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.96, y: 18 }}
+                className="relative z-10 flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-[2rem] border border-brand-accent/20 bg-[#080c10]/96 shadow-[0_28px_100px_rgba(0,0,0,0.55)]"
+              >
+                <div className="flex items-start justify-between gap-4 border-b border-white/10 bg-black/22 p-5">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/10 text-brand-accent">
+                      <Hand size={18} />
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-black uppercase tracking-[0.3em] text-brand-accent">Gesture + Face Lab</div>
+                      <div className="mt-1 text-[11px] uppercase tracking-[0.18em] text-white/40">Pointer, swipe, and camera face/hand controls</div>
+                    </div>
+                  </div>
+                  <button onClick={() => setIsGestureLabOpen(false)} className={sharedModalCloseButtonClass} title="Close">
+                    <X size={16} />
+                  </button>
+                </div>
+                <div className="overflow-y-auto p-5 custom-scrollbar">
+                  <button
+                    onClick={() => {
+                      setIsGestureControlEnabled((prev) => {
+                        const next = !prev;
+                        if (!next) setIsFaceControlEnabled(false);
+                        return next;
+                      });
+                    }}
+                    className={`mb-4 flex w-full items-center justify-between rounded-2xl border px-4 py-4 text-left transition-all ${isGestureControlEnabled ? 'border-brand-accent/35 bg-brand-accent/12 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/70 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                  >
+                    <span>
+                      <span className="block text-[11px] font-black uppercase tracking-[0.22em]">Gesture controls</span>
+                      <span className="mt-1 block text-[11px] font-semibold text-white/42">Pointer motion drives stage depth. Fast swipes control playback.</span>
+                    </span>
+                    <span className="rounded-full border border-current px-3 py-1 text-[9px] font-black uppercase tracking-[0.2em]">{isGestureControlEnabled ? 'On' : 'Off'}</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      const next = !isFaceControlEnabled;
+                      if (next) setIsGestureControlEnabled(true);
+                      setIsFaceControlEnabled(next);
+                    }}
+                    className={`mb-4 flex w-full items-center justify-between rounded-2xl border px-4 py-4 text-left transition-all ${isFaceControlEnabled ? 'border-brand-accent/35 bg-brand-accent/12 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/70 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                  >
+                    <span className="flex items-center gap-3">
+                      <Camera size={18} className="shrink-0" />
+                      <span>
+                        <span className="block text-[11px] font-black uppercase tracking-[0.22em]">Camera controls</span>
+                        <span className="mt-1 block text-[11px] font-semibold text-white/42">Camera tracks face position and hand swipes for app control.</span>
+                      </span>
+                    </span>
+                    <span className="rounded-full border border-current px-3 py-1 text-[9px] font-black uppercase tracking-[0.2em]">{isFaceControlEnabled ? 'On' : 'Off'}</span>
+                  </button>
+                  <div className="mb-4 rounded-2xl border border-white/8 bg-black/24 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-[9px] font-black uppercase tracking-[0.24em] text-white/30">Camera Status</div>
+                        <div className="mt-1 text-[11px] font-bold text-white/55">{faceControlStatus}</div>
+                      </div>
+                      <div className="text-right text-[10px] font-mono text-brand-accent/75">
+                        FACE {faceControlSignal.x.toFixed(2)}, {faceControlSignal.y.toFixed(2)}<br />
+                        HAND {cameraHandSignal.x.toFixed(2)}, {cameraHandSignal.y.toFixed(2)}
+                      </div>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                        <div className="h-full rounded-full bg-brand-accent transition-all" style={{ width: `${Math.round(clamp01(faceControlSignal.confidence) * 100)}%` }} />
+                      </div>
+                      <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                        <div className="h-full rounded-full bg-brand-accent/65 transition-all" style={{ width: `${Math.round(clamp01(cameraHandSignal.motion) * 100)}%` }} />
+                      </div>
+                      <div className="text-[9px] font-black uppercase tracking-[0.18em] text-white/28">Hand {cameraHandSignal.last}</div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    {[
+                      [MousePointer2, 'Pointer depth', 'Move pointer/finger to tilt the Aura Stage layers.'],
+                      [ChevronLeft, 'Swipe left', 'Skip to the next track.'],
+                      [ChevronRight, 'Swipe right', 'Restart or go to the previous track.'],
+                      [Hand, '2-finger swipe L/R', 'Two fingers slide left or right to change tracks.'],
+                      [Volume2, '2-finger swipe U/D', 'Two fingers slide up or down to adjust volume.'],
+                      [Fingerprint, 'Pinch in', 'Two-finger pinch to pause playback.'],
+                      [Fingerprint, 'Spread out', 'Two-finger spread to resume playback.'],
+                      [MousePointer2, 'Double-tap', 'Quickly tap twice on empty space to toggle play/pause.'],
+                      [Hand, 'Camera wave L/R', 'Wave your hand left or right for track controls.'],
+                      [Volume2, 'Camera wave U/D', 'Wave your hand up or down for volume control.'],
+                      [Camera, 'Look left/right', 'Turn your head left/right to change tracks (hold to confirm).'],
+                      [Eye, 'Look up/down', 'Tilt your head up/down to adjust volume.'],
+                    ].map(([Icon, title, detail]) => (
+                      <div key={title} className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                        <Icon size={18} className="text-brand-accent" />
+                        <div className="mt-3 text-[11px] font-black uppercase tracking-[0.2em] text-white/80">{title}</div>
+                        <div className="mt-1 text-[11px] leading-5 text-white/42">{detail}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {isFeedbackOpen && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[350] flex items-center justify-center bg-black/82 p-4 backdrop-blur-xl"
+            >
+              <div className="absolute inset-0" onClick={() => !isFeedbackSending && setIsFeedbackOpen(false)} />
+              <motion.div
+                initial={{ scale: 0.96, y: 18 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.96, y: 18 }}
+                className="relative z-10 w-full max-w-2xl overflow-hidden rounded-[2rem] border border-brand-accent/20 bg-[#080c10]/96 shadow-[0_28px_100px_rgba(0,0,0,0.55)]"
+              >
+                <div className="flex items-start justify-between gap-4 border-b border-white/10 bg-black/22 p-5">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/10 text-brand-accent">
+                      <MessageSquare size={18} />
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-black uppercase tracking-[0.3em] text-brand-accent">Send Feedback</div>
+                      <div className="mt-1 text-[11px] uppercase tracking-[0.18em] text-white/40">Issues open on GitHub unless a feedback endpoint is configured.</div>
+                    </div>
+                  </div>
+                  <button onClick={() => setIsFeedbackOpen(false)} disabled={isFeedbackSending} className={sharedModalCloseButtonClass} title="Close">
+                    <X size={16} />
+                  </button>
+                </div>
+                <div className="space-y-4 p-5">
+                  <div className="grid grid-cols-3 gap-2">
+                    {['Problem', 'Improvement', 'Idea'].map((type) => (
+                      <button
+                        key={type}
+                        onClick={() => updateFeedbackDraft({ type })}
+                        className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${feedbackDraft.type === type ? 'border-brand-accent/40 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                      >
+                        {type}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    value={feedbackDraft.summary}
+                    onChange={(e) => updateFeedbackDraft({ summary: e.target.value })}
+                    placeholder="Short title"
+                    className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-white outline-none transition-all placeholder:text-white/24 focus:border-brand-accent/45"
+                  />
+                  <textarea
+                    value={feedbackDraft.details}
+                    onChange={(e) => updateFeedbackDraft({ details: e.target.value })}
+                    placeholder="What happened, or what should be better?"
+                    className="min-h-[150px] w-full resize-none rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm leading-6 text-white outline-none transition-all placeholder:text-white/24 focus:border-brand-accent/45"
+                  />
+                  <input
+                    value={feedbackDraft.contact}
+                    onChange={(e) => updateFeedbackDraft({ contact: e.target.value })}
+                    placeholder="Contact handle/email optional"
+                    className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white outline-none transition-all placeholder:text-white/24 focus:border-brand-accent/45"
+                  />
+                  {feedbackStatus && (
+                    <div className="rounded-2xl border border-white/8 bg-black/24 px-4 py-3 text-[11px] font-semibold leading-5 text-white/58">
+                      {feedbackStatus}
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-white/30">
+                      Build {BUILD_VERSION} // {platform || 'web'}
+                    </div>
+                    <button
+                      onClick={submitFeedback}
+                      disabled={isFeedbackSending || !feedbackDraft.summary.trim() || !feedbackDraft.details.trim()}
+                      className="flex items-center gap-2 rounded-2xl bg-brand-accent px-5 py-3 text-[11px] font-black uppercase tracking-[0.2em] text-black transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-45 disabled:hover:scale-100"
+                    >
+                      {isFeedbackSending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+                      Send
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {isLibraryOverlayOpen && (
+            <StudioLibraryOverlayIsland
+              isOpen={isLibraryOverlayOpen}
+              isStandalone={isStandalone}
+              isVaultCleaning={isVaultCleaning}
+              libraryActionTarget={libraryActionTarget}
+              currentTrack={currentTrack}
+              getProxyUrl={getProxyUrl}
+              libraryOverlayCreateInputRef={libraryOverlayCreateInputRef}
+              newPlaylistName={newPlaylistName}
+              setNewPlaylistName={setNewPlaylistName}
+              setIsCreatingPlaylist={setIsCreatingPlaylist}
+              handleAddToPlaylist={handleAddToPlaylist}
+              pendingLibraryItems={pendingLibraryItems}
+              canAddPendingToVault={canAddPendingToVault}
+              libraryBrowseMode={libraryBrowseMode}
+              libraryModeOptions={libraryModeOptions}
+              setLibraryBrowseMode={setLibraryBrowseMode}
+              librarySearchTerm={librarySearchTerm}
+              setLibrarySearchTerm={setLibrarySearchTerm}
+              librarySongFilterOptions={librarySongFilterOptions}
+              libraryPlaylistFilterOptions={libraryPlaylistFilterOptions}
+              librarySongFilter={librarySongFilter}
+              setLibrarySongFilter={setLibrarySongFilter}
+              libraryFilter={libraryFilter}
+              setLibraryFilter={setLibraryFilter}
+              librarySongSortOptions={librarySongSortOptions}
+              libraryPlaylistSortOptions={libraryPlaylistSortOptions}
+              librarySongSort={librarySongSort}
+              setLibrarySongSort={setLibrarySongSort}
+              librarySort={librarySort}
+              setLibrarySort={setLibrarySort}
+              librarySearchNeedle={librarySearchNeedle}
+              libraryVisibleSongEntries={libraryVisibleSongEntries}
+              libraryVisiblePlaylistNames={libraryVisiblePlaylistNames}
+              showFavoriteLibraryCard={showFavoriteLibraryCard}
+              favoriteTracksList={favoriteTracksList}
+              viewingPlaylist={viewingPlaylist}
+              setViewingPlaylist={setViewingPlaylist}
+              isRenamingPlaylist={isRenamingPlaylist}
+              setIsRenamingPlaylist={setIsRenamingPlaylist}
+              renameValue={renameValue}
+              setRenameValue={setRenameValue}
+              handleRenamePlaylist={handleRenamePlaylist}
+              movePlaylist={movePlaylist}
+              handlePlaylistAddAll={handlePlaylistAddAll}
+              handleDeletePlaylist={handleDeletePlaylist}
+              handleFavoritePlayAll={handleFavoritePlayAll}
+              handleFavoriteAddAll={handleFavoriteAddAll}
+              handleExportVault={handleExportVault}
+              openTrackInspect={openTrackInspect}
+              handleAdd={handleAdd}
+              toggleFavoriteTrack={toggleFavoriteTrack}
+              isTrackFavorite={isTrackFavorite}
+              handleRemoveTrackEverywhere={handleRemoveTrackEverywhere}
+              draggedPlaylistName={draggedPlaylistName}
+              setDraggedPlaylistName={setDraggedPlaylistName}
+              reorderPlaylistByDrag={reorderPlaylistByDrag}
+              playlists={playlists}
+              libraryTrackSort={libraryTrackSort}
+              setLibraryTrackSort={setLibraryTrackSort}
+              handlePlaylistPlayAll={handlePlaylistPlayAll}
+              handleRemoveTrackFromPlaylist={handleRemoveTrackFromPlaylist}
+              focusedVaultName={focusedVaultName}
+              focusedVaultVisibleTracks={focusedVaultVisibleTracks}
+              focusedVaultTracks={focusedVaultTracks}
+              libraryInsights={libraryInsights}
+              isViewingFavorites={isViewingFavorites}
+              getTrackPlayCount={getTrackPlayCount}
+              getTrackLastListenedMs={getTrackLastListenedMs}
+              getTrackAddedMs={getTrackAddedMs}
+              isDoodleMode={isDoodleMode}
+              handleImportVault={handleImportVault}
+              handleGenerateSmartMix={handleGenerateSmartMix}
+              handleCleanVault={handleCleanVault}
+              onClose={closeLibraryOverlay}
+            />
+          )}
+        </AnimatePresence>
+
+
+        {/* GESTURE NOTICE TOAST */}
+        <ToastPortal>
+          <AnimatePresence>
+            {gestureNotice && (
+              <motion.div
+                key={gestureNotice}
+                initial={{ opacity: 0, y: 30, scale: 0.92 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 16, scale: 0.95 }}
+                transition={{ type: 'spring', stiffness: 420, damping: 30 }}
+                className="fixed bottom-24 left-1/2 z-[700] flex -translate-x-1/2 items-center gap-2.5 rounded-2xl border border-brand-accent/30 bg-[#06100d]/94 px-4 py-2.5 text-[10px] font-black uppercase tracking-[0.2em] text-brand-accent shadow-[0_0_28px_rgba(0,255,191,0.18),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl"
+              >
+                <span>{gestureNotice}</span>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </ToastPortal>
+
+        <ToastPortal>
+          <AnimatePresence>
+            {volumeToast && (
+              <motion.div
+                initial={{ opacity: 0, y: 50, scale: 0.9 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 20, scale: 0.9 }}
+                className="fixed bottom-32 left-1/2 -translate-x-1/2 z-[700] bg-brand-dark/95 backdrop-blur-xl border border-brand-accent/30 px-6 py-3 rounded-2xl flex items-center gap-4 shadow-[0_0_30px_rgba(0,255,191,0.2)]"
+              >
+                <div className="text-brand-accent font-black text-[10px] tracking-widest uppercase">Volume</div>
+                <div className="w-48 h-1 bg-white/10 rounded-full overflow-hidden">
+                  <div className="h-full bg-brand-accent shadow-[0_0_10px_#00ffbf]" style={{ width: `${volume * 100}%` }} />
+                </div>
+                <div className="text-white font-mono text-[10px] w-8">{`${Math.round(volume * 100)}%`}</div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </ToastPortal>
+
+        <AnimatePresence>
+          {isPlayerOverlayOpen && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[290] flex items-center justify-center p-4 md:p-6"
+            >
+              <div className="absolute inset-0 bg-black/85 backdrop-blur-xl" onClick={() => setIsPlayerOverlayOpen(false)} />
+              <motion.div
+                initial={{ scale: 0.96, y: 20 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.96, y: 20 }}
+                className="w-full max-w-5xl max-h-[88vh] overflow-hidden rounded-[2rem] border border-brand-accent/20 bg-[#090b0f]/95 shadow-[0_0_90px_rgba(0,255,191,0.14)] relative z-10 flex flex-col"
+              >
+                <div className="p-5 md:p-6 border-b border-white/10 relative">
+                  <div className="text-center px-16">
+                    <div className="text-[9px] font-black uppercase tracking-[0.32em] text-white/30">Player Overlay</div>
+                    {String(currentTrack?.title || 'Nothing Playing').length > 44 ? (
+                      <div className="overlay-marquee mt-1 text-xl md:text-2xl font-black uppercase tracking-tight text-brand-accent">
+                        <div className="overlay-marquee-track">
+                          <span>{currentTrack?.title || 'Nothing Playing'}</span>
+                          <span aria-hidden="true">{currentTrack?.title || 'Nothing Playing'}</span>
+                          <span aria-hidden="true">{currentTrack?.title || 'Nothing Playing'}</span>
+                          <span aria-hidden="true">{currentTrack?.title || 'Nothing Playing'}</span>
                         </div>
+                      </div>
+                    ) : (
+                      <div className="mt-1 text-xl md:text-2xl font-black uppercase tracking-tight text-brand-accent truncate">{currentTrack?.title || 'Nothing Playing'}</div>
+                    )}
+                    <div className="text-[11px] uppercase tracking-[0.22em] text-white/40 truncate mt-1">{currentTrack?.author || 'Awaiting signal'}</div>
+                  </div>
+                  <button onClick={() => setIsPlayerOverlayOpen(false)} className="absolute right-5 md:right-6 top-1/2 -translate-y-1/2 w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close">
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <div className="p-4 md:p-6 overflow-hidden flex-1 min-h-0">
+                  <div className="rounded-[1.5rem] border border-white/8 bg-black/20 p-5 flex flex-col items-center justify-center gap-4 min-h-0 min-w-0 h-full">
+                    <img
+                      src={getProxyUrl(currentTrack?.thumbnail)}
+                      className="w-full max-w-[320px] aspect-square rounded-[1.75rem] object-cover border border-white/10 shadow-[0_0_50px_rgba(0,255,191,0.12)]"
+                      alt=""
+                    />
+                    <div className="text-center min-w-0 w-full">
+                      <div className="text-[9px] uppercase tracking-[0.28em] text-white/25">Now Playing</div>
+                      {String(compactLyric || 'Lyric sync loading…').length > 56 ? (
+                        <div className="overlay-marquee mt-1 text-lg font-black tracking-tight text-white/95">
+                          <div className="overlay-marquee-track">
+                            <span>{compactLyric || 'Lyric sync loading…'}</span>
+                            <span aria-hidden="true">{compactLyric || 'Lyric sync loading…'}</span>
+                            <span aria-hidden="true">{compactLyric || 'Lyric sync loading…'}</span>
+                            <span aria-hidden="true">{compactLyric || 'Lyric sync loading…'}</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mt-1 text-lg font-black tracking-tight text-white/95 truncate">{compactLyric || 'Lyric sync loading…'}</div>
+                      )}
+                      <div className="text-[10px] uppercase tracking-[0.2em] text-white/35 truncate mt-1">{currentTrack?.author || 'No source'}</div>
+                    </div>
+                    <div className="w-full">
+                      <PlaybackProgressIsland
+                        durationMs={currentTrack?.totalDurationMs || currentTrack?.duration || 0}
+                        getPositionMs={getActivePlaybackPositionMs}
+                        onSeek={handleSeek}
+                        accent={trackProgressAccent}
+                        glow={trackProgressGlow}
+                        barClassName="h-2 rounded-full bg-white/10 overflow-hidden cursor-pointer"
+                        fillClassName="h-full w-full bg-brand-accent shadow-[0_0_10px_#00ffbf]"
+                        timeRowClassName="mt-2 flex items-center justify-between text-[10px] font-mono text-white/35"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* GLOBAL BACKGROUND ELEMENTS (NOVA */}
+        {/* OAUTH INTERCEPT OVERLAY */}
+        <AnimatePresence>
+          {oauthPrompt && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-brand-dark/95 backdrop-blur-[30px]"
+            >
+              <motion.div
+                initial={{ scale: 0.95, y: 20 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.95, y: 20 }}
+                className="w-full max-w-lg glass-card bg-brand-dark/80 border-brand-accent/40 rounded-3xl flex flex-col items-center justify-center overflow-hidden relative z-10 px-8 py-10 text-center"
+              >
+                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-transparent via-brand-accent to-transparent opacity-50" />
+
+                <div className="w-16 h-16 rounded-full bg-brand-accent/10 border border-brand-accent/30 flex items-center justify-center mb-6 shadow-[0_0_40px_rgba(0,255,191,0.2)]">
+                  <Lock size={28} className="text-brand-accent" />
+                </div>
+
+                <h2 className="text-2xl font-black uppercase tracking-tighter text-white mb-2">Authentication Required</h2>
+                <p className="text-brand-text-dim text-sm mb-8 leading-relaxed max-w-sm">
+                  YouTube is temporarily blocking anonymous requests from your network. Please upload a valid `cookies.txt` file to verify your session and unblock downloads.
+                </p>
+
+                <div className="flex flex-col w-full gap-3">
+                  <button
+                    onClick={handleImportCookies}
+                    className="w-full py-4 rounded-xl bg-brand-accent text-brand-dark font-black tracking-[0.2em] uppercase hover:bg-white hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-3"
+                  >
+                    <Upload size={18} /> Upload cookies.txt
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (isStandalone && window.aether?.openExternal) {
+                        window.aether.openExternal("https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies");
+                      } else {
+                        window.open("https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies", '_blank');
+                      }
+                    }}
+                    className="w-full py-2 rounded-xl bg-transparent text-brand-accent/70 font-bold tracking-[0.1em] uppercase hover:text-brand-accent transition-all text-[11px] mb-2"
+                  >
+                    How to export cookies?
+                  </button>
+                  <button
+                    onClick={() => setOauthPrompt(null)}
+                    className="w-full py-3 rounded-xl bg-transparent border border-white/10 text-white/50 font-bold tracking-[0.2em] uppercase hover:bg-white/5 hover:text-white transition-all text-sm"
+                  >
+                    Dismiss Overlay
+                  </button>
+                </div>
+
+                <div className="mt-8 text-[10px] text-white/30 uppercase tracking-widest flex items-center justify-center gap-2">
+                  <AlertTriangle size={12} className="text-yellow-500/50" /> Downloads are paused until authentication
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* FULL DISCOVERY OVERLAY */}
+        <AnimatePresence>
+          {isViewingFullDiscovery && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[250] flex items-center justify-center p-4"
+            >
+              <div className="absolute inset-0 bg-brand-dark/90 backdrop-blur-[20px]" onClick={() => setIsViewingFullDiscovery(false)} />
+              <motion.div
+                initial={{ scale: 0.95, y: 20 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.95, y: 20 }}
+                className="w-full max-w-2xl max-h-[80vh] glass-card bg-brand-dark/60 border-brand-accent/20 rounded-3xl flex flex-col overflow-hidden relative z-10"
+              >
+                <div className="flex items-center justify-between p-6 border-b border-brand-accent/10">
+                  <div className="flex items-center gap-3">
+                    <Globe size={20} className="text-brand-accent" />
+                    <div>
+                      <h2 className="text-lg font-black uppercase tracking-tighter text-white">Neural Discovery</h2>
+                      <p className="text-brand-accent text-xs font-bold tracking-widest uppercase opacity-60">{discoveryItems.length} {discoveryModeLabel}{discoveryItems.length !== 1 ? 'S' : ''}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {(searchResults.length > 0 || hasCompletedSearch) && (
+                      <button
+                        onClick={clearDiscoveryResults}
+                        className="px-3 py-2 rounded-lg bg-white/5 hover:bg-red-500/20 text-[10px] font-black uppercase tracking-[0.22em] text-white/50 hover:text-red-400 transition-all"
+                      >
+                        Flush
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setIsViewingFullDiscovery(false)}
+                      className="p-2 rounded-lg bg-white/5 hover:bg-red-500/20 text-white/50 hover:text-red-500 transition-all"
+                    >
+                      <X size={18} />
+                    </button>
+                  </div>
+                </div>
+                <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
+                  <div className="flex flex-col gap-2">
+                    {!isFullDiscoveryContentReady ? (
+                      <div className="h-40 flex flex-col items-center justify-center gap-3 text-center opacity-40">
+                        <Loader2 size={26} className="animate-spin text-brand-accent/60" />
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/28">Preparing Discovery</div>
+                      </div>
+                    ) : discoveryItems.length > 0 ? discoveryItems.map((track, idx) => (
+                      <motion.div
+                        key={`discovery-full-${track.id}-${idx}`}
+                        className="performance-list-item group glass-card p-4 flex items-center gap-4 rounded-xl transition-all bg-white/5 border border-white/10 hover:border-brand-accent/30 hover:bg-brand-accent/5"
+                      >
+                        <div className="text-brand-accent font-black text-sm w-6">{idx + 1}</div>
+                        <img src={getProxyUrl(track.thumbnail)} className="w-10 h-10 rounded-lg object-cover" alt="" />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[12px] font-black truncate uppercase tracking-widest">{track.title}</div>
+                          <div className="text-[10px] font-bold text-white/40 truncate uppercase mt-1">{track.author}</div>
+                        </div>
+                        <button
+                          onClick={() => openTrackInspect(track, isSearchActive ? 'discovery' : 'recommendation')}
+                          className="opacity-0 group-hover:opacity-100 p-2 rounded-lg bg-white/5 hover:bg-brand-accent/20 hover:text-brand-accent text-white/45 transition-all"
+                          title="Inspect Track"
+                        >
+                          <Eye size={14} />
+                        </button>
+                        <button
+                          onClick={() => handleAdd(track)}
+                          className="opacity-0 group-hover:opacity-100 p-2 rounded-lg bg-brand-accent/20 hover:bg-brand-accent/40 text-brand-accent transition-all"
+                          title="Add to Queue"
+                        >
+                          <Plus size={14} />
+                        </button>
+                        <button
+                          onClick={() => toggleFavoriteTrack(track)}
+                          className={`opacity-0 group-hover:opacity-100 p-2 rounded-lg transition-all ${isTrackFavorite(track) ? 'bg-rose-400/15 text-rose-300' : 'bg-white/5 hover:bg-rose-400/15 hover:text-rose-300 text-white/45'}`}
+                          title={isTrackFavorite(track) ? 'Remove from Favorites' : 'Add to Favorites'}
+                        >
+                          <Heart size={14} fill={isTrackFavorite(track) ? 'currentColor' : 'none'} />
+                        </button>
+                        <button
+                          onClick={() => openLibraryOverlay({ type: 'track', items: [track] })}
+                          className="opacity-0 group-hover:opacity-100 p-2 rounded-lg bg-white/5 hover:bg-brand-accent/20 hover:text-brand-accent text-white/45 transition-all"
+                          title="Save to Vault"
+                        >
+                          <HardDrive size={14} />
+                        </button>
+                      </motion.div>
+                    )) : hasCompletedSearch ? (
+                      <div className="h-40 flex flex-col items-center justify-center gap-3 text-center">
+                        <Search size={28} className="text-brand-accent/60" strokeWidth={1.4} />
+                        <div>
+                          <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/55">No Results Found</div>
+                          <div className="mt-2 text-[9px] font-bold uppercase tracking-[0.22em] text-white/30">Flush discovery to return to the default panel state.</div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="h-40 flex flex-col items-center justify-center gap-3 text-center opacity-40">
+                        <Search size={28} className="text-white/30" strokeWidth={1.2} />
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/28">Awaiting Content</div>
                       </div>
                     )}
                   </div>
-                  </motion.div>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-                  <AnimatePresence>
-                    {showVisualLyricOverlay && (
+        {/* FULL QUEUE OVERLAY */}
+        <AnimatePresence>
+          {isViewingFullQueue && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[250] flex items-center justify-center p-4"
+            >
+              <div className="absolute inset-0 bg-brand-dark/90 backdrop-blur-[20px]" onClick={() => setIsViewingFullQueue(false)} />
+              <motion.div
+                initial={{ scale: 0.95, y: 20 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.95, y: 20 }}
+                className="w-full max-w-2xl max-h-[80vh] glass-card bg-brand-dark/60 border-brand-accent/20 rounded-3xl flex flex-col overflow-hidden relative z-10"
+              >
+                <div className="flex items-center justify-between p-6 border-b border-brand-accent/10">
+                  <div className="flex items-center gap-3">
+                    <ListMusic size={20} className="text-brand-accent" />
+                    <div>
+                      <h2 className="text-lg font-black uppercase tracking-tighter text-white">Queue Buffer</h2>
+                      <p className="text-brand-accent text-xs font-bold tracking-widest uppercase opacity-60">{queue.length} TRACK{queue.length !== 1 ? 'S' : ''}</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setIsViewingFullQueue(false)}
+                    className="p-2 rounded-lg bg-white/5 hover:bg-red-500/20 text-white/50 hover:text-red-500 transition-all"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+                <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
+                  <div className="flex flex-col gap-2">
+                    {!isFullQueueContentReady ? (
+                      <div className="h-40 flex flex-col items-center justify-center gap-3 text-center opacity-40">
+                        <Loader2 size={26} className="animate-spin text-brand-accent/60" />
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/28">Preparing Queue</div>
+                      </div>
+                    ) : queue.map((track, idx) => {
+                      const warmupId = resolveWarmupTrackId(track);
+                      const isDownloaded = warmupId ? downloadedTracks.includes(warmupId) : downloadedTracks.includes(track.id);
+                      return (
+                        <motion.div
+                          key={`${track.id}-${idx}`}
+                          draggable
+                          onDragStart={(e) => {
+                            setDraggedQueueIndex(idx);
+                            e.dataTransfer.effectAllowed = 'move';
+                            e.dataTransfer.setData('text/plain', String(idx));
+                          }}
+                          onDragEnd={() => setDraggedQueueIndex(null)}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = 'move';
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            const droppedIndex = Number(e.dataTransfer.getData('text/plain'));
+                            reorderQueueByDrag(idx, Number.isInteger(droppedIndex) ? droppedIndex : draggedQueueIndex);
+                          }}
+                          className={`performance-list-item group glass-card p-4 flex items-center gap-4 rounded-xl transition-all cursor-move border ${draggedQueueIndex === idx ? 'bg-brand-accent/15 border-brand-accent/45' : idx === 0 ? 'bg-brand-accent/10 border-brand-accent/30 shadow-[0_0_20px_rgba(0,255,191,0.2)]' : 'bg-white/5 border-white/10 hover:border-brand-accent/20'}`}
+                        >
+                          <div className="text-brand-accent font-black text-sm w-6">{idx + 1}</div>
+                          <img src={getProxyUrl(track.thumbnail)} className="w-10 h-10 rounded-lg object-cover" alt="" />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[12px] font-black truncate uppercase tracking-widest">{track.title}</div>
+                            <div className="text-[10px] font-bold text-white/40 truncate uppercase mt-1">{track.author}</div>
+                          </div>
+                          {isDownloaded && (
+                            <span className="text-[8px] font-black uppercase tracking-widest text-red-500 border border-red-500/50 px-2 py-0.5 rounded-full">READY</span>
+                          )}
+                          {idx !== 0 && (
+                            <button
+                              onClick={() => {
+                                const newQueue = [...queue];
+                                const [removed] = newQueue.splice(idx, 1);
+                                newQueue.splice(idx - 1, 0, removed);
+                                setQueue(newQueue);
+                              }}
+                              className="opacity-0 group-hover:opacity-100 p-2 hover:text-brand-accent transition-all"
+                              title="Move up"
+                            >
+                              <ChevronLeft size={14} />
+                            </button>
+                          )}
+                          {idx !== queue.length - 1 && (
+                            <button
+                              onClick={() => {
+                                const newQueue = [...queue];
+                                const [removed] = newQueue.splice(idx, 1);
+                                newQueue.splice(idx + 1, 0, removed);
+                                setQueue(newQueue);
+                              }}
+                              className="opacity-0 group-hover:opacity-100 p-2 hover:text-brand-accent transition-all"
+                              title="Move down"
+                            >
+                              <ChevronRight size={14} />
+                            </button>
+                          )}
+                          {idx !== 0 && (
+                            <button
+                              onClick={() => setQueue(queue.filter((_, i) => i !== idx))}
+                              className="opacity-0 group-hover:opacity-100 p-2 hover:text-red-500 transition-all"
+                              title="Remove"
+                            >
+                              <Trash2 size={14} className="text-red-500/40 hover:text-red-500" />
+                            </button>
+                          )}
+                        </motion.div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* FULL PLAYLIST OVERLAY */}
+        <AnimatePresence>
+          {isViewingFullPlaylist && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[250] flex items-center justify-center p-4"
+            >
+              <div className="absolute inset-0 bg-brand-dark/90 backdrop-blur-[20px]" onClick={() => setIsViewingFullPlaylist(null)} />
+              <motion.div
+                initial={{ scale: 0.95, y: 20 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.95, y: 20 }}
+                className="w-full max-w-2xl max-h-[80vh] glass-card bg-brand-dark/60 border-brand-accent/20 rounded-3xl flex flex-col overflow-hidden relative z-10"
+              >
+                <div className="flex items-center justify-between p-6 border-b border-brand-accent/10">
+                  <div className="flex items-center gap-3">
+                    <ListMusic size={20} className="text-brand-accent" />
+                    <div>
+                      <h2 className="text-lg font-black uppercase tracking-tighter text-white">Vault: {isViewingFullPlaylist}</h2>
+                      <div className="flex gap-2 items-center">
+                        <p className="text-brand-accent text-xs font-bold tracking-widest uppercase opacity-60">{(playlists[isViewingFullPlaylist] || []).length} TRACK{(playlists[isViewingFullPlaylist] || []).length !== 1 ? 'S' : ''}</p>
+                        <button
+                          onClick={() => {
+                            const list = [...(playlists[isViewingFullPlaylist] || [])];
+                            const shuffled = list.sort(() => Math.random() - 0.5);
+                            setQueue(shuffled);
+                            seekActivePlaybackTo(0);
+                            setIsPlaying(true);
+                            setIsViewingFullPlaylist(null);
+                            closeHeaderSurfaces();
+                          }}
+                          className="px-2 py-0.5 rounded border border-brand-accent/30 text-brand-accent text-[9px] hover:bg-brand-accent/20 transition-all font-black uppercase flex items-center gap-1"
+                        >
+                          <Shuffle size={10} /> Play Shuffled
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setIsViewingFullPlaylist(null)}
+                    className="p-2 rounded-lg bg-white/5 hover:bg-red-500/20 text-white/50 hover:text-red-500 transition-all"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+                <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
+                  <div className="flex flex-col gap-2">
+                    {!isFullPlaylistContentReady ? (
+                      <div className="h-40 flex flex-col items-center justify-center gap-3 text-center opacity-40">
+                        <Loader2 size={26} className="animate-spin text-brand-accent/60" />
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/28">Preparing Vault</div>
+                      </div>
+                    ) : (playlists[isViewingFullPlaylist] || []).map((track, idx) => (
                       <motion.div
-                        key={`visual-lyric-${activeLyricIndex}-${visualStageLyric}`}
-                        initial={{ opacity: 0, y: 18 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: 12 }}
-                        transition={{ duration: 0.24, ease: 'easeOut' }}
-                        className={`pointer-events-none absolute left-0 right-0 z-20 ${visualLyricOverlayBottomClass}`}
+                        key={`${isViewingFullPlaylist}-${track.id}-${idx}`}
+                        className="performance-list-item group glass-card p-4 flex items-center gap-4 rounded-xl transition-all bg-white/5 border border-white/10 hover:border-brand-accent/30 hover:bg-brand-accent/5"
                       >
-                        <div className={`mx-auto w-full ${videoMode === 'cinema' ? 'px-6 pb-8 md:px-10 md:pb-10' : 'px-4 pb-4'}`}>
-                          <div className={`mx-auto ${videoMode === 'cinema' ? 'max-w-[min(84vw,1040px)]' : 'max-w-[92%]'}`}>
-                            <div className={`rounded-[2rem] bg-gradient-to-t from-black/52 via-black/14 to-transparent px-5 py-4 ${videoMode === 'cinema' ? 'md:px-8 md:py-6' : 'md:px-6'}`}>
-                              <div className={`text-center font-black leading-tight text-white drop-shadow-[0_6px_28px_rgba(0,0,0,0.72)] ${videoMode === 'cinema' ? 'text-lg md:text-4xl' : 'text-base md:text-xl'}`}>
-                                {visualStageLyric}
+                        <div className="text-brand-accent font-black text-sm w-6">{idx + 1}</div>
+                        <img src={getProxyUrl(track.thumbnail)} className="w-10 h-10 rounded-lg object-cover" alt="" />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[12px] font-black truncate uppercase tracking-widest">{track.title}</div>
+                          <div className="text-[10px] font-bold text-white/40 truncate uppercase mt-1">{track.author}</div>
+                        </div>
+                        <button
+                          onClick={() => handleAdd(track)}
+                          className="opacity-0 group-hover:opacity-100 p-2 rounded-lg bg-brand-accent/20 hover:bg-brand-accent/40 text-brand-accent transition-all"
+                          title="Add to Queue"
+                        >
+                          <Plus size={14} />
+                        </button>
+                        <button
+                          onClick={() => handleRemoveFromPlaylist(isViewingFullPlaylist, idx)}
+                          className="opacity-0 group-hover:opacity-100 p-2 hover:text-red-500 transition-all"
+                          title="Remove from Vault"
+                        >
+                          <Trash2 size={14} className="text-red-500/40 hover:text-red-500" />
+                        </button>
+                      </motion.div>
+                    ))}
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        <div className="fixed inset-0 pointer-events-none z-[-2] overflow-hidden select-none bg-black">
+          {/* Baseline Neural Glow (Optimized) */}
+          <div className="absolute inset-0 bg-brand-accent/5 backdrop-blur-[60px] animate-pulse" />
+
+          {/* Global Neural Aura (Pulse) - NOVA Optimized */}
+          <div className="absolute inset-0 flex items-center justify-center scale-150 transform-gpu will-change-transform">
+            <canvas
+              ref={pulseCanvasRef}
+              width={400}
+              height={400}
+              className={`aether-visualizer-canvas w-[800px] h-[800px] transition-opacity duration-1000 ${visualizerMode === 'pulse' ? 'opacity-55' : 'opacity-0'}`}
+            />
+          </div>
+          <div className="absolute inset-0 bg-black/60" />
+        </div>
+
+
+
+
+        {/* ── DUAL MODE: slide-in video panel ── */}
+        <AnimatePresence>
+          {showVisualStage && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.985 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.985 }}
+              transition={{ duration: 0.28, ease: 'easeOut' }}
+              className={`fixed ${dualVisualStageZClass} pointer-events-none transition-all duration-500 ease-out ${videoMode === 'cinema' ? 'inset-0' : ''}`}
+              style={videoMode === 'cinema'
+                ? undefined
+                : isVerticalStack
+                  ? { left: 16, right: 16, bottom: 16, height: '40vh' }
+                  : { top: chromeTopOffset, right: 16, bottom: 16, width: dualVisualStageWidth }}
+              onMouseMove={handleVisualStagePointerActivity}
+              onPointerDown={handleVisualStagePointerActivity}
+            >
+              <div className={`absolute inset-0 transition-all duration-700 delay-100 ${videoMode === 'cinema' ? (isVideoReady ? 'bg-black/96 backdrop-blur-md' : 'bg-transparent') : 'bg-transparent'}`} />
+
+              <div className="relative h-full w-full pointer-events-auto">
+                <div
+                  className={`relative flex h-full w-full overflow-hidden transition-all duration-1000 ${!isVideoReady && videoMode ? 'opacity-0 scale-[0.98]' : 'opacity-100 scale-100'
+                    } ${videoMode === 'cinema' ? 'rounded-none bg-black' : 'rounded-[2.25rem] border border-white/[0.08] bg-[#06090d]/92 backdrop-blur-[28px] shadow-[0_28px_90px_rgba(0,0,0,0.5)]'}`}
+                >
+                  <div className={`relative flex-1 min-h-0 ${videoMode === 'cinema' ? '' : 'm-3 rounded-[1.8rem] overflow-hidden border border-white/[0.08] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.02)]'}`}>
+                    {currentTrack?.thumbnail && (
+                      <img
+                        src={getProxyUrl(currentTrack.thumbnail)}
+                        alt=""
+                        className="absolute inset-0 h-full w-full object-cover scale-110 blur-[40px] opacity-35"
+                      />
+                    )}
+                    <div className="absolute inset-0 bg-[#020406]" />
+                    <div
+                      className="absolute inset-0"
+                      style={{
+                        background: `radial-gradient(120% 120% at 50% 0%, ${themeColor}20 0%, rgba(0,0,0,0) 48%), linear-gradient(180deg, rgba(5,7,10,0.18) 0%, rgba(5,7,10,0.52) 58%, rgba(5,7,10,0.92) 100%)`,
+                      }}
+                    />
+
+                    <video
+                      ref={(el) => { localVideoRef.current = el; }}
+                      playsInline
+                      onCanPlay={() => setIsVideoReady(true)}
+                      className={`absolute inset-0 h-full w-full ${visualVideoFit === 'cover' ? 'object-cover' : 'object-contain'}`}
+                    />
+
+                    {isAudioBuffering && (
+                      <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/45 backdrop-blur-sm">
+                        <div className="rounded-full border border-white/10 bg-black/45 p-4 shadow-[0_0_40px_rgba(0,0,0,0.35)]">
+                          <Loader2 size={videoMode === 'cinema' ? 34 : 28} className="animate-spin text-brand-accent" />
+                        </div>
+                      </div>
+                    )}
+
+                    <motion.div
+                      animate={{ opacity: visualStageHeaderVisible ? 1 : 0, y: visualStageHeaderVisible ? 0 : -14 }}
+                      transition={{ duration: 0.22 }}
+                      className="absolute left-0 right-0 top-0 z-20 p-4 md:p-5"
+                      style={{ pointerEvents: visualStageHeaderVisible ? 'auto' : 'none' }}
+                    >
+                      <div className="mx-auto flex w-full flex-col gap-3 rounded-[1.4rem] border border-white/10 bg-black/38 px-3 py-3 backdrop-blur-2xl shadow-[0_18px_60px_rgba(0,0,0,0.25)] md:px-4">
+                        <div className="flex w-full items-start justify-between gap-2 md:gap-4">
+                          <div className="flex min-w-0 flex-1 items-start gap-2 md:gap-3">
+                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/12 text-brand-accent shadow-[0_0_20px_rgba(0,255,191,0.15)]">
+                              {videoMode === 'cinema' ? <Clapperboard size={15} /> : <Columns2 size={15} />}
+                            </div>
+
+                            {videoMode === 'cinema' ? (
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.24em]">
+                                  <span className="text-brand-accent/85">Cinema Mode</span>
+                                </div>
+                                {visualStageTitleMarquee ? (
+                                  <div className="overlay-marquee mt-1 font-black uppercase tracking-tight text-white/95 text-sm md:text-lg max-w-[min(60vw,720px)]">
+                                    <div className="overlay-marquee-track">
+                                      <span>{visualStageTitle}</span>
+                                      <span aria-hidden="true">{visualStageTitle}</span>
+                                      <span aria-hidden="true">{visualStageTitle}</span>
+                                      <span aria-hidden="true">{visualStageTitle}</span>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="mt-1 font-black uppercase tracking-tight text-white/95 line-clamp-2 text-sm md:text-lg max-w-[min(60vw,720px)]">
+                                    {visualStageTitle}
+                                  </div>
+                                )}
+                                <div className="mt-1 text-[10px] font-black uppercase tracking-[0.26em] text-brand-accent/72 truncate">
+                                  {currentTrack.author}
+                                </div>
                               </div>
-                              {visualStageNextLyric && (
-                                <div className={`mx-auto mt-2 max-w-3xl text-center font-semibold text-white/58 drop-shadow-[0_4px_16px_rgba(0,0,0,0.58)] line-clamp-2 ${videoMode === 'cinema' ? 'text-sm md:text-lg' : 'text-xs md:text-sm'}`}>
-                                  {visualStageNextLyric}
+                            ) : (
+                              <div className="flex shrink-0 items-center justify-center text-[9px] font-black uppercase tracking-[0.16em] h-9">
+                                <span className="text-brand-accent/85">Dual Visual</span>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 max-w-[68%]">
+                            <button
+                              onClick={() => setVisualVideoFit((prev) => (prev === 'contain' ? 'cover' : 'contain'))}
+                              className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border transition-all ${visualVideoFit === 'contain' ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                              title={visualVideoFit === 'contain' ? 'Fill frame' : 'Show full frame'}
+                            >
+                              <Monitor size={15} />
+                            </button>
+                            <div className="relative overflow-visible" ref={qualityDropdownRef}>
+                              <button
+                                onClick={() => setIsQualityDropdownOpen((p) => !p)}
+                                className={`flex h-10 min-w-16 shrink-0 items-center justify-center rounded-2xl border px-3 transition-all ${isQualityDropdownOpen ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent shadow-[0_0_12px_rgba(0,255,191,0.1)]' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                                title="Video Quality"
+                              >
+                                <span className="text-[9px] font-black uppercase tracking-[0.04em]">{videoQuality}p</span>
+                              </button>
+
+                              {isQualityDropdownOpen && (
+                                <div className="absolute right-0 top-full mt-2 w-28 rounded-2xl border border-white/12 bg-[#080c10]/95 backdrop-blur-2xl p-1.5 shadow-[0_12px_40px_rgba(0,0,0,0.45)] z-50">
+                                  {['480', '720', '1080'].map((q) => (
+                                    <button
+                                      key={`quality-${q}`}
+                                      onClick={() => {
+                                        setVideoQuality(q);
+                                        setIsQualityDropdownOpen(false);
+                                      }}
+                                      className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left transition-all ${videoQuality === q ? 'bg-brand-accent/12 text-brand-accent' : 'text-white/60 hover:bg-white/5 hover:text-white'}`}
+                                    >
+                                      <span className="text-[10px] font-black uppercase tracking-[0.1em]">{q}p</span>
+                                      {videoQuality === q && <div className="h-1.5 w-1.5 rounded-full bg-brand-accent shadow-[0_0_8px_rgba(0,255,191,0.5)]" />}
+                                    </button>
+                                  ))}
                                 </div>
                               )}
                             </div>
-                          </div>
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-
-                  <motion.div
-                    animate={{ opacity: visualStageFooterVisible ? 1 : 0, y: visualStageFooterVisible ? 0 : 18 }}
-                    transition={{ duration: 0.22 }}
-                    className="absolute bottom-0 left-0 right-0 z-20"
-                    style={{ pointerEvents: visualStageFooterVisible ? 'auto' : 'none' }}
-                  >
-                    <div className={`mx-auto w-full ${videoMode === 'cinema' ? 'px-6 pb-8 pt-20 md:px-10 md:pb-10' : 'px-4 pb-4 pt-20'}`}>
-                      <div className="rounded-[1.6rem] border border-white/10 bg-black/40 px-4 py-4 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.28)] md:px-5">
-                        <div>
-                          <div className="mb-2 flex items-center justify-between text-[10px] font-black uppercase tracking-[0.22em] text-white/38">
-                            <div className="flex items-center gap-2">
-                              <BookOpen size={12} className="text-brand-accent/70" />
-                              <span>{showVisualLyricOverlay ? 'Lyric overlay' : (videoMode === 'dual' ? 'Lyrics on left panel' : 'Visual Stream')}</span>
-                            </div>
-                            <span className="font-mono tracking-[0.16em]">{videoMode === 'cinema' ? (visualControlsPinned ? 'Overlay pinned' : 'Controls fade on idle') : (visualVideoFit === 'cover' ? 'Fill frame' : 'Full frame')}</span>
-                          </div>
-
-                          <PlaybackProgressIsland
-                            durationMs={currentTrack.totalDurationMs || currentTrack.duration || 0}
-                            getPositionMs={getActivePlaybackPositionMs}
-                            onSeek={handleSeek}
-                            accent={trackProgressAccent}
-                            glow={trackProgressGlow}
-                            barClassName="h-1.5 w-full cursor-pointer overflow-hidden rounded-full bg-white/12"
-                            timeRowClassName="mt-2 flex items-center justify-between text-[10px] font-mono text-white/42"
-                          />
-                        </div>
-
-                        {videoMode === 'cinema' && (
-                          <div className="flex items-center justify-center gap-5 pt-5">
-                            <button onClick={() => handleControl('previous')} className="p-2 text-white/60 transition-colors hover:text-white active:scale-90">
-                              <Rewind size={22} fill="currentColor" />
+                            {videoMode === 'cinema' && (
+                              <button
+                                onClick={() => setVisualControlsPinned((prev) => !prev)}
+                                className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border transition-all ${visualControlsPinned ? 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/5 text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                                title={visualControlsPinned ? 'Unpin controls' : 'Pin controls'}
+                              >
+                                <Lock size={15} />
+                              </button>
+                            )}
+                            <button
+                              onClick={() => switchVideoMode(videoMode === 'cinema' ? 'dual' : 'cinema')}
+                              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/55 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
+                              title={videoMode === 'cinema' ? 'Back to Dual View' : 'Expand to Cinema'}
+                            >
+                              {videoMode === 'cinema' ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
                             </button>
                             <button
-                              onClick={() => handleControl(isPlaying ? 'pause' : 'resume')}
-                              className="flex h-14 w-14 items-center justify-center rounded-2xl text-black transition-all active:scale-95 hover:scale-105"
-                              style={{ background: trackControlAccent, boxShadow: `0 0 26px ${trackControlGlow}` }}
+                              onClick={() => exitVideoMode({ reason: 'video_close_button' })}
+                              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/55 transition-all hover:border-white/25 hover:text-white"
+                              title={videoMode === 'cinema' ? 'Exit Cinema (Esc)' : 'Return to Audio'}
                             >
-                              {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" className="ml-1" />}
+                              <X size={16} />
                             </button>
-                            <button onClick={() => handleControl('skip')} className="p-2 text-white/60 transition-colors hover:text-white active:scale-90">
-                              <FastForward size={22} fill="currentColor" />
-                            </button>
+                          </div>
+                        </div>
+                        {videoMode === 'dual' && visualStageHeaderVisible && (
+                          <div className="min-w-0 w-full pl-1">
+                            {visualStageTitleMarquee ? (
+                              <div className="overlay-marquee font-black uppercase tracking-tight text-white/95 text-sm md:text-base">
+                                <div className="overlay-marquee-track">
+                                  <span>{visualStageTitle}</span>
+                                  <span aria-hidden="true">{visualStageTitle}</span>
+                                  <span aria-hidden="true">{visualStageTitle}</span>
+                                  <span aria-hidden="true">{visualStageTitle}</span>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="font-black uppercase tracking-tight text-white/95 line-clamp-2 text-sm md:text-base">
+                                {visualStageTitle}
+                              </div>
+                            )}
+                            <div className="mt-1 text-[10px] font-black uppercase tracking-[0.26em] text-brand-accent/72 truncate">
+                              {currentTrack.author}
+                            </div>
                           </div>
                         )}
                       </div>
-                    </div>
-                  </motion.div>
+                    </motion.div>
+
+                    <AnimatePresence>
+                      {showVisualLyricOverlay && (
+                        <motion.div
+                          key={`visual-lyric-${activeLyricIndex}-${visualStageLyric}`}
+                          initial={{ opacity: 0, y: 18 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: 12 }}
+                          transition={{ duration: 0.24, ease: 'easeOut' }}
+                          className={`pointer-events-none absolute left-0 right-0 z-20 ${visualLyricOverlayBottomClass}`}
+                        >
+                          <div className={`mx-auto w-full ${videoMode === 'cinema' ? 'px-6 pb-8 md:px-10 md:pb-10' : 'px-4 pb-4'}`}>
+                            <div className={`mx-auto ${videoMode === 'cinema' ? 'max-w-[min(84vw,1040px)]' : 'max-w-[92%]'}`}>
+                              <div className={`rounded-[2rem] bg-gradient-to-t from-black/52 via-black/14 to-transparent px-5 py-4 ${videoMode === 'cinema' ? 'md:px-8 md:py-6' : 'md:px-6'}`}>
+                                <div className={`text-center font-black leading-tight text-white drop-shadow-[0_6px_28px_rgba(0,0,0,0.72)] ${videoMode === 'cinema' ? 'text-lg md:text-4xl' : 'text-base md:text-xl'}`}>
+                                  {visualStageLyric}
+                                </div>
+                                {visualStageNextLyric && (
+                                  <div className={`mx-auto mt-2 max-w-3xl text-center font-semibold text-white/58 drop-shadow-[0_4px_16px_rgba(0,0,0,0.58)] line-clamp-2 ${videoMode === 'cinema' ? 'text-sm md:text-lg' : 'text-xs md:text-sm'}`}>
+                                    {visualStageNextLyric}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
+                    <motion.div
+                      animate={{ opacity: visualStageFooterVisible ? 1 : 0, y: visualStageFooterVisible ? 0 : 18 }}
+                      transition={{ duration: 0.22 }}
+                      className="absolute bottom-0 left-0 right-0 z-20"
+                      style={{ pointerEvents: visualStageFooterVisible ? 'auto' : 'none' }}
+                    >
+                      <div className={`mx-auto w-full ${videoMode === 'cinema' ? 'px-6 pb-8 pt-20 md:px-10 md:pb-10' : 'px-4 pb-4 pt-20'}`}>
+                        <div className="rounded-[1.6rem] border border-white/10 bg-black/40 px-4 py-4 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.28)] md:px-5">
+                          <div>
+                            <div className="mb-2 flex items-center justify-between text-[10px] font-black uppercase tracking-[0.22em] text-white/38">
+                              <div className="flex items-center gap-2">
+                                <BookOpen size={12} className="text-brand-accent/70" />
+                                <span>{showVisualLyricOverlay ? 'Lyric overlay' : (videoMode === 'dual' ? 'Lyrics on left panel' : 'Visual Stream')}</span>
+                              </div>
+                              <span className="font-mono tracking-[0.16em]">{videoMode === 'cinema' ? (visualControlsPinned ? 'Overlay pinned' : 'Controls fade on idle') : (visualVideoFit === 'cover' ? 'Fill frame' : 'Full frame')}</span>
+                            </div>
+
+                            <PlaybackProgressIsland
+                              durationMs={currentTrack.totalDurationMs || currentTrack.duration || 0}
+                              getPositionMs={getActivePlaybackPositionMs}
+                              onSeek={handleSeek}
+                              accent={trackProgressAccent}
+                              glow={trackProgressGlow}
+                              barClassName="h-1.5 w-full cursor-pointer overflow-hidden rounded-full bg-white/12"
+                              timeRowClassName="mt-2 flex items-center justify-between text-[10px] font-mono text-white/42"
+                            />
+                          </div>
+
+                          {videoMode === 'cinema' && (
+                            <div className="flex items-center justify-center gap-5 pt-5">
+                              <button onClick={() => handleControl('previous')} className="p-2 text-white/60 transition-colors hover:text-white active:scale-90">
+                                <Rewind size={22} fill="currentColor" />
+                              </button>
+                              <button
+                                onClick={() => handleControl(isPlaying ? 'pause' : 'resume')}
+                                className="flex h-14 w-14 items-center justify-center rounded-2xl text-black transition-all active:scale-95 hover:scale-105"
+                                style={{ background: trackControlAccent, boxShadow: `0 0 26px ${trackControlGlow}` }}
+                              >
+                                {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" className="ml-1" />}
+                              </button>
+                              <button onClick={() => handleControl('skip')} className="p-2 text-white/60 transition-colors hover:text-white active:scale-90">
+                                <FastForward size={22} fill="currentColor" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </motion.div>
+                  </div>
                 </div>
               </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-    </div>
+      </div>
     </MotionConfig>
   );
 }

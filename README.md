@@ -1,150 +1,224 @@
 # Aether
 
-Aether is a desktop music app with a local backend, lyrics, queue handling, offline playback, and a visual aura mode. The idea is simple: download it, open it, and start listening.
+<p align="center">
+  <strong>A desktop music studio for playback, lyrics, queues, visual modes, local libraries, and listening intelligence.</strong>
+</p>
 
-## What Aether includes
+<p align="center">
+  <a href="https://github.com/GSUS2K/Aether-Studio/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/GSUS2K/Aether-Studio?style=for-the-badge&label=release"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/GSUS2K/Aether-Studio?style=for-the-badge"></a>
+  <a href="https://github.com/GSUS2K/Aether-Studio/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/GSUS2K/Aether-Studio?style=for-the-badge"></a>
+  <a href="https://aetherstudio.me"><img alt="Website" src="https://img.shields.io/badge/website-aetherstudio.me-00ffbf?style=for-the-badge"></a>
+</p>
 
-- Desktop app for macOS, Windows, and Linux
-- Local backend for search, playback, lyrics, and queue control
-- Aura mode visualizer with beat-reactive effects
-- Offline playback helpers and media downloads
-- Discord Rich Presence support
+<p align="center">
+  <a href="#download">Download</a>
+  |
+  <a href="#features">Features</a>
+  |
+  <a href="#run-from-source">Run from source</a>
+  |
+  <a href="#run-from-source">Development</a>
+  |
+  <a href="#troubleshooting">Troubleshooting</a>
+</p>
+
+## Overview
+
+Aether is built for people who want a music app that feels alive without getting in the way. It combines search, queueing, synced lyrics, offline helpers, playlists, visual playback modes, diagnostics, and local-first desktop behavior in one app.
+
+The desktop app runs its own local backend, so playback, streaming, metadata, lyrics, and storage tools can work without relying on a remote server. The public website uses a smaller hosted backend for web-safe search and playback.
 
 ## Download
 
-The easiest way to get Aether is from the GitHub Releases page.
+Get the latest build from:
 
-Download the asset that matches your platform:
+[github.com/GSUS2K/Aether-Studio/releases](https://github.com/GSUS2K/Aether-Studio/releases)
 
-- **macOS Intel and Apple Silicon**: `.dmg`
-- **Windows**: `.exe`
-- **Linux**: `.AppImage`
+Choose the asset for your platform:
 
-If you already opened a release tag, that tag is the packaged version you should download.
+| Platform | Download |
+| --- | --- |
+| macOS Apple Silicon | `Aether-arm64.dmg` |
+| macOS Intel | `Aether-x64.dmg` |
+| Windows | `Aether-Setup-x64.exe` |
+| Linux | `Aether-x86_64.AppImage` |
 
-## Install on macOS
+## Features
 
-1. Download the `.dmg` from Releases.
-2. Open the disk image.
-3. Drag Aether into your Applications folder.
-4. Launch Aether from Applications.
-5. If macOS blocks the first open, right-click the app and choose **Open**.
+| Area | What it does |
+| --- | --- |
+| Playback | Search, queue, play, pause, skip, previous, repeat, shuffle, seek, volume, and local transport control |
+| Lyrics | Synced lyrics, manual lyrics, offset saving, immersive output, lyric click-to-seek, and dual visual lyrics |
+| Visual modes | Audio mode, Dual Visual, Cinema mode, aura visuals, player bars, and performance modes |
+| Library | Studio Library, playlist vaults, favorites, import/export, sorting, filtering, and song browsing |
+| Imports | Spotify and Apple Music playlist import flows with debug logs |
+| Offline | Download helpers, cache controls, storage estimates, and local playback recovery |
+| Signal Ledger | Listening time, plays, recent sessions, top artists, hourly pulse, replay stats, and genre pulse |
+| Desktop | Native window controls, updater support, diagnostics, app lock, shortcuts, and local media backend |
+| Web | Public frontend support through a hosted API backend |
 
-The release build is made for both Intel Macs and Apple Silicon Macs.
+## Screenshots
 
-## Install on Windows
+## Install
 
-1. Download the `.exe` installer from Releases.
+### macOS
+
+1. Download the correct `.dmg`.
+2. Open it.
+3. Drag Aether into Applications.
+4. Launch Aether.
+5. If macOS blocks the first launch, right-click Aether and choose Open.
+
+### Windows
+
+1. Download `Aether-Setup-x64.exe`.
 2. Run the installer.
-3. Follow the setup prompts.
-4. Open Aether from the Start menu or desktop shortcut.
+3. Open Aether from the Start menu or desktop shortcut.
 
-## Install on Linux
-
-1. Download the `.AppImage` from Releases.
-2. Make it executable if needed:
+### Linux
 
 ```bash
 chmod +x Aether-*.AppImage
-```
-
-1. Run it:
-
-```bash
 ./Aether-*.AppImage
 ```
 
-If your desktop asks how to open it, choose the AppImage launcher or run it from the terminal.
-
-## Homebrew install
-
-If you have Homebrew, you can install Aether with:
+### Homebrew
 
 ```bash
 brew tap GSUS2K/tap
 brew install --cask aether
 ```
 
-## Run from source
+## How To Use
 
-If you want to run Aether from the codebase instead of a release build, install Node.js first, then run:
+1. Search for a song, artist, or playlist item.
+2. Add tracks to the queue.
+3. Use the player controls for transport and volume.
+4. Open lyrics and adjust sync if needed.
+5. Save useful tracks into Studio Library playlists.
+6. Use Dual Visual or Cinema mode when you want video-led playback.
+7. Open Signal Ledger to review listening patterns.
+8. Use Diagnostics when playback, search, lyrics, or storage needs inspection.
+
+## Visual Modes
+
+| Mode | Best for |
+| --- | --- |
+| Audio | Normal listening, lowest visual overhead, player-first layout |
+| Dual Visual | Video beside the main workspace with lyrics and controls still visible |
+| Cinema | Full-screen visual playback with a cleaner overlay |
+
+Full frame preserves the entire source frame. Fill frame crops edges when needed to cover the stage.
+
+## Performance Modes
+
+| Mode | Behavior |
+| --- | --- |
+| Low | Removes decorative animation and heavy effects for the most stable UI |
+| Medium | Keeps the app polished while limiting heavier visuals |
+| High | Enables the full visual system and richer motion |
+
+If you are debugging input delay, start with Low mode. If the delay disappears, the issue is likely a visual effect or high-frequency UI path.
+
+## Run From Source
+
+Install dependencies:
 
 ```bash
-npm install
-npm start
+npm run install:all
 ```
 
-That starts the desktop app with its local backend.
-
-## Build locally
-
-Useful commands from `package.json`:
+Run the desktop app with Vite and Electron:
 
 ```bash
-npm run package
+npm run dev:all
 ```
 
-Creates a local macOS app build.
+Build only the frontend:
+
+```bash
+npm run build-frontend
+```
+
+Create a macOS distributable:
 
 ```bash
 npm run dist
 ```
 
-Builds a macOS distributable.
+Create a Windows installer:
 
 ```bash
 npm run dist:win
 ```
 
-Builds the Windows installer.
+## Development Shape
 
-```bash
-npm run dist:all
+Aether is split between a React interface, an Electron bridge, and a local media backend:
+
+```mermaid
+flowchart LR
+  React["React UI"] --> Bridge["Electron preload bridge"]
+  Bridge --> Main["Electron main process"]
+  Main --> API["Local Express API"]
+  API --> Media["yt-dlp and ffmpeg"]
+  React --> Audio["Audio element"]
+  React --> Video["Video element"]
+  React --> Store["Local app storage"]
+  React --> Web["Hosted backend for website mode"]
 ```
 
-Builds macOS and Windows installers.
+## Website Backend
 
-## How to use Aether
+The public website can point to a hosted backend through:
 
-1. Open the app.
-2. Search for a track or browse your queue.
-3. Choose something to play.
-4. Use the transport controls to play, pause, skip, or go back.
-5. Open lyrics and adjust sync if needed.
-6. Turn on aura mode if you want the more animated visual experience.
+```text
+VITE_API_BASE_URL=https://your-backend.example.com
+```
+
+The current website backend is maintained separately from the desktop app. Cloud playback may require YouTube cookies configured as a private Render environment variable because YouTube can block server-side requests from cloud hosts.
+
+Never commit cookies or tokens.
 
 ## Troubleshooting
 
-- If playback feels broken, restart the app first.
-- If macOS says the app is from an unidentified developer, use **Open** once from the right-click menu.
-- If a download is missing, make sure you picked the asset for the right platform.
-- If you are using the web frontend, it can point to a separate API base URL.
+<details>
+<summary>Search works but playback does not start on the website</summary>
 
-## Notes
+Check the browser console for `/stream`. If it returns `502`, the hosted backend is probably being blocked by YouTube and needs a valid private cookie environment variable.
 
-- Aether uses a local backend while the desktop app is running.
-- Some features depend on bundled media tools.
-- Release builds are created from tag pushes.
+</details>
 
-## Version
+<details>
+<summary>Desktop playback stalls</summary>
 
-Current app version: `Utario`
+Open Diagnostics. Check the engine state, stream port, queue state, storage state, and whether `yt-dlp` is available. Restarting the app can also clear stale local stream workers.
 
-## To Do
+</details>
 
-- Music real-time transmission instead of download / pre-warm to save storage and data.
-- Make Raspberry Pi 5 as backend server containing songs and transmitting to apps while keeping yt-dlp as backup option if song isn't available.
-- .aether files fix.
-- Ability to add custom music and lyrics.
-- QoL changes.
-- Aura rework.
-- On no lyrics, immersive output change.
-- Add AI maybe.
-- Change doodle mode.
-- Change mini player appearance.
-- Unclutter UI.
-- SQLLite?/PostGresSQL?
+<details>
+<summary>Lyrics are early or late</summary>
+
+Use the lyric offset controls. Save the offset once it matches the song. Future plays can reuse the saved offset for that track.
+
+</details>
+
+<details>
+<summary>The UI feels heavy</summary>
+
+Switch to Low performance mode first. If the app becomes responsive, the problem is probably a decorative animation, visualizer path, or high-frequency render path.
+
+</details>
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=GSUS2K/Aether-Studio&type=Date)](https://www.star-history.com/#GSUS2K/Aether-Studio&Date)
+
+## Release Notes
+
+Release assets are built with Electron Builder and published through GitHub Releases. Auto-update metadata is generated alongside the installers.
 
 ## License
 
-Aether is licensed under the MIT License. See [LICENSE](LICENSE) for the full text.
+Aether is licensed under the MIT License. See [LICENSE](LICENSE) for details.
