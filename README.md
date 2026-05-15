@@ -1,14 +1,14 @@
 # Aether
 
 <p align="center">
-  <strong>A desktop music studio for playback, synced lyrics, queues, visual modes, gestures, local libraries, and listening intelligence.</strong>
+  <strong>A desktop music studio app (alternative for YouTube + extra features with 0 ads, free to use & customize) for playback, synced lyrics, queues, visual modes, gestures, local libraries, and listening insights</strong>
 </p>
 
 <p align="center">
   <a href="https://github.com/GSUS2K/Aether-Studio/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/GSUS2K/Aether-Studio?style=for-the-badge&label=release"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/GSUS2K/Aether-Studio?style=for-the-badge"></a>
   <a href="https://github.com/GSUS2K/Aether-Studio/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/GSUS2K/Aether-Studio?style=for-the-badge"></a>
-  <a href="https://aetherstudio.me"><img alt="Website" src="https://img.shields.io/badge/website-aetherstudio.me-00ffbf?style=for-the-badge"></a>
+  <a href="https://aetherstudio.me"><img alt="Website" src="https://img.shields.io/badge/website-aetherstudio.me-008f73?style=for-the-badge&labelColor=1b1f23"></a>
 </p>
 
 <p align="center">
@@ -37,7 +37,7 @@ It combines search, playback, queues, synced lyrics, playlists, visual playback 
 
 The desktop app is the main experience. It runs with a local backend so media handling, playback tools, metadata, lyrics, storage, and local app behavior can work without depending on a public remote server.
 
-Aether also has a lightweight website companion at [aetherstudio.me](https://aetherstudio.me). The website is intentionally smaller than the desktop app and does not include every feature from the full application.
+Aether also has a lightweight website version at [aetherstudio.me](https://aetherstudio.me). The website is intentionally smaller than the desktop app and does not include every feature from the full application.
 
 ## Development Status
 
@@ -92,6 +92,9 @@ Get the latest build from the [GitHub Releases page](https://github.com/GSUS2K/A
 
 <p align="center">
   <img src="docs/assets/lyrics.jpeg" alt="Lyrics and immersive output" width="49%">
+</p>
+
+<p align="center">
   <img src="docs/assets/gestures.png" alt="Gestures" width="49%">
 </p>
 
@@ -160,6 +163,7 @@ Full frame preserves the entire source frame. Fill frame crops edges when needed
 | Medium | Keeps the app polished while limiting heavier visuals |
 | High | Enables the full visual system and richer motion |
 
+App still has performance issues and doesn't work smoothly when music is playing due to main thread being blocked and waiting in event loop schedule. (Upcoming fix to split App.jsx and make sure no unnecessary re-renders happen.)
 If you are debugging input delay, start with Low mode. If the delay disappears, the issue is likely related to visual effects, animation, or a high-frequency UI path.
 
 ## Run From Source
@@ -194,7 +198,7 @@ Create a Windows installer:
 npm run dist:win
 ```
 
-## Development Shape
+## Architecture
 
 Aether is split between a React interface, an Electron bridge, and a local media backend:
 
