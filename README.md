@@ -81,12 +81,12 @@ Get the latest build from the [GitHub Releases page](https://github.com/GSUS2K/A
 </p>
 
 <p align="center">
-  <img src="docs/assets/lyrics.jpeg" alt="Lyrics and immersive output" width="49%">
+  <img src="docs/assets/mini-player.jpeg" alt="Mini Player" width="49%">
 </p>
 
 <p align="center">
   <img src="docs/assets/mixtape-vault.png" alt="Mixtape Vault" width="49%">
-  <img src="docs/assets/mini-player.png" alt="Mini Player" width="49%">
+  <img src="docs/assets/lyrics.png" alt="Lyrics and immersive output" width="49%">
 </p>
 
 <p align="center">
