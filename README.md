@@ -27,6 +27,8 @@
   <a href="#run-from-source">Run from source</a>
   |
   <a href="#architecture">Architecture</a>
+  |
+  <a href="#roadmap">Roadmap</a>
 </p>
 
 ## Overview
@@ -249,7 +251,9 @@ Some bigger ideas planned for the future:
 
 ## Release Notes
 
-Release assets are built with Electron Builder and published through GitHub Releases. Auto-update metadata is generated alongside the installers.
+Downloads and version updates are published through GitHub Releases.
+
+See the [latest release](https://github.com/GSUS2K/Aether-Studio/releases/latest) for installers, update files, and version details.
 
 ## Star History
 
