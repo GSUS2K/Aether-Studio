@@ -1,7 +1,7 @@
 # Aether
 
 <p align="center">
-  <strong>A desktop music studio app (alternative for YouTube + extra features with 0 ads, free to use & customize) for playback, synced lyrics, queues, visual modes, gestures, local libraries, and listening insights</strong>
+  <strong>A free desktop music studio for playback, synced lyrics, queues, visual modes, gestures, local libraries, and listening insights.</strong>
 </p>
 
 <p align="center">
@@ -33,7 +33,7 @@
 
 ## Overview
 
-Aether is a desktop music studio built for people who want a music app that feels alive without getting in the way.
+Aether is a free desktop music studio built for people who want a cleaner YouTube-style music experience with no ads, more control, and extra studio features.
 
 It combines search, playback, queues, synced lyrics, playlists, visual playback modes, gesture controls, local library tools, offline helpers, diagnostics, and listening stats inside one desktop app.
 
@@ -75,7 +75,7 @@ Get the latest build from the [GitHub Releases page](https://github.com/GSUS2K/A
 | Visual modes | Audio mode, Dual Visual, Cinema mode, aura visuals, player bars, and performance modes |
 | Gestures | Gesture-based controls for a more natural playback and studio navigation experience |
 | Library | Studio Library, playlist vaults, favorites, import/export, sorting, filtering, and song browsing |
-| Imports | Spotify and Apple Music playlist import flows with debug logs |
+| Playlist imports | Import public playlists from Spotify and Apple Music, with debug logs for checking import issues |
 | Offline | Download helpers, cache controls, storage estimates, and local playback recovery |
 | Signal Ledger | Listening time, plays, recent sessions, top artists, hourly pulse, replay stats, and genre pulse |
 | Desktop | Native window controls, updater support, diagnostics, app lock, shortcuts, and local media backend |
@@ -123,7 +123,7 @@ Get the latest build from the [GitHub Releases page](https://github.com/GSUS2K/A
 1. Download `Aether-Setup-x64.exe`.
 2. Run the installer.
 3. Open Aether from the Start menu or desktop shortcut.
-4. If windows security or antivirus blocks yt-dlp, do the following command in Windows Powershell and rerun the app.
+4. If Windows Security or your antivirus blocks yt-dlp, do the following command in Windows Powershell and rerun the app.
 
 ```powershell
 Unblock-File "C:\Users\<system_name>\AppData\Local\Programs\Aether\resources\app.asar.unpacked\desktop\bin\yt-dlp.exe"
@@ -147,12 +147,13 @@ brew install --cask aether
 
 1. Search for a song, artist, or playlist item.
 2. Add tracks to the queue.
-3. Use player controls, shortcuts, or gestures for playback.
-4. Open lyrics and adjust sync if needed.
-5. Save useful tracks into Studio Library playlists.
-6. Use Dual Visual or Cinema mode when you want video playback.
-7. Open Signal Ledger to review listening patterns.
-8. Use Diagnostics when playback, search, lyrics, or storage needs inspection.
+3. You can also import playlists from Spotify or Apple Music from the Studio Library Panel.
+4. Use player controls, shortcuts, or gestures for playback.
+5. Open lyrics and adjust sync if needed.
+6. Save useful tracks into Studio Library playlists.
+7. Use Dual Visual or Cinema mode when you want video playback.
+8. Open Signal Ledger to review listening patterns.
+9. Use Diagnostics when playback, search, lyrics, or storage needs inspection.
 
 ## Visual Modes
 
@@ -172,7 +173,8 @@ Full frame preserves the entire source frame. Fill frame crops edges when needed
 | Medium | Keeps the app polished while limiting heavier visuals |
 | High | Enables the full visual system and richer motion |
 
-App still has performance issues and doesn't work smoothly when music is playing due to main thread being blocked and waiting in event loop schedule. (Upcoming fix to split App.jsx and make sure no unnecessary re-renders happen.)
+Aether still has some performance issues in the current builds, especially during music playback on some devices. A future update will focus on reducing unnecessary renders, improving responsiveness, and making the app smoother overall.
+
 If you are debugging input delay, start with Low mode. If the delay disappears, the issue is likely related to visual effects, animation, or a high-frequency UI path.
 
 ## Run From Source
@@ -222,6 +224,17 @@ flowchart LR
   React --> Store["Local app storage"]
   React --> Web["Lightweight website companion"]
 ```
+
+## Core Tools
+
+Aether uses `yt-dlp` and `ffmpeg` for parts of its local media handling.
+
+| Tool | Used for |
+| --- | --- |
+| yt-dlp | Fetching media information and stream data |
+| ffmpeg | Media processing and playback support |
+
+These tools are bundled and used by the desktop app where needed. If playback does not work on your system, check Diagnostics inside Aether and make sure these tools are available.
 
 ## Roadmap
 
