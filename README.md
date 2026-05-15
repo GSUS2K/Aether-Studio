@@ -22,6 +22,8 @@ A short demo video is in progress.
 It will show playback, synced lyrics, Dual Visual mode, Cinema mode, Mixtape Vault, Mini Player, Studio Library, playlist imports, Signal Ledger, and gesture controls.
 
 <p align="center">
+  <a href="#demo">Demo</a>
+  |
   <a href="#download">Download</a>
   |
   <a href="#features">Features</a>
