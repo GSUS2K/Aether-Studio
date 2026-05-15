@@ -19,7 +19,7 @@
 
 A short demo video is in progress.
 
-It will show playback, synced lyrics, Dual Visual mode, Cinema mode, Mixtape Vault, Mini Player, Studio Library, playlist imports, Signal Ledger, and gesture controls.
+It will show playback, synced lyrics, Dual Visual mode, Cinema mode, Mixtape Vault, Mini Player, Studio Library, playlist imports, Signal Ledger, Discord status, and gesture controls.
 
 <p align="center">
   <a href="#demo">Demo</a>
@@ -88,6 +88,7 @@ Get the latest build from the [GitHub Releases page](https://github.com/GSUS2K/A
 | Signal Ledger | Listening time, plays, recent sessions, top artists, hourly pulse, replay stats, and genre pulse |
 | Desktop | Native window controls, updater support, diagnostics, app lock, shortcuts, and local media backend |
 | Website companion | Minimal web version for basic access through the public site |
+| Discord status | Shows what you are playing in Aether through Discord activity status |
 
 ## Gesture Support Notes
 
@@ -103,23 +104,23 @@ Facial gestures are not available on macOS builds right now because the app is n
 </p>
 
 <p align="center">
-  <img src="docs/assets/mini-player.png" alt="Mini Player" width="49%">
-</p>
-
-<p align="center">
   <img src="docs/assets/mixtape-vault.png" alt="Mixtape Vault" width="49%">
   <img src="docs/assets/lyrics.jpeg" alt="Lyrics and immersive output" width="49%">
 </p>
 
 <p align="center">
+  <img src="docs/assets/mini-player.png" alt="Mini Player" width="49%">
+</p>
+
+<p align="center">
   <img src="docs/assets/gestures.png" alt="Gestures" width="49%">
+  <img src="docs/assets/discord-status.png" alt="Discord Status" width="49%">
 </p>
 
 <p align="center">
   <img src="docs/assets/studio-library.png" alt="Studio Library" width="49%">
   <img src="docs/assets/signal-ledger.png" alt="Signal Ledger" width="49%">
 </p>
-
 
 ## Install
 
