@@ -111,12 +111,12 @@ Facial gestures are not available on macOS builds right now because the app is n
 <table>
   <tr>
     <td width="50%" valign="top">
+      <img src="docs/assets/discord-status.png" alt="Discord Status" width="100%">
+    </td>
+    <td width="50%" valign="top">
       <img src="docs/assets/mini-player.png" alt="Mini Player" width="100%">
       <br><br>
       <img src="docs/assets/gestures.png" alt="Gestures" width="100%">
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/assets/discord-status.png" alt="Discord Status" width="100%">
     </td>
   </tr>
 </table>
