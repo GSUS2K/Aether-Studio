@@ -15,6 +15,12 @@
   <img src="docs/assets/main-studio.png" alt="Aether Preview">
 </p>
 
+## Demo
+
+A short demo video is in progress.
+
+It will show playback, synced lyrics, Dual Visual mode, Cinema mode, Mixtape Vault, Mini Player, Studio Library, playlist imports, Signal Ledger, and gesture controls.
+
 <p align="center">
   <a href="#download">Download</a>
   |
@@ -80,6 +86,12 @@ Get the latest build from the [GitHub Releases page](https://github.com/GSUS2K/A
 | Signal Ledger | Listening time, plays, recent sessions, top artists, hourly pulse, replay stats, and genre pulse |
 | Desktop | Native window controls, updater support, diagnostics, app lock, shortcuts, and local media backend |
 | Website companion | Minimal web version for basic access through the public site |
+
+## Gesture Support Notes
+
+Gesture controls are still experimental.
+
+Facial gestures are not available on macOS builds right now because the app is not notarized yet. Other gesture features may still work depending on the platform and system permissions.
 
 ## Screenshots
 
