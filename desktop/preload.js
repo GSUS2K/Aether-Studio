@@ -7,9 +7,13 @@ contextBridge.exposeInMainWorld('aether', {
   getRecommendations: (details) => ipcRenderer.invoke('aether:get-recommendations', details),
   getLyrics: (track, artist, duration, query, url) => ipcRenderer.invoke('aether:get-lyrics', { track, artist, duration, query, url }),
   updateRPC: (details) => ipcRenderer.invoke('aether:update-rpc', details),
+  setDiscordPrivate: (enabled) => ipcRenderer.invoke('aether:set-discord-private', enabled),
   getStats: () => ipcRenderer.invoke('aether:stats'),
   getEngineStatus: () => ipcRenderer.invoke('aether:get-engine-status'),
   getUpdateStatus: () => ipcRenderer.invoke('aether:update-get-status'),
+  startPartyServer: (partyName) => ipcRenderer.invoke('aether:party-start', { partyName }),
+  stopPartyServer: () => ipcRenderer.invoke('aether:party-stop'),
+  getPartyServerStatus: () => ipcRenderer.invoke('aether:party-status'),
   checkForUpdates: () => ipcRenderer.invoke('aether:update-check'),
   downloadUpdate: () => ipcRenderer.invoke('aether:update-download'),
   quitAndInstallUpdate: () => ipcRenderer.invoke('aether:update-quit-and-install'),
@@ -20,6 +24,10 @@ contextBridge.exposeInMainWorld('aether', {
     const handler = (event, payload) => callback(payload);
     ipcRenderer.on('aether:update-status', handler);
     return () => ipcRenderer.removeListener('aether:update-status', handler);
+  },
+  clipboard: {
+    writeText: (text) => ipcRenderer.invoke('aether:clipboard-write-text', text),
+    readText: () => ipcRenderer.invoke('aether:clipboard-read-text'),
   },
 
   // Listen for user-facing error notifications from backend
@@ -93,6 +101,7 @@ contextBridge.exposeInMainWorld('aether', {
   platform: process.platform,
   getStreamPort: () => ipcRenderer.invoke('aether:get-port'),
   repairEnvironment: (opts) => ipcRenderer.invoke('aether:repair-environment', opts),
+  repairRuntime: (opts) => ipcRenderer.invoke('aether:repair-environment', { ...(opts || {}), runFixes: true }),
   runInstaller: () => ipcRenderer.invoke('aether:run-installer'),
   onLibraryUpdate: (callback) => {
     const handler = (event, data) => callback(data);

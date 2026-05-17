@@ -1,7 +1,7 @@
 {
   "name": "aether",
   "productName": "Aether",
-  "version": "2026.5.3",
+  "version": "2026.5.4",
   "description": "Standalone Aether Desktop Application",
   "main": "desktop/main.js",
   "scripts": {
@@ -11,6 +11,8 @@
     "dev:frontend": "cd frontend && npm run dev",
     "dev:electron": "wait-on ${AETHER_DEV_SERVER_URL:-http://localhost:5173} && electron .",
     "dev:all": "node scripts/dev-all.mjs",
+    "party:dev": "cd party-server && node --watch index.js",
+    "party:start": "cd party-server && node index.js",
     "prepare-binaries": "node scripts/prepare-bundled-binaries.cjs",
     "build-frontend": "cd frontend && npm install && npm run build",
     "package": "npm run prepare-binaries && npm run build-frontend && electron-builder build --mac --dir",
@@ -41,6 +43,9 @@
     "express": "^5.2.1",
     "fast-average-color": "^9.5.0",
     "ffmpeg-static": "^5.3.0",
+    "localtunnel": "^2.0.2",
+    "socket.io": "^4.8.3",
+    "uuid": "^14.0.0",
     "youtube-dl-exec": "^3.1.4"
   },
   "devDependencies": {
@@ -61,7 +66,11 @@
       "category": "public.app-category.music",
       "target": "dmg",
       "artifactName": "${productName}-${arch}.${ext}",
-      "icon": "icon.png"
+      "icon": "icon.png",
+      "extendInfo": {
+        "NSCameraUsageDescription": "Aether uses the camera only when you enable Gesture + Face Lab camera controls for face and hand playback gestures.",
+        "NSMicrophoneUsageDescription": "Aether does not record microphone audio. This permission is reserved for future voice control features."
+      }
     },
     "win": {
       "target": "nsis",

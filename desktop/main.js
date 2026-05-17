@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, globalShortcut, Menu, dialog, systemPreferences, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, globalShortcut, Menu, dialog, systemPreferences, screen, clipboard } = require('electron');
 app.setName('Aether');
 app.name = 'Aether';
 const ffmpeg = require('ffmpeg-static');
@@ -16,6 +16,10 @@ require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 const express = require('express');
 const cors = require('cors');
+const { createServer } = require('http');
+const { Server } = require('socket.io');
+const localtunnel = require('localtunnel');
+const { v4: uuidv4 } = require('uuid');
 const { spawn, spawnSync } = require('child_process');
 const { OfflineEngine, search, getMetadata, getRecommendations, getLyrics, engineEvents } = require('./offline-engine');
 const getDebugLogPath = () => {
@@ -1143,6 +1147,263 @@ const offlineEngine = new OfflineEngine(app.getPath('userData'));
 const downloadBackoffByTrack = new Map();
 let mainWindow;
 
+// ─── Party Server State ──────────────────────────────────────────────────────
+let partyHttpServer = null;
+let partyIo = null;
+let partyTunnel = null;
+let partyRooms = new Map();
+
+async function stopPartyServer() {
+    if (partyTunnel) {
+        partyTunnel.close();
+        partyTunnel = null;
+    }
+    if (partyIo) {
+        partyIo.close();
+        partyIo = null;
+    }
+    if (partyHttpServer) {
+        partyHttpServer.close();
+        partyHttpServer = null;
+    }
+    partyRooms.clear();
+    console.log('[Party] Server stopped.');
+}
+
+async function startPartyServer() {
+    await stopPartyServer();
+    console.log('[Party] Starting embedded server...');
+
+    const partyApp = express();
+    partyApp.use(cors({ origin: '*' }));
+    partyApp.use(express.json());
+    partyHttpServer = createServer(partyApp);
+    partyIo = new Server(partyHttpServer, {
+        cors: { origin: '*', methods: ['GET', 'POST'] },
+        pingTimeout: 30000,
+        pingInterval: 10000,
+    });
+
+    const KEY_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const MAX_PARTY_SIZE = 10;
+    const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+    const IDLE_WARN_MS = 25 * 60 * 1000;
+
+    function generateKey(len = 6) {
+        return Array.from({ length: len }, () => KEY_CHARS[Math.floor(Math.random() * KEY_CHARS.length)]).join('');
+    }
+    function sysMsg(text) {
+        return { id: uuidv4(), type: 'system', message: text, ts: Date.now() };
+    }
+    function publicMembers(room) {
+        return room.members.map(m => ({ id: m.id, displayName: m.displayName, avatar: m.avatar || null, isHost: m.id === room.hostId }));
+    }
+    function publicState(room) {
+        return {
+            partyId: room.id, hostId: room.hostId, isPrivate: room.isPrivate, memberCount: room.members.length,
+            members: publicMembers(room), currentTrack: room.currentTrack, positionMs: room.positionMs,
+            isPlaying: room.isPlaying, syncTimestamp: room.syncTimestamp, chat: room.chat.slice(-80), requests: room.requests,
+        };
+    }
+    function touchActivity(room) { room.lastActivity = Date.now(); }
+    function closeRoom(roomId) {
+        const room = partyRooms.get(roomId);
+        if (!room) return;
+        clearTimeout(room._warnTimer);
+        clearTimeout(room._idleTimer);
+        partyRooms.delete(roomId);
+    }
+    function scheduleIdleCheck(room) {
+        clearTimeout(room._warnTimer);
+        clearTimeout(room._idleTimer);
+        room._warnTimer = setTimeout(() => {
+            const r = partyRooms.get(room.id);
+            if (!r) return;
+            if (Date.now() - r.lastActivity >= IDLE_WARN_MS && !r.isPlaying) partyIo.to(r.id).emit('party:idle-warning', { minutesLeft: 5 });
+        }, IDLE_WARN_MS);
+        room._idleTimer = setTimeout(() => {
+            const r = partyRooms.get(room.id);
+            if (!r) return;
+            if (Date.now() - r.lastActivity >= IDLE_TIMEOUT_MS && !r.isPlaying) {
+                partyIo.to(r.id).emit('party:closed', { reason: 'idle' });
+                closeRoom(r.id);
+            }
+        }, IDLE_TIMEOUT_MS);
+    }
+    function handleLeave(socket, partyId, userId) {
+        const room = partyRooms.get(partyId);
+        if (!room) return;
+        const member = room.members.find(m => m.id === userId);
+        if (!member) return;
+        const wasHost = room.hostId === userId;
+        room.members = room.members.filter(m => m.id !== userId);
+        socket.leave(partyId);
+        if (room.members.length === 0) { closeRoom(partyId); return; }
+        if (wasHost) {
+            partyIo.to(partyId).emit('party:host-leaving', { leftDisplayName: member.displayName, members: publicMembers(room) });
+        } else {
+            const msg = sysMsg(`${member.displayName} left the party`);
+            room.chat.push(msg);
+            partyIo.to(partyId).emit('party:member-update', { members: publicMembers(room) });
+            partyIo.to(partyId).emit('party:message', msg);
+        }
+        touchActivity(room);
+    }
+
+    partyIo.on('connection', (socket) => {
+        socket.on('party:create', ({ userId, displayName, isPrivate, avatar } = {}) => {
+            if (!userId || !displayName) return socket.emit('party:error', { code: 'BAD_REQUEST', message: 'Missing args.' });
+            const partyId = uuidv4().replace(/-/g, '').slice(0, 8).toUpperCase();
+            const key = isPrivate ? generateKey() : null;
+            const room = {
+                id: partyId, hostId: userId, isPrivate: !!isPrivate, key,
+                members: [{ id: userId, socketId: socket.id, displayName, avatar: avatar || null }],
+                currentTrack: null, positionMs: 0, isPlaying: false, syncTimestamp: Date.now(),
+                chat: [sysMsg(`${displayName} created the party`)], requests: [], lastActivity: Date.now(),
+                _warnTimer: null, _idleTimer: null,
+            };
+            partyRooms.set(partyId, room);
+            socket.join(partyId);
+            socket.data = { partyId, userId, displayName };
+            scheduleIdleCheck(room);
+            socket.emit('party:created', { partyId, key, state: publicState(room) });
+        });
+        socket.on('party:join', ({ partyId, userId, displayName, key, avatar } = {}) => {
+            let room = partyRooms.get(partyId);
+            if (!room && partyRooms.size === 1) {
+                // If they pasted a URL as the ID, the partyId will be wrong, but we can safely route them
+                // to the only active room on this temporary host server.
+                room = partyRooms.values().next().value;
+            }
+            if (!room) return socket.emit('party:error', { code: 'NOT_FOUND', message: 'Party not found.' });
+            if (room.members.length >= MAX_PARTY_SIZE) return socket.emit('party:error', { code: 'FULL', message: 'Party full.' });
+            if (room.isPrivate && room.key !== String(key || '').toUpperCase()) return socket.emit('party:error', { code: 'WRONG_KEY', message: 'Wrong key.' });
+            if (room.members.find(m => m.id === userId)) {
+                room.members.find(m => m.id === userId).socketId = socket.id;
+                socket.join(partyId); socket.data = { partyId, userId, displayName };
+                return socket.emit('party:joined', { state: publicState(room) });
+            }
+            room.members.push({ id: userId, socketId: socket.id, displayName, avatar: avatar || null });
+            touchActivity(room);
+            socket.join(partyId); socket.data = { partyId, userId, displayName };
+            const msg = sysMsg(`${displayName} joined the party 👋`);
+            room.chat.push(msg);
+            socket.emit('party:joined', { state: publicState(room) });
+            partyIo.to(partyId).emit('party:member-update', { members: publicMembers(room) });
+            partyIo.to(partyId).emit('party:message', msg);
+        });
+        socket.on('party:control', ({ partyId, userId, action, track, positionMs, isPlaying } = {}) => {
+            const room = partyRooms.get(partyId);
+            if (!room || room.hostId !== userId) return;
+            if (track !== undefined) room.currentTrack = track;
+            if (typeof positionMs === 'number') room.positionMs = positionMs;
+            if (typeof isPlaying === 'boolean') { room.isPlaying = isPlaying; if (isPlaying) touchActivity(room); }
+            room.syncTimestamp = Date.now();
+            if (room.isPlaying) touchActivity(room);
+            partyIo.to(partyId).emit('party:sync', { action, track: room.currentTrack, positionMs: room.positionMs, isPlaying: room.isPlaying, timestamp: room.syncTimestamp });
+        });
+        socket.on('party:chat', ({ partyId, userId, displayName, message, localId } = {}) => {
+            const room = partyRooms.get(partyId);
+            if (!room) return;
+            const text = String(message || '').trim().slice(0, 500);
+            if (!text) return;
+            touchActivity(room);
+            const msg = { id: uuidv4(), localId, type: 'chat', userId, displayName, message: text, ts: Date.now() };
+            room.chat.push(msg);
+            if (room.chat.length > 300) room.chat.splice(0, room.chat.length - 300);
+            partyIo.to(partyId).emit('party:message', msg);
+        });
+        socket.on('party:request', ({ partyId, userId, displayName, type, value } = {}) => {
+            const room = partyRooms.get(partyId);
+            if (!room || room.hostId === userId) return;
+            if (!['skip', 'seek', 'song'].includes(type)) return;
+            const req = { id: uuidv4(), userId, displayName, type, value: value || null, ts: Date.now() };
+            room.requests.push(req);
+            if (room.requests.length > 50) room.requests.splice(0, room.requests.length - 50);
+            let hostSock = null;
+            for (const s of partyIo.sockets.sockets.values()) if (s.data.userId === room.hostId && s.data.partyId === partyId) hostSock = s;
+            if (hostSock) hostSock.emit('party:request-notify', req);
+            const labels = { skip: 'skip the track', seek: 'seek forward', song: `play "${value?.title || 'a song'}"` };
+            const msg = sysMsg(`${displayName} requested to ${labels[type] || type}`);
+            room.chat.push(msg);
+            partyIo.to(partyId).emit('party:message', msg);
+            touchActivity(room);
+        });
+        socket.on('party:request-respond', ({ partyId, userId, requestId, approved } = {}) => {
+            const room = partyRooms.get(partyId);
+            if (!room || room.hostId !== userId) return;
+            const req = room.requests.find(r => r.id === requestId);
+            if (!req) return;
+            room.requests = room.requests.filter(r => r.id !== requestId);
+            partyIo.to(partyId).emit('party:request-result', { requestId, approved, type: req.type, value: req.value, userId: req.userId });
+            const msg = sysMsg(`Host ${approved ? 'approved' : 'denied'} ${req.displayName}'s ${req.type} request`);
+            room.chat.push(msg);
+            partyIo.to(partyId).emit('party:message', msg);
+            touchActivity(room);
+        });
+        socket.on('party:kick', ({ partyId, userId, targetId } = {}) => {
+            const room = partyRooms.get(partyId);
+            if (!room || room.hostId !== userId || userId === targetId) return;
+            let targetSock = null;
+            for (const s of partyIo.sockets.sockets.values()) if (s.data.userId === targetId && s.data.partyId === partyId) targetSock = s;
+            if (targetSock) {
+                targetSock.emit('party:error', { message: 'You have been removed from the party by the host.' });
+                targetSock.disconnect(true);
+                const msg = sysMsg(`A listener was removed by the host`);
+                room.chat.push(msg);
+                partyIo.to(partyId).emit('party:message', msg);
+            }
+        });
+        socket.on('party:transfer-host', ({ partyId, userId, newHostId } = {}) => {
+            const room = partyRooms.get(partyId);
+            if (!room || room.hostId !== userId) return;
+            const newHost = room.members.find(m => m.id === newHostId);
+            if (!newHost) return;
+            room.hostId = newHostId;
+            const msg = sysMsg(`${newHost.displayName} is now the host`);
+            room.chat.push(msg);
+            partyIo.to(partyId).emit('party:host-changed', { newHostId, members: publicMembers(room) });
+            partyIo.to(partyId).emit('party:message', msg);
+            touchActivity(room);
+        });
+        socket.on('party:leave', ({ partyId, userId } = {}) => {
+            handleLeave(socket, partyId || socket.data?.partyId, userId || socket.data?.userId);
+        });
+        socket.on('disconnect', () => {
+            const { partyId, userId } = socket.data || {};
+            if (partyId && userId) handleLeave(socket, partyId, userId);
+        });
+    });
+
+    return new Promise((resolve, reject) => {
+        partyHttpServer.listen(4444, '127.0.0.1', async () => {
+            try {
+                const tunnelPrefix = crypto.randomBytes(4).toString('hex');
+                partyTunnel = await localtunnel({ port: 4444, local_host: '127.0.0.1', subdomain: `aether-party-${tunnelPrefix}` });
+                console.log(`[Party] Tunnel open at ${partyTunnel.url}`);
+                
+                partyTunnel.on('close', () => {
+                    console.log('[Party] Tunnel closed');
+                });
+                partyTunnel.on('error', (err) => {
+                    console.error('[Party] Tunnel error', err);
+                });
+                
+                resolve({ success: true, url: partyTunnel.url });
+            } catch (err) {
+                console.error('[Party] Tunnel failed', err);
+                stopPartyServer();
+                resolve({ success: false, error: err.message });
+            }
+        });
+        partyHttpServer.on('error', (err) => {
+            console.error('[Party] Server listen error', err);
+            resolve({ success: false, error: err.message });
+        });
+    });
+}
+
+
 engineEvents.on('oauth-required', (data) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('aether:oauth-required', data);
@@ -2168,6 +2429,7 @@ let rpcClient;
 let rpcLoginInFlight = false;
 let rpcRetryTimer = null;
 let rpcLastDetails = null;
+let rpcPrivateMode = false;
 
 const scheduleRPCReconnect = (delayMs = 12000) => {
     if (rpcRetryTimer) return;
@@ -2181,6 +2443,11 @@ const buildRPCActivity = (details = {}) => {
     const title = String(details.title || '').trim();
     const artist = String(details.artist || '').trim();
     const isPlaying = details.isPlaying !== false;
+    const currentTime = Math.max(0, Number(details.currentTime) || 0);
+    const duration = Math.max(0, Number(details.duration) || 0);
+    const startedAt = duration > 0 && currentTime <= duration
+        ? Date.now() - currentTime
+        : null;
     const activity = {
         type: isPlaying ? 2 : 0,
         details: (title || 'Music Lobby').slice(0, 127),
@@ -2193,9 +2460,17 @@ const buildRPCActivity = (details = {}) => {
         smallImageText: 'Aether',
         instance: false
     };
-    if (isPlaying) {
-        activity.startTimestamp = details.startTime;
-        activity.endTimestamp = details.endTime;
+    if (details.partySize) {
+        activity.partySize = details.partySize;
+        activity.partyMax = details.partyMax || 10;
+        activity.partyId = details.partyId || 'aether_party';
+        activity.state = `In Party • ${activity.state}`;
+    }
+    if (isPlaying && startedAt) {
+        activity.startTimestamp = startedAt;
+        if (duration > 0) {
+            activity.endTimestamp = startedAt + duration;
+        }
     }
     return activity;
 };
@@ -2222,7 +2497,7 @@ async function initRPC() {
             if (rpcLastDetails) {
                 await pushRPCActivity(rpcLastDetails);
             } else {
-                await pushRPCActivity({ title: 'Music Lobby', artist: 'Organizing the Vibe Buffer', isPlaying: false, startTime: Date.now() });
+                await pushRPCActivity({ title: 'Music Lobby', artist: 'Organizing the Vibe Buffer', isPlaying: false });
             }
         });
         rpcClient.on('disconnected', () => {
@@ -2249,11 +2524,12 @@ async function initRPC() {
 }
 
 async function setRPCActivity(details) {
-        rpcLastDetails = details || null;
-        const connected = await initRPC();
-        if (!connected) return;
-        const ok = await pushRPCActivity(rpcLastDetails || {});
-        if (!ok) scheduleRPCReconnect(8000);
+    rpcLastDetails = details || null;
+    if (rpcPrivateMode) return; // Private mode: suppress all RPC updates
+    const connected = await initRPC();
+    if (!connected) return;
+    const ok = await pushRPCActivity(rpcLastDetails || {});
+    if (!ok) scheduleRPCReconnect(8000);
 }
 
 // --- ELECTRON LIFECYCLE ---
@@ -2268,7 +2544,7 @@ function createWindow() {
     icon: path.join(__dirname, '../icon.png'),
     frame: !isWin,
     titleBarStyle: isWin ? 'hidden' : 'hiddenInset',
-    titleBarOverlay: isWin ? WINDOWS_TITLEBAR_OVERLAY : undefined,
+    titleBarOverlay: false,
     backgroundColor: '#050505',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -2278,10 +2554,6 @@ function createWindow() {
       allowRunningInsecureContent: true
     },
   });
-
-  if (isWin) {
-    applyWindowsTitleBarOverlay(mainWindow, mainWindow.isFullScreen() || mainWindow.isMaximized());
-  }
 
   if (!app.isPackaged && process.env.NODE_ENV !== 'production' && !process.argv.includes('--prod')) {
         mainWindow.loadURL(getDevServerUrl()).catch(() => {
@@ -2354,22 +2626,18 @@ function createWindow() {
   }
 
   mainWindow.on('maximize', () => {
-    applyWindowsTitleBarOverlay(mainWindow, true);
     mainWindow.webContents.send('aether:maximized-state', true);
   });
 
   mainWindow.on('unmaximize', () => {
-    applyWindowsTitleBarOverlay(mainWindow, false);
     mainWindow.webContents.send('aether:maximized-state', false);
   });
 
   mainWindow.on('enter-full-screen', () => {
-    applyWindowsTitleBarOverlay(mainWindow, true);
     mainWindow.webContents.send('aether:maximized-state', true);
   });
 
   mainWindow.on('leave-full-screen', () => {
-    applyWindowsTitleBarOverlay(mainWindow, false);
     mainWindow.webContents.send('aether:maximized-state', false);
   });
 
@@ -2377,21 +2645,50 @@ function createWindow() {
     mainWindow = null;
   });
 
-  // --- AUTOMATIC PERMISSIONS ---
-  // Automatically grant permissions for microphone/camera so Voice Control and Gesture Control work
+  // --- MEDIA PERMISSIONS ---
+  // Ask once in-app, then let the OS/browser show its native camera prompt.
   mainWindow.webContents.session.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
     if (permission === 'media') {
-      return true;
+      return store.get('aether.mediaPermissionAllowed') === true;
     }
     return false;
   });
 
-  mainWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback, details) => {
+  mainWindow.webContents.session.setPermissionRequestHandler(async (webContents, permission, callback, details) => {
     if (permission === 'media') {
-      callback(true);
-    } else {
-      callback(false);
+      const mediaTypes = Array.isArray(details?.mediaTypes) ? details.mediaTypes : [];
+      const wantsCamera = mediaTypes.includes('video') || mediaTypes.length === 0;
+      if (!wantsCamera) {
+        callback(false);
+        return;
+      }
+
+      if (store.get('aether.mediaPermissionAllowed') === true) {
+        callback(true);
+        return;
+      }
+
+      try {
+        const result = await dialog.showMessageBox(mainWindow, {
+          type: 'question',
+          buttons: ['Allow Camera', 'Not Now'],
+          defaultId: 0,
+          cancelId: 1,
+          title: 'Allow Camera Controls?',
+          message: 'Allow Aether to use your camera for Gesture + Face Lab?',
+          detail: 'Aether uses the camera only when camera controls are enabled. Video stays on this device and is used for face/hand gesture detection.',
+          noLink: true,
+        });
+        const allowed = result.response === 0;
+        if (allowed) store.set('aether.mediaPermissionAllowed', true);
+        callback(allowed);
+      } catch (error) {
+        logDebug('media permission prompt failed', { error: error?.message || String(error) });
+        callback(false);
+      }
+      return;
     }
+    callback(false);
   });
 }
 
@@ -2491,12 +2788,35 @@ app.whenReady().then(async () => {
         }
     });
 
+    ipcMain.handle('aether:set-discord-private', async (event, enabled) => {
+        rpcPrivateMode = !!enabled;
+        if (rpcPrivateMode) {
+            // Clear the activity immediately
+            try { if (rpcClient?.user) await rpcClient.clearActivity(); } catch (_) {}
+        } else {
+            // Restore last known activity
+            if (rpcLastDetails) await setRPCActivity(rpcLastDetails);
+        }
+        return { success: true, privateMode: rpcPrivateMode };
+    });
+
     ipcMain.handle('aether:store-get', (event, key) => store.get(key));
     ipcMain.handle('aether:store-set', (event, key, val) => {
         // During shutdown, ignore playback session rewrites and keep queue cleared.
         if (isAppQuitting && key === SESSION_PLAYBACK_STORE_KEY) return true;
         store.set(key, val);
         return true;
+    });
+    ipcMain.handle('aether:clipboard-write-text', (event, text) => {
+        clipboard.writeText(String(text || ''));
+        return { success: true };
+    });
+    ipcMain.handle('aether:clipboard-read-text', () => {
+        try {
+            return { success: true, text: clipboard.readText() };
+        } catch (error) {
+            return { success: false, error: error?.message || String(error), text: '' };
+        }
     });
     ipcMain.handle('aether:get-playback-ledger', () => {
         try {
@@ -2511,6 +2831,14 @@ app.whenReady().then(async () => {
         }
     });
     ipcMain.handle('aether:get-port', () => actualPort);
+    ipcMain.handle('aether:party-start', async () => await startPartyServer());
+    ipcMain.handle('aether:party-stop', async () => await stopPartyServer());
+    ipcMain.handle('aether:party-status', () => {
+        return {
+            active: !!partyTunnel,
+            url: partyTunnel ? partyTunnel.url : null
+        };
+    });
     ipcMain.handle('aether:get-engine-status', async () => {
         const ytDlpReady = await ensureYtDlpPathWithTimeout(process.platform === 'win32' ? 5000 : 2500);
         const cookiesPath = getResolvedCookiesPath();
@@ -2666,7 +2994,7 @@ app.whenReady().then(async () => {
                 await shell.openPath(found);
                 return { success: true, path: found };
             }
-            const releasesUrl = 'https://github.com/your-org/your-repo/releases/latest';
+            const releasesUrl = 'https://github.com/GSUS2K/Aether-Studio/releases/latest';
             return { success: false, error: 'Installer not found locally', releasesUrl };
         } catch (e) {
             return { success: false, error: e?.message || String(e) };

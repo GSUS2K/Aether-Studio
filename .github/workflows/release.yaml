@@ -173,6 +173,31 @@ jobs:
           --dmg-dir "release-assets/macos" \
           --out "release-assets/homebrew/Casks/aether.rb"
 
+    - name: Push Homebrew cask to tap
+      if: ${{ vars.HOMEBREW_TAP_REPO != '' && secrets.HOMEBREW_TAP_TOKEN != '' }}
+      env:
+        HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
+        HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      run: |
+        set -euo pipefail
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+        TAP_DIR="$(mktemp -d)"
+        git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${HOMEBREW_TAP_REPO}.git" "${TAP_DIR}"
+        mkdir -p "${TAP_DIR}/Casks"
+        cp release-assets/homebrew/Casks/aether.rb "${TAP_DIR}/Casks/aether.rb"
+
+        cd "${TAP_DIR}"
+        if git diff --quiet -- Casks/aether.rb; then
+          echo "Homebrew cask already up to date."
+          exit 0
+        fi
+
+        git add Casks/aether.rb
+        git commit -m "Update Aether cask to ${GITHUB_REF_NAME}"
+        git push origin HEAD
+
     - name: Publish GitHub Release
       uses: softprops/action-gh-release@v2
       with:

@@ -2,7 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, Com
 import { createPortal } from 'react-dom';
 // NOTE: Many async operations and state changes below may be subject to race conditions if triggered rapidly.
 // Consider debouncing or locking for critical flows (e.g., downloads, updates, queue changes).
-import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, VolumeX, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles, Clapperboard, Columns2, Repeat, MessageSquare, Send, Layers, Eye, Hand, MousePointer2, Camera, Copy, Check, Heart, Link2 } from 'lucide-react';
+import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, VolumeX, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles, Clapperboard, Columns2, Repeat, MessageSquare, Send, Layers, Eye, EyeOff, Hand, MousePointer2, Camera, Copy, Check, Heart, Link2, Users, SlidersHorizontal } from 'lucide-react';
 
 import { motion, AnimatePresence, MotionConfig } from 'framer-motion';
 import { setupDiscordSdk } from './discord';
@@ -11,6 +11,7 @@ import { APP_VERSION, BUILD_VERSION, UX_VERSION } from './buildVersion';
 import { buildLibrarySearchIndex, persistLibraryIndexSnapshot } from './libraryIndex';
 import catDoodlePeek from './assets/cat-doodle-peek.svg';
 import './App.css';
+import PartyMode from './PartyMode';
 
 const getAssetUrl = (assetPath) => `${import.meta.env.BASE_URL || '/'}${assetPath}`;
 
@@ -363,6 +364,44 @@ const AUTOPLAY_MOOD_MODES = Object.freeze([
 const ToastPortal = ({ children }) => {
   if (typeof document === 'undefined') return children;
   return createPortal(children, document.body);
+};
+
+const inferToastTone = (message) => {
+  const text = String(message || '').toLowerCase();
+  if (/(failed|failure|error|invalid|unavailable|could not|blocked|denied)/.test(text)) return 'error';
+  if (/(cancelled|canceled|skipped|warning|offline|missing|empty|not found|no playable)/.test(text)) return 'warning';
+  return 'success';
+};
+
+const CONFIRMATION_PREFS_STORAGE_KEY = 'aether.confirmationSkips';
+const readConfirmationSkipPrefs = () => {
+  if (typeof localStorage === 'undefined') return {};
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CONFIRMATION_PREFS_STORAGE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    console.warn('[Aether/Confirm] Failed to read confirmation preferences', error);
+    return {};
+  }
+};
+const setConfirmationSkipPref = (key, value) => {
+  if (!key || typeof localStorage === 'undefined') return;
+  try {
+    const prefs = readConfirmationSkipPrefs();
+    if (value) prefs[key] = true;
+    else delete prefs[key];
+    localStorage.setItem(CONFIRMATION_PREFS_STORAGE_KEY, JSON.stringify(prefs));
+  } catch (error) {
+    console.warn('[Aether/Confirm] Failed to save confirmation preference', error);
+  }
+};
+const resetConfirmationSkipPrefs = () => {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.removeItem(CONFIRMATION_PREFS_STORAGE_KEY);
+  } catch (error) {
+    console.warn('[Aether/Confirm] Failed to reset confirmation preferences', error);
+  }
 };
 
 const buildUniquePlaylistName = (baseName, playlists = {}, ignoreName = '') => {
@@ -739,6 +778,15 @@ const normalizePlaybackLedgerData = (raw) => {
 
   return next;
 };
+const scoreLedgerPayload = (payload) => {
+  const data = normalizePlaybackLedgerData(payload);
+  const totalTracksPlayed = Math.max(0, Math.floor(Number(data.totalPlays) || 0));
+  const totalSessions = Math.max(0, Math.floor(Number(data.totalSessions) || 0));
+  const totalMs = Math.max(0, Math.floor(Number(data.totalMs) || 0));
+  const tracks = Object.keys(data.tracks || {}).length;
+  const sessions = Array.isArray(data.recentSessions) ? data.recentSessions.length : 0;
+  return { data, score: (totalTracksPlayed * 1000000) + (totalSessions * 100000) + totalMs + (tracks * 1000) + sessions };
+};
 const AETHER_SHARE_ORIGIN = 'https://aetherstudio.me';
 const encodeScenePayload = (payload) => {
   try {
@@ -922,6 +970,8 @@ const toReadableShortcut = (combo, isMacPlatform) => {
   return parts.join(isMacPlatform ? '' : '+');
 };
 
+const getCommandPaletteShortcutLabel = (isMacPlatform) => (isMacPlatform ? '⌘K' : 'Ctrl+K');
+
 const sanitizeShortcutMap = (candidate, isMacPlatform) => {
   const next = {};
   SHORTCUT_FIELDS.forEach(({ id }) => {
@@ -987,8 +1037,6 @@ const HeaderVisualControls = memo(forwardRef(function HeaderVisualControls({
   setDoodleIntensity,
   doodleIntensityBadge,
   setIsAuraStageOpen,
-  toggleDiagnostics,
-  isDiagnosticsOpen,
   setLastAdded,
   shortcuts,
   setShortcuts,
@@ -999,6 +1047,11 @@ const HeaderVisualControls = memo(forwardRef(function HeaderVisualControls({
   performanceMode,
   setPerformanceMode,
   onSurfaceOpen,
+  discordPrivate,
+  onToggleDiscordPrivate,
+  openAppLockSettings,
+  lockStatus,
+  requestDestructiveConfirmation,
 }, ref) {
   const [isLooksPanelOpen, setIsLooksPanelOpen] = useState(false);
   const [isShortcutSettingsOpen, setIsShortcutSettingsOpen] = useState(false);
@@ -1093,14 +1146,12 @@ const HeaderVisualControls = memo(forwardRef(function HeaderVisualControls({
         <button onClick={openSignalLedger} className={`${headerAccentButtonClass} group`} title="Open Signal Ledger">
           <Activity size={16} className="group-hover:animate-pulse" />
         </button>
-        <button onClick={openGestureLab} className={`${headerIconButtonClass} ${isGestureControlEnabled ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`} title="Gesture Lab">
-          <Hand size={15} />
-        </button>
-        <button onClick={openFeedbackPanel} className={headerIconButtonClass} title="Send Feedback">
-          <MessageSquare size={15} />
-        </button>
-        <button onClick={openShortcutSettingsLocal} className={headerIconButtonClass} title="Shortcut Settings">
-          <Keyboard size={16} />
+        <button
+          onClick={onToggleDiscordPrivate}
+          className={`${headerIconButtonClass} ${discordPrivate ? 'bg-purple-500/15 border-purple-500/40 text-purple-300' : ''}`}
+          title={discordPrivate ? 'Discord Private Mode: ON — Click to show status' : 'Discord Private Mode: OFF — Click to hide status'}
+        >
+          {discordPrivate ? <EyeOff size={15} /> : <Eye size={15} />}
         </button>
 
         <div className="relative" ref={looksPanelRef} data-no-maximize="true">
@@ -1161,8 +1212,8 @@ const HeaderVisualControls = memo(forwardRef(function HeaderVisualControls({
                 <button onClick={() => { setIsDepthMotionEnabled((prev) => !prev); flashLastAdded(isDepthMotionEnabled ? 'Depth motion disabled' : 'Depth motion enabled'); }} className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${isDepthMotionEnabled ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}>
                   Depth
                 </button>
-                <button onClick={() => { openGestureLab(); setIsLooksPanelOpen(false); }} className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors ${isGestureControlEnabled ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}>
-                  Gesture
+                <button onClick={() => { setIsAuraStageOpen(true); setIsLooksPanelOpen(false); }} className={`px-2 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-[0.14em] border transition-colors bg-white/[0.03] border-white/10 text-white/65 hover:text-brand-accent hover:border-brand-accent/35`}>
+                  Aura Stage
                 </button>
               </div>
 
@@ -1181,14 +1232,24 @@ const HeaderVisualControls = memo(forwardRef(function HeaderVisualControls({
 
               <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 mb-2 mt-1 border-t border-white/10 pt-3">System & Tools</div>
               <div className="grid grid-cols-2 gap-1.5">
-                <button onClick={() => { setIsAuraStageOpen(true); setIsLooksPanelOpen(false); }} className="flex flex-col items-center justify-center gap-1.5 px-2 py-2 rounded-xl border border-white/10 bg-white/[0.03] text-white/65 transition-colors hover:text-brand-accent hover:border-brand-accent/35">
-                  <Layers size={14} />
-                  <span className="text-[8px] font-black uppercase tracking-[0.12em]">Aura Stage</span>
+                <button onClick={() => { openGestureLab(); setIsLooksPanelOpen(false); }} className={`flex flex-col items-center justify-center gap-1.5 px-2 py-2 rounded-xl border transition-colors ${isGestureControlEnabled ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'border-white/10 bg-white/[0.03] text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}>
+                  <Hand size={14} />
+                  <span className="text-[8px] font-black uppercase tracking-[0.12em]">Gestures</span>
                 </button>
-                <button onClick={() => { toggleDiagnostics(); setIsLooksPanelOpen(false); }} className={`flex flex-col items-center justify-center gap-1.5 px-2 py-2 rounded-xl border transition-colors ${isDiagnosticsOpen ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'border-white/10 bg-white/[0.03] text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}>
-                  <Monitor size={14} />
-                  <span className="text-[8px] font-black uppercase tracking-[0.12em]">Diagnostics</span>
+                <button onClick={() => { openShortcutSettingsLocal(); setIsLooksPanelOpen(false); }} className={`flex flex-col items-center justify-center gap-1.5 px-2 py-2 rounded-xl border transition-colors border-white/10 bg-white/[0.03] text-white/65 hover:text-brand-accent hover:border-brand-accent/35`}>
+                  <Keyboard size={14} />
+                  <span className="text-[8px] font-black uppercase tracking-[0.12em]">Shortcuts</span>
                 </button>
+                <button onClick={() => { openFeedbackPanel(); setIsLooksPanelOpen(false); }} className={`flex flex-col items-center justify-center gap-1.5 px-2 py-2 rounded-xl border transition-colors border-white/10 bg-white/[0.03] text-white/65 hover:text-brand-accent hover:border-brand-accent/35`}>
+                  <MessageSquare size={14} />
+                  <span className="text-[8px] font-black uppercase tracking-[0.12em]">Issues</span>
+                </button>
+                {isStandalone && (
+                  <button onClick={() => { openAppLockSettings?.(); setIsLooksPanelOpen(false); }} className={`flex flex-col items-center justify-center gap-1.5 px-2 py-2 rounded-xl border transition-colors ${lockStatus?.enabled ? 'bg-brand-accent/20 border-brand-accent/45 text-brand-accent' : 'border-white/10 bg-white/[0.03] text-white/65 hover:text-brand-accent hover:border-brand-accent/35'}`}>
+                    <Lock size={14} />
+                    <span className="text-[8px] font-black uppercase tracking-[0.12em]">App Lock</span>
+                  </button>
+                )}
               </div>
             </div>
           )}
@@ -1237,7 +1298,16 @@ const HeaderVisualControls = memo(forwardRef(function HeaderVisualControls({
                 </div>
 
                 <div className="flex items-center justify-between gap-3 flex-wrap border-t border-white/10 bg-black/20 px-5 py-4 md:px-6 md:py-5">
-                  <button onClick={() => { setShortcutSettingsError(''); setShortcutDraft(sanitizeShortcutMap(DEFAULT_SHORTCUTS, isMacPlatform)); }} className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all">
+                  <button onClick={async () => {
+                    const confirmed = requestDestructiveConfirmation ? await requestDestructiveConfirmation({
+                      title: 'Reset shortcut defaults?',
+                      message: 'Aether will replace your shortcut draft with the default key bindings. Nothing is saved until you press Save.',
+                      confirmLabel: 'Reset Defaults',
+                    }) : true;
+                    if (!confirmed) return;
+                    setShortcutSettingsError('');
+                    setShortcutDraft(sanitizeShortcutMap(DEFAULT_SHORTCUTS, isMacPlatform));
+                  }} className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all">
                     Reset to Defaults
                   </button>
                   <div className="flex items-center gap-2">
@@ -1254,6 +1324,1404 @@ const HeaderVisualControls = memo(forwardRef(function HeaderVisualControls({
     </>
   );
 }));
+
+const ExperiencePageIntro = memo(function ExperiencePageIntro({ category, title, subtitle, icon: Icon }) {
+  return (
+    <div className="mb-5 flex items-start gap-3">
+      {Icon && (
+        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/10 text-brand-accent">
+          <Icon size={18} />
+        </div>
+      )}
+      <div className="min-w-0">
+        <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">{category}</div>
+        <div className="mt-1 text-2xl font-black uppercase tracking-tight text-white">{title}</div>
+        <div className="mt-1 max-w-3xl text-sm leading-6 text-white/48">{subtitle}</div>
+      </div>
+    </div>
+  );
+});
+
+const ExperienceFeedbackPage = memo(function ExperienceFeedbackPage({
+  platform,
+  isStandalone,
+  currentTrack,
+  getActivePlaybackPositionMs,
+  videoMode,
+  visualizerMode,
+  auraPreset,
+  queueLength,
+  lyricsCount,
+  appendRecentEvent,
+}) {
+  const [feedbackDraft, setFeedbackDraft] = useState(DEFAULT_FEEDBACK_DRAFT);
+  const [feedbackStatus, setFeedbackStatus] = useState('');
+  const [isFeedbackSending, setIsFeedbackSending] = useState(false);
+
+  const updateFeedbackDraft = useCallback((patch) => {
+    setFeedbackDraft((prev) => ({ ...prev, ...patch }));
+    setFeedbackStatus('');
+  }, []);
+
+  const submitFeedback = useCallback(async () => {
+    const summary = feedbackDraft.summary.trim();
+    const details = feedbackDraft.details.trim();
+    if (!summary || !details) {
+      setFeedbackStatus('Add a short title and a little detail first.');
+      return;
+    }
+
+    const trackSnapshot = currentTrack ? {
+      title: currentTrack.title || '',
+      author: currentTrack.author || '',
+      url: currentTrack.actualUrl || currentTrack.url || '',
+      youtubeId: currentTrack.youtubeId || '',
+      positionMs: getActivePlaybackPositionMs?.() || 0,
+    } : null;
+
+    const payload = {
+      id: `feedback-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type: feedbackDraft.type,
+      summary,
+      details,
+      contact: feedbackDraft.contact.trim(),
+      buildVersion: BUILD_VERSION,
+      uxVersion: UX_VERSION,
+      platform: platform || 'web',
+      isStandalone,
+      currentTrack: trackSnapshot,
+      diagnostics: { playbackMode: videoMode || 'audio', visualizerMode, auraPreset, queueLength, lyricsCount },
+      createdAt: new Date().toISOString(),
+    };
+
+    setIsFeedbackSending(true);
+    setFeedbackStatus('Preparing feedback...');
+    try {
+      let saved = false;
+      if (isStandalone && window.aether?.store?.get && window.aether?.store?.set) {
+        const existing = await window.aether.store.get(FEEDBACK_STORAGE_KEY);
+        const list = Array.isArray(existing) ? existing : [];
+        await window.aether.store.set(FEEDBACK_STORAGE_KEY, [payload, ...list].slice(0, 50));
+        saved = true;
+      } else {
+        const raw = localStorage.getItem(FEEDBACK_STORAGE_KEY);
+        const list = raw ? JSON.parse(raw) : [];
+        localStorage.setItem(FEEDBACK_STORAGE_KEY, JSON.stringify([payload, ...(Array.isArray(list) ? list : [])].slice(0, 50)));
+        saved = true;
+      }
+
+      const endpoint = import.meta.env.VITE_FEEDBACK_ENDPOINT?.trim();
+      if (endpoint) {
+        await axios.post(endpoint, payload, { timeout: 8000 });
+        setFeedbackStatus(saved ? 'Sent privately. Thanks for helping improve Aether.' : 'Sent privately.');
+      } else {
+        const title = encodeURIComponent(`[${payload.type}] ${summary}`);
+        const body = encodeURIComponent([
+          details,
+          '',
+          '---',
+          `Build: ${BUILD_VERSION}`,
+          `UX: ${UX_VERSION}`,
+          `Platform: ${payload.platform}`,
+          trackSnapshot ? `Track: ${trackSnapshot.title} - ${trackSnapshot.author}` : 'Track: none',
+        ].join('\n'));
+        const issueUrl = `${FEEDBACK_ISSUE_URL}?title=${title}&body=${body}`;
+        if (isStandalone && window.aether?.openExternal) {
+          await window.aether.openExternal(issueUrl);
+        } else {
+          window.open(issueUrl, '_blank', 'noopener,noreferrer');
+        }
+        setFeedbackStatus(saved ? 'Saved locally and opened a GitHub issue draft.' : 'Opened a GitHub issue draft.');
+      }
+      appendRecentEvent?.('feedback', summary, { tone: 'success' });
+      setFeedbackDraft(DEFAULT_FEEDBACK_DRAFT);
+    } catch (error) {
+      console.warn('[Aether/Feedback] Failed to submit feedback', error);
+      setFeedbackStatus(error?.message || 'Feedback failed. Copy details and try again.');
+      appendRecentEvent?.('feedback_failed', error?.message || 'Feedback failed', { tone: 'error' });
+    } finally {
+      setIsFeedbackSending(false);
+    }
+  }, [appendRecentEvent, auraPreset, currentTrack, feedbackDraft, getActivePlaybackPositionMs, isStandalone, lyricsCount, platform, queueLength, videoMode, visualizerMode]);
+
+  return (
+    <div>
+      <ExperiencePageIntro category="Support" title="Send Feedback" subtitle="Report problems, suggest improvements, or share new ideas." icon={MessageSquare} />
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+        <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+          <div className="grid grid-cols-3 gap-2">
+            {['Problem', 'Improvement', 'Idea'].map((type) => (
+              <button key={type} onClick={() => updateFeedbackDraft({ type })} className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${feedbackDraft.type === type ? 'border-brand-accent/40 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}>
+                {type}
+              </button>
+            ))}
+          </div>
+          <input value={feedbackDraft.summary} onChange={(e) => updateFeedbackDraft({ summary: e.target.value })} placeholder="Short title" className="mt-4 w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-white outline-none transition-all placeholder:text-white/24 focus:border-brand-accent/45" />
+          <textarea value={feedbackDraft.details} onChange={(e) => updateFeedbackDraft({ details: e.target.value })} placeholder="What happened, or what should be better?" className="mt-3 min-h-[180px] w-full resize-none rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm leading-6 text-white outline-none transition-all placeholder:text-white/24 focus:border-brand-accent/45" />
+          <input value={feedbackDraft.contact} onChange={(e) => updateFeedbackDraft({ contact: e.target.value })} placeholder="Contact handle/email optional" className="mt-3 w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white outline-none transition-all placeholder:text-white/24 focus:border-brand-accent/45" />
+          {feedbackStatus && <div className="mt-4 rounded-2xl border border-white/8 bg-black/24 px-4 py-3 text-[11px] font-semibold leading-5 text-white/58">{feedbackStatus}</div>}
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+            <div className="text-[10px] uppercase tracking-[0.2em] text-white/30">Build {BUILD_VERSION} // {platform || 'web'}</div>
+            <button onClick={submitFeedback} disabled={isFeedbackSending || !feedbackDraft.summary.trim() || !feedbackDraft.details.trim()} className="flex items-center gap-2 rounded-2xl bg-brand-accent px-5 py-3 text-[11px] font-black uppercase tracking-[0.2em] text-black transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-45 disabled:hover:scale-100">
+              {isFeedbackSending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+              {isFeedbackSending ? 'Sending...' : 'Send'}
+            </button>
+          </div>
+        </section>
+        <aside className="rounded-[1.5rem] border border-brand-accent/20 bg-brand-accent/[0.06] p-5 text-sm leading-6 text-white/55">
+          Feedback is sent privately when available. Otherwise Aether prepares a GitHub issue draft so you can review it before submitting.
+        </aside>
+      </div>
+    </div>
+  );
+});
+
+const ExperienceGestureFaceLabPage = memo(function ExperienceGestureFaceLabPage({
+  isGestureControlEnabled,
+  setIsGestureControlEnabled,
+  isFaceControlEnabled,
+  setIsFaceControlEnabled,
+  faceControlStatus,
+  faceControlSignal,
+  cameraHandSignal,
+  setLastAdded,
+}) {
+  const cameraStatusLabel = isFaceControlEnabled ? (faceControlStatus || 'Camera active') : 'Camera off';
+  return (
+    <div>
+      <ExperiencePageIntro category="Control Input" title="Gesture + Face Lab" subtitle="Configure pointer, swipe, face, and camera controls." icon={Hand} />
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+          <button onClick={() => setIsGestureControlEnabled((prev) => { const next = !prev; if (!next) setIsFaceControlEnabled(false); setLastAdded?.(next ? 'Gesture controls enabled' : 'Gesture controls disabled'); window.setTimeout(() => setLastAdded?.(null), 1800); return next; })} className={`mb-4 flex w-full items-center justify-between rounded-2xl border px-4 py-4 text-left transition-all ${isGestureControlEnabled ? 'border-brand-accent/35 bg-brand-accent/12 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/70 hover:border-brand-accent/35 hover:text-brand-accent'}`}>
+            <span><span className="block text-[11px] font-black uppercase tracking-[0.22em]">Gesture controls</span><span className="mt-1 block text-[11px] font-semibold text-white/42">Pointer motion drives stage depth. Fast swipes control playback.</span></span>
+            <span className="rounded-full border border-current px-3 py-1 text-[9px] font-black uppercase tracking-[0.2em]">{isGestureControlEnabled ? 'On' : 'Off'}</span>
+          </button>
+          <button onClick={() => setIsFaceControlEnabled((prev) => { const next = !prev; setLastAdded?.(next ? 'Camera controls enabled' : 'Camera controls disabled'); window.setTimeout(() => setLastAdded?.(null), 1800); return next; })} className={`flex w-full items-center justify-between rounded-2xl border px-4 py-4 text-left transition-all ${isFaceControlEnabled ? 'border-brand-accent/35 bg-brand-accent/12 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/70 hover:border-brand-accent/35 hover:text-brand-accent'}`}>
+            <span className="flex items-center gap-3"><Camera size={18} className="shrink-0" /><span><span className="block text-[11px] font-black uppercase tracking-[0.22em]">Camera controls</span><span className="mt-1 block text-[11px] font-semibold text-white/42">Camera tracks face position and hand swipes independently of gesture controls.</span></span></span>
+            <span className="rounded-full border border-current px-3 py-1 text-[9px] font-black uppercase tracking-[0.2em]">{isFaceControlEnabled ? 'On' : 'Off'}</span>
+          </button>
+          <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+            {[
+              [MousePointer2, 'Pointer depth', 'Move pointer/finger to tilt the Aura Stage layers.'],
+              [ChevronLeft, 'Swipe left', 'Skip to the next track.'],
+              [ChevronRight, 'Swipe right', 'Restart or go to the previous track.'],
+              [Volume2, '2-finger swipe U/D', 'Two fingers slide up or down to adjust volume.'],
+              [Fingerprint, 'Pinch in', 'Two-finger pinch to pause playback.'],
+              [Camera, 'Camera wave', 'Wave your hand or look around for playback controls.'],
+            ].map(([Icon, title, detail]) => (
+              <div key={title} className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                <Icon size={18} className="text-brand-accent" />
+                <div className="mt-3 text-[11px] font-black uppercase tracking-[0.2em] text-white/80">{title}</div>
+                <div className="mt-1 text-[11px] leading-5 text-white/42">{detail}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+        <aside className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Input Status</div>
+              <div className="mt-2 text-sm font-bold text-white/65">{cameraStatusLabel}</div>
+            </div>
+            <span className={`rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-[0.18em] ${isGestureControlEnabled ? 'border-brand-accent/35 bg-brand-accent/10 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/40'}`}>{isGestureControlEnabled ? 'Gestures on' : 'Gestures off'}</span>
+          </div>
+          <div className="mt-4 rounded-2xl border border-brand-accent/15 bg-brand-accent/[0.05] p-3 text-xs leading-5 text-white/48">
+            Swipes are active across the player when Gesture controls are on. Buttons, inputs, and this control panel ignore gestures so normal clicks still feel reliable.
+          </div>
+          <div className="mt-4 space-y-3">
+            <div className="rounded-2xl border border-white/8 bg-black/24 p-3 text-[10px] font-mono text-brand-accent/75">FACE {faceControlSignal.x.toFixed(2)}, {faceControlSignal.y.toFixed(2)}</div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-brand-accent" style={{ width: `${Math.round(clamp01(faceControlSignal.confidence) * 100)}%` }} /></div>
+            <div className="rounded-2xl border border-white/8 bg-black/24 p-3 text-[10px] font-mono text-brand-accent/75">HAND {cameraHandSignal.x.toFixed(2)}, {cameraHandSignal.y.toFixed(2)}</div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-brand-accent/65" style={{ width: `${Math.round(clamp01(cameraHandSignal.motion) * 100)}%` }} /></div>
+            <div className="text-[9px] font-black uppercase tracking-[0.18em] text-white/28">Last hand signal: {cameraHandSignal.last}</div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+});
+
+const ExperienceShortcutSettingsPage = memo(function ExperienceShortcutSettingsPage({
+  shortcuts,
+  shortcutDraft,
+  setShortcutDraft,
+  shortcutSettingsError,
+  setShortcutSettingsError,
+  globalMediaShortcutsEnabled,
+  setGlobalMediaShortcutsEnabled,
+  saveShortcutSettings,
+  isShortcutSettingsSaving,
+  resetShortcutSettingsToDefaults,
+  isMacPlatform,
+  openTipsOverlay,
+  requestDestructiveConfirmation,
+}) {
+  const [recordingId, setRecordingId] = useState(null);
+  const handleReset = useCallback(async () => {
+    const confirmed = requestDestructiveConfirmation ? await requestDestructiveConfirmation({
+      title: 'Reset shortcut defaults?',
+      message: 'Aether will replace your shortcut draft with the default key bindings. Nothing is saved until you press Save Shortcuts.',
+      confirmLabel: 'Reset Defaults',
+    }) : true;
+    if (confirmed) resetShortcutSettingsToDefaults();
+  }, [requestDestructiveConfirmation, resetShortcutSettingsToDefaults]);
+
+  return (
+    <div>
+      <ExperiencePageIntro category="Shortcuts" title="Shortcut Settings" subtitle="Customize playback and command shortcuts." icon={Keyboard} />
+      <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          {SHORTCUT_FIELDS.map((field) => (
+            <label key={field.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-sm text-white/75">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="text-[11px] uppercase tracking-[0.2em] text-white/50">{field.label}</span>
+                <span className="text-[9px] font-black uppercase tracking-[0.16em] text-brand-accent/70">{recordingId === field.id ? 'Recording shortcut...' : 'Click and press keys'}</span>
+              </div>
+              <input
+                value={shortcutDraft[field.id] || ''}
+                onFocus={() => setRecordingId(field.id)}
+                onBlur={() => setRecordingId(null)}
+                onChange={(e) => {
+                  setShortcutSettingsError('');
+                  setShortcutDraft((prev) => ({ ...prev, [field.id]: e.target.value }));
+                }}
+                data-shortcut-recording={recordingId === field.id ? 'true' : undefined}
+                className="w-full rounded-xl border border-white/15 bg-black/30 px-3 py-2 font-mono text-white outline-none transition-colors focus:border-brand-accent/50"
+                placeholder="Mod+Alt+Space"
+              />
+              <div className="mt-1 text-[11px] text-white/40">Current: {toReadableShortcut(shortcuts[field.id], isMacPlatform)}</div>
+            </label>
+          ))}
+        </div>
+        <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+          <label className="flex items-start gap-3 text-sm text-white/75">
+            <input type="checkbox" checked={globalMediaShortcutsEnabled} onChange={(e) => setGlobalMediaShortcutsEnabled(e.target.checked)} className="mt-0.5 h-4 w-4 accent-brand-accent" />
+            <span>
+              Enable global media shortcuts
+              <span className="mt-1 block text-[11px] text-white/45">This affects system-wide key capture and may conflict with OS/app controls. Restart app after change.</span>
+            </span>
+          </label>
+        </div>
+        {shortcutSettingsError && <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">{shortcutSettingsError}</div>}
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-white/10 pt-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <button onClick={handleReset} className="rounded-xl border border-white/15 bg-white/[0.03] px-4 py-2 text-white/70 transition-all hover:border-brand-accent/40 hover:text-brand-accent">Reset to Defaults</button>
+            <button onClick={openTipsOverlay} className="rounded-xl border border-white/15 bg-white/[0.03] px-4 py-2 text-white/70 transition-all hover:border-brand-accent/40 hover:text-brand-accent">Open Guide</button>
+          </div>
+          <button onClick={saveShortcutSettings} disabled={isShortcutSettingsSaving} className="rounded-xl border border-brand-accent/35 bg-brand-accent/10 px-4 py-2 text-brand-accent transition-all hover:bg-brand-accent/20 disabled:opacity-50">{isShortcutSettingsSaving ? 'Saving...' : 'Save Shortcuts'}</button>
+        </div>
+      </section>
+    </div>
+  );
+});
+
+const ExperienceAppLockPage = memo(function ExperienceAppLockPage({
+  isStandalone,
+  lockStatus,
+  lockIdleMinutes,
+  setLockIdleMinutes,
+  refreshLockStatus,
+  setIsAppLocked,
+  setLastAdded,
+  requestDestructiveConfirmation,
+}) {
+  const [lockPasswordInput, setLockPasswordInput] = useState('');
+  const [lockPasswordConfirm, setLockPasswordConfirm] = useState('');
+  const [lockDisablePassword, setLockDisablePassword] = useState('');
+  const [lockUseTouchId, setLockUseTouchId] = useState(false);
+  const [lockError, setLockError] = useState('');
+  const [isLockBusy, setIsLockBusy] = useState(false);
+  const [lockRecoveryStatus, setLockRecoveryStatus] = useState({ phrase: { enabled: false, createdAt: null } });
+  const [recoverySetupError, setRecoverySetupError] = useState('');
+  const [phraseBusy, setPhraseBusy] = useState(false);
+  const [phraseGenerated, setPhraseGenerated] = useState('');
+  const [phraseCopied, setPhraseCopied] = useState(false);
+
+  const refreshLockRecoveryStatusLocal = useCallback(async () => {
+    if (!window.aether?.getLockRecoveryStatus) return;
+    try {
+      const res = await window.aether.getLockRecoveryStatus();
+      if (res?.success) setLockRecoveryStatus({ phrase: res.phrase || { enabled: false, createdAt: null } });
+    } catch { }
+  }, []);
+
+  useEffect(() => {
+    setLockUseTouchId(!!lockStatus.touchIdEnabled);
+    refreshLockRecoveryStatusLocal();
+  }, [lockStatus.touchIdEnabled, refreshLockRecoveryStatusLocal]);
+
+  const handleEnableLock = useCallback(async () => {
+    if (!window.aether?.setAppLock) return;
+    if (!lockPasswordInput || lockPasswordInput.length < 4) {
+      setLockError('Password must be at least 4 characters.');
+      return;
+    }
+    if (lockPasswordInput !== lockPasswordConfirm) {
+      setLockError('Passwords do not match.');
+      return;
+    }
+    setIsLockBusy(true);
+    setLockError('');
+    try {
+      const res = await window.aether.setAppLock(lockPasswordInput, !!lockUseTouchId);
+      if (!res?.success) {
+        setLockError(res?.error || 'Failed to enable lock.');
+        return;
+      }
+      setLockPasswordInput('');
+      setLockPasswordConfirm('');
+      await refreshLockStatus();
+      setLastAdded('App lock enabled');
+      setTimeout(() => setLastAdded(null), 2000);
+    } finally {
+      setIsLockBusy(false);
+    }
+  }, [lockPasswordConfirm, lockPasswordInput, lockUseTouchId, refreshLockStatus, setLastAdded]);
+
+  const handleDisableLock = useCallback(async () => {
+    if (!window.aether?.disableAppLock || !lockDisablePassword) {
+      setLockError('Enter your password to disable App Lock.');
+      return;
+    }
+    const confirmed = requestDestructiveConfirmation ? await requestDestructiveConfirmation({
+      title: 'Disable App Lock?',
+      message: 'Aether will remove the password gate and idle lock protection from this device.',
+      detail: 'You can turn App Lock back on later from Security.',
+      confirmLabel: 'Disable Lock',
+    }) : true;
+    if (!confirmed) return;
+    setIsLockBusy(true);
+    setLockError('');
+    try {
+      const res = await window.aether.disableAppLock(lockDisablePassword);
+      if (!res?.success) {
+        setLockError(res?.error || 'Failed to disable lock.');
+        return;
+      }
+      setLockDisablePassword('');
+      await refreshLockStatus();
+      setIsAppLocked(false);
+      setLastAdded('App lock disabled');
+      setTimeout(() => setLastAdded(null), 2000);
+    } finally {
+      setIsLockBusy(false);
+    }
+  }, [lockDisablePassword, refreshLockStatus, requestDestructiveConfirmation, setIsAppLocked, setLastAdded]);
+
+  const handleToggleTouchIdLock = useCallback(async (enabled) => {
+    setLockUseTouchId(enabled);
+    if (!lockStatus.enabled || !window.aether?.setAppLockTouchId) return;
+    const res = await window.aether.setAppLockTouchId(enabled);
+    if (res?.success) await refreshLockStatus();
+  }, [lockStatus.enabled, refreshLockStatus]);
+
+  const handleLockNow = useCallback(() => {
+    if (!lockStatus.enabled) return;
+    setIsAppLocked(true);
+    setLastAdded('Aether locked');
+    setTimeout(() => setLastAdded(null), 1600);
+  }, [lockStatus.enabled, setIsAppLocked, setLastAdded]);
+
+  const handleGenerateRecoveryPhrase = useCallback(async () => {
+    if (!window.aether?.generateRecoveryPhrase) return;
+    setPhraseBusy(true);
+    setRecoverySetupError('');
+    try {
+      const res = await window.aether.generateRecoveryPhrase();
+      if (!res?.success) {
+        setRecoverySetupError(res?.error || 'Failed to generate phrase.');
+        return;
+      }
+      setPhraseGenerated(String(res.phrase || ''));
+      await refreshLockRecoveryStatusLocal();
+    } catch (e) {
+      setRecoverySetupError(e?.message || 'Failed to generate phrase.');
+    } finally {
+      setPhraseBusy(false);
+    }
+  }, [refreshLockRecoveryStatusLocal]);
+
+  const handleCopyPhrase = useCallback(() => {
+    if (!phraseGenerated) return;
+    navigator.clipboard.writeText(phraseGenerated).then(() => {
+      setPhraseCopied(true);
+      setTimeout(() => setPhraseCopied(false), 2000);
+    }).catch(() => setRecoverySetupError('Could not copy phrase.'));
+  }, [phraseGenerated]);
+
+  if (!isStandalone) {
+    return (
+      <div>
+        <ExperiencePageIntro category="Security" title="App Lock" subtitle="Protect Aether with password, Touch ID, and idle locking." icon={Lock} />
+        <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5 text-sm text-white/55">App Lock is available in the desktop build.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <ExperiencePageIntro category="Security" title="App Lock" subtitle="Protect Aether with password, Touch ID, and idle locking." icon={Lock} />
+      <div className="grid gap-4 lg:grid-cols-2">
+        <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+          <div className="text-[10px] font-black uppercase tracking-[0.22em] text-brand-accent">{lockStatus.enabled ? 'Enabled' : 'Setup'}</div>
+          {lockStatus.enabled ? (
+            <div className="mt-4 space-y-4">
+              <div className="rounded-2xl border border-brand-accent/20 bg-brand-accent/[0.07] px-4 py-3 text-sm text-white/60">App Lock is enabled. Enter your password to disable App Lock.</div>
+              <input type="password" value={lockDisablePassword} onChange={(event) => { setLockDisablePassword(event.target.value); setLockError(''); }} placeholder="Password required to disable" className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white outline-none transition-colors focus:border-brand-accent/45" disabled={isLockBusy} />
+              <div className="flex flex-wrap gap-2">
+                <button onClick={handleLockNow} className="rounded-xl border border-brand-accent/30 bg-brand-accent/10 px-4 py-2 text-sm font-black text-brand-accent transition-colors hover:bg-brand-accent/15">Lock Now</button>
+                <button onClick={handleDisableLock} disabled={isLockBusy || !lockDisablePassword} className="rounded-xl border border-red-400/30 bg-red-500/10 px-4 py-2 text-sm font-black text-red-200 transition-colors disabled:opacity-45">Disable Lock</button>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-4 space-y-3">
+              <input type="password" value={lockPasswordInput} onChange={(event) => { setLockPasswordInput(event.target.value); setLockError(''); }} placeholder="New App Lock password" className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white outline-none transition-colors focus:border-brand-accent/45" disabled={isLockBusy} />
+              <input type="password" value={lockPasswordConfirm} onChange={(event) => { setLockPasswordConfirm(event.target.value); setLockError(''); }} placeholder="Confirm password" className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white outline-none transition-colors focus:border-brand-accent/45" disabled={isLockBusy} />
+              <button onClick={handleEnableLock} disabled={isLockBusy} className="rounded-xl border border-brand-accent/30 bg-brand-accent/10 px-4 py-2 text-sm font-black text-brand-accent transition-colors hover:bg-brand-accent/15 disabled:opacity-45">{isLockBusy ? 'Saving...' : 'Enable App Lock'}</button>
+            </div>
+          )}
+          {lockError && <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">{lockError}</div>}
+        </section>
+        <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+          <div className="text-[10px] font-black uppercase tracking-[0.22em] text-brand-accent">Options</div>
+          <label className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white/65">
+            <span>Touch ID unlock</span>
+            <input type="checkbox" checked={!!lockUseTouchId} onChange={(event) => handleToggleTouchIdLock(event.target.checked)} className="h-4 w-4 accent-brand-accent" />
+          </label>
+          <label className="mt-3 block rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white/65">
+            <div className="flex items-center justify-between gap-3"><span>Idle auto-lock</span><span className="font-mono text-brand-accent">{lockIdleMinutes}m</span></div>
+            <input type="range" min="1" max="120" value={lockIdleMinutes} onChange={(event) => setLockIdleMinutes(Number(event.target.value) || 15)} className="mt-3 w-full accent-brand-accent" />
+          </label>
+          <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-4">
+            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-white/45">Recovery</div>
+            <div className="mt-2 text-xs leading-5 text-white/45">{lockRecoveryStatus?.phrase?.enabled ? 'Recovery phrase is enabled.' : 'Generate a recovery phrase so you can recover access later.'}</div>
+            {phraseGenerated && <div className="mt-3 rounded-xl border border-brand-accent/25 bg-brand-accent/10 p-3 font-mono text-xs text-brand-accent">{phraseGenerated}</div>}
+            {recoverySetupError && <div className="mt-3 text-xs text-red-300">{recoverySetupError}</div>}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button onClick={handleGenerateRecoveryPhrase} disabled={phraseBusy} className="rounded-xl border border-white/15 bg-white/[0.04] px-3 py-2 text-xs font-black uppercase tracking-[0.16em] text-white/65 hover:border-brand-accent/35 hover:text-brand-accent">{phraseBusy ? 'Generating...' : 'Generate Phrase'}</button>
+              {phraseGenerated && <button onClick={handleCopyPhrase} className="rounded-xl border border-white/15 bg-white/[0.04] px-3 py-2 text-xs font-black uppercase tracking-[0.16em] text-white/65 hover:border-brand-accent/35 hover:text-brand-accent">{phraseCopied ? 'Copied' : 'Copy'}</button>}
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+});
+
+const ExperienceSignalLedgerPage = memo(function ExperienceSignalLedgerPage({
+  getProxyUrl,
+  currentTrack,
+  isPlaying,
+  getActivePlaybackPositionMs,
+  setLastAdded,
+}) {
+  const [ledgerData, setLedgerData] = useState(() => createPlaybackLedgerData());
+  const [lastUpdatedAt, setLastUpdatedAt] = useState(0);
+  const [ledgerError, setLedgerError] = useState('');
+  const [liveTick, setLiveTick] = useState(0);
+  const [isClearLedgerOpen, setIsClearLedgerOpen] = useState(false);
+  const [ledgerClearPassword, setLedgerClearPassword] = useState('');
+  const [ledgerClearError, setLedgerClearError] = useState('');
+  const [isClearingLedger, setIsClearingLedger] = useState(false);
+  const [isSyncingLedger, setIsSyncingLedger] = useState(false);
+  const ledgerMountedRef = useRef(true);
+
+  useEffect(() => () => {
+    ledgerMountedRef.current = false;
+  }, []);
+
+  const loadLedger = useCallback(async () => {
+    try {
+      setLedgerError('');
+      const candidates = [];
+      if (window.aether?.store?.get) candidates.push(await window.aether.store.get(PLAYBACK_LEDGER_STORAGE_KEY));
+      if (window.aether?.getPlaybackLedger) candidates.push(await window.aether.getPlaybackLedger());
+      if (typeof localStorage !== 'undefined') {
+        const raw = localStorage.getItem(PLAYBACK_LEDGER_STORAGE_KEY);
+        if (raw) candidates.push(JSON.parse(raw));
+      }
+      const bestCandidate = candidates.map((payload) => scoreLedgerPayload(payload)).sort((left, right) => right.score - left.score)[0] || scoreLedgerPayload(null);
+      const normalized = bestCandidate.data;
+      if (!ledgerMountedRef.current) return normalized;
+      setLedgerData(normalized);
+      setLastUpdatedAt(Date.now());
+      if (window.aether?.store?.set) {
+        try { await window.aether.store.set(PLAYBACK_LEDGER_STORAGE_KEY, normalized); } catch (syncError) { console.warn('[Aether] Failed to persist Signal Ledger after refresh', syncError); }
+      }
+      if (typeof localStorage !== 'undefined') {
+        try { localStorage.setItem(PLAYBACK_LEDGER_STORAGE_KEY, JSON.stringify(normalized)); } catch { }
+      }
+      return normalized;
+    } catch (error) {
+      const fallback = createPlaybackLedgerData();
+      if (ledgerMountedRef.current) {
+        setLedgerError(error?.message || 'Ledger refresh failed');
+        setLedgerData(fallback);
+      }
+      return fallback;
+    }
+  }, []);
+
+  useEffect(() => {
+    loadLedger();
+    const liveInterval = window.setInterval(() => setLiveTick((tick) => tick + 1), 2500);
+    return () => window.clearInterval(liveInterval);
+  }, [loadLedger]);
+
+  const view = useMemo(() => {
+    const data = normalizePlaybackLedgerData(ledgerData);
+    const totalTracksPlayed = data.totalPlays || Object.values(data.tracks || {}).reduce((total, entry) => total + Math.max(0, Math.floor(Number(entry?.count) || 0)), 0);
+    const totalMs = Math.max(0, Math.floor(Number(data.totalMs) || (Number(data.totalMinutes) || 0) * 60000));
+    const todayKey = getLocalDateKey(new Date());
+    const recentWeek = Array.from({ length: 7 }, (_, index) => {
+      const date = new Date();
+      date.setDate(date.getDate() - (6 - index));
+      const key = getLocalDateKey(date);
+      return {
+        key,
+        label: date.toLocaleDateString(undefined, { weekday: 'short' }).slice(0, 3).toUpperCase(),
+        minutesMs: Math.max(0, Math.floor(Number(data.dailyMinutes?.[key]) || 0)),
+        plays: Math.max(0, Math.floor(Number(data.dailyPlays?.[key]) || 0)),
+      };
+    });
+    const weekMaxMs = Math.max(1, ...recentWeek.map((entry) => entry.minutesMs));
+    const peakHours = Array.from({ length: 24 }, (_, hour) => ({ hour, label: `${String(hour).padStart(2, '0')}:00`, count: Math.max(0, Number(data.hourlyTrends?.[hour] || 0)) }));
+    const peakHourMax = Math.max(1, ...peakHours.map((entry) => entry.count));
+    const topTracks = Object.entries(data.tracks || {}).sort((a, b) => (b[1]?.count || 0) - (a[1]?.count || 0)).slice(0, 5);
+    const topArtists = Object.entries(data.artists || {}).sort((a, b) => (b[1]?.count || 0) - (a[1]?.count || 0)).slice(0, 5);
+    const recentSessions = Array.isArray(data.recentSessions) ? data.recentSessions.slice(0, 6) : [];
+    const totalSessions = Math.max(0, Math.floor(Number(data.totalSessions) || totalTracksPlayed));
+    const todayMs = Math.max(0, Math.floor(Number(data.dailyMinutes?.[todayKey]) || 0));
+    const todayPlays = Math.max(0, Math.floor(Number(data.dailyPlays?.[todayKey]) || 0));
+    const activeDays = recentWeek.filter((entry) => entry.minutesMs > 0 || entry.plays > 0).length;
+    return { ...data, totalTracksPlayed, totalMs, recentWeek, weekMaxMs, peakHours, peakHourMax, topTracks, topArtists, recentSessions, totalSessions, todayMs, todayPlays, activeDays };
+  }, [ledgerData]);
+
+  const syncLedger = useCallback(async () => {
+    if (isSyncingLedger) return;
+    setIsSyncingLedger(true);
+    try {
+      await loadLedger();
+      setLastAdded?.('Signal Ledger synced');
+      window.setTimeout(() => setLastAdded?.(null), 2200);
+    } catch (error) {
+      setLedgerError(error?.message || 'Could not sync Signal Ledger.');
+      setLastAdded?.('Signal Ledger sync failed');
+      window.setTimeout(() => setLastAdded?.(null), 2400);
+    } finally {
+      setIsSyncingLedger(false);
+    }
+  }, [isSyncingLedger, loadLedger, setLastAdded]);
+
+  const requestClearLedger = useCallback(async () => {
+    setLedgerClearPassword('');
+    setLedgerClearError('');
+    try {
+      const status = await window.aether?.getLockStatus?.();
+      if (!status?.enabled) setLedgerClearError('Set up App Lock first, then Signal Ledger can be cleared safely.');
+    } catch (error) {
+      setLedgerClearError(error?.message || 'Could not check App Lock.');
+    }
+    setIsClearLedgerOpen(true);
+  }, []);
+
+  const clearLedgerAfterAuth = useCallback(async (method = 'password') => {
+    if (isClearingLedger) return;
+    setIsClearingLedger(true);
+    setLedgerClearError('');
+    try {
+      const status = await window.aether?.getLockStatus?.();
+      if (!status?.enabled) throw new Error('Set up App Lock first, then Signal Ledger can be cleared safely.');
+      let verified = false;
+      if (method === 'biometric') {
+        const res = await window.aether?.verifyAppLockBiometric?.();
+        verified = !!res?.success;
+      } else {
+        if (!ledgerClearPassword.trim()) throw new Error('Enter your App Lock password.');
+        const res = await window.aether?.verifyAppLockPassword?.(ledgerClearPassword);
+        verified = !!res?.success;
+      }
+      if (!verified) throw new Error('Verification failed.');
+      const emptyLedger = createPlaybackLedgerData();
+      if (window.aether?.store?.set) await window.aether.store.set(PLAYBACK_LEDGER_STORAGE_KEY, emptyLedger);
+      if (typeof localStorage !== 'undefined') localStorage.setItem(PLAYBACK_LEDGER_STORAGE_KEY, JSON.stringify(emptyLedger));
+      setLedgerData(emptyLedger);
+      setLastUpdatedAt(Date.now());
+      setLedgerClearPassword('');
+      setIsClearLedgerOpen(false);
+      setLastAdded?.('Signal Ledger cleared');
+      window.setTimeout(() => setLastAdded?.(null), 2600);
+    } catch (error) {
+      setLedgerClearError(error?.message || 'Could not clear Signal Ledger.');
+    } finally {
+      setIsClearingLedger(false);
+    }
+  }, [isClearingLedger, ledgerClearPassword, setLastAdded]);
+
+  const livePositionMs = currentTrack && isPlaying ? Math.max(0, Math.floor(Number(getActivePlaybackPositionMs?.() || liveTick * 0) || 0)) : 0;
+  const liveDurationMs = Math.max(0, Math.floor(Number(currentTrack?.totalDurationMs || currentTrack?.duration || 0)));
+  const liveProgressPct = liveDurationMs > 0 ? clamp01(livePositionMs / liveDurationMs) * 100 : 0;
+  const updatedLabel = lastUpdatedAt ? new Date(lastUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'fresh';
+  const isEmpty = view.totalTracksPlayed <= 0 && view.totalMs <= 0 && view.recentSessions.length === 0;
+
+  return (
+    <div>
+      <ExperiencePageIntro category="Listening Intelligence" title="Signal Ledger" subtitle="Track your listening history, replay pulse, and recent activity." icon={Signal} />
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/38">Live refresh - {updatedLabel}{ledgerError ? ` - ${ledgerError}` : ''}</div>
+        <div className="flex gap-2">
+          <button onClick={requestClearLedger} className="flex h-10 items-center gap-2 rounded-xl border border-red-500/18 bg-red-500/[0.06] px-3 text-[10px] font-black uppercase tracking-[0.18em] text-red-200/70 transition-colors hover:border-red-400/40 hover:text-red-200"><Trash2 size={13} /> Clear</button>
+          <button onClick={syncLedger} disabled={isSyncingLedger} className="flex h-10 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/55 transition-colors hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-50"><RefreshCw size={13} className={isSyncingLedger ? 'animate-spin' : ''} /> {isSyncingLedger ? 'Syncing...' : 'Sync'}</button>
+        </div>
+      </div>
+      {isEmpty && <div className="mb-4 rounded-[1.5rem] border border-dashed border-brand-accent/20 bg-brand-accent/[0.05] p-5 text-sm text-white/55">No listening history yet. Play a few tracks and Aether will build your signal ledger.</div>}
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+        <section className="rounded-[1.5rem] border border-brand-accent/22 bg-brand-accent/[0.075] p-5 xl:col-span-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Live Now</div>
+              <div className="mt-2 truncate text-xl font-black text-white">{currentTrack?.title || 'No active track'}</div>
+              <div className="mt-1 truncate text-[11px] uppercase tracking-[0.18em] text-white/42">{currentTrack?.author || (isPlaying ? 'Resolving signal' : 'Playback paused')}</div>
+            </div>
+            {currentTrack?.thumbnail ? <img src={getProxyUrl(currentTrack.thumbnail)} loading="lazy" decoding="async" className="h-16 w-16 shrink-0 rounded-2xl border border-white/10 object-cover" alt="" /> : <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-black/25 text-brand-accent"><Music size={20} /></div>}
+          </div>
+          <div className="mt-5 h-2 overflow-hidden rounded-full bg-black/35"><div className="h-full rounded-full bg-brand-accent" style={{ width: `${liveProgressPct}%` }} /></div>
+          <div className="mt-3 flex items-center justify-between text-[10px] font-mono text-white/40"><span>{formatTime(livePositionMs)}</span><span>{liveDurationMs > 0 ? formatTime(liveDurationMs) : isPlaying ? 'live' : '--:--'}</span></div>
+        </section>
+        <section className="grid grid-cols-2 gap-3 xl:col-span-7 md:grid-cols-4">
+          {[
+            ['Listening', formatPlaybackDuration(view.totalMs), `${view.activeDays} active days`],
+            ['Today', formatPlaybackDuration(view.todayMs), `${view.todayPlays} plays`],
+            ['Plays', String(view.totalTracksPlayed), `${view.totalSessions} sessions`],
+            ['Artists', String(view.topArtists.length), 'ranked signals'],
+          ].map(([label, value, detail]) => (
+            <div key={label} className="rounded-[1.35rem] border border-white/10 bg-white/[0.035] p-4">
+              <div className="text-[9px] font-black uppercase tracking-[0.22em] text-white/34">{label}</div>
+              <div className="mt-3 text-2xl font-black text-white">{value}</div>
+              <div className="mt-2 text-[10px] uppercase tracking-[0.16em] text-white/34">{detail}</div>
+            </div>
+          ))}
+        </section>
+        <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.035] p-5 xl:col-span-5">
+          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Recent Week</div>
+          <div className="mt-5 grid grid-cols-7 gap-2">
+            {view.recentWeek.map((entry) => (
+              <div key={entry.key} className="flex flex-col items-center gap-2 rounded-2xl border border-white/8 bg-black/20 px-2 py-3">
+                <div className="flex h-24 w-full items-end justify-center"><div className="w-full max-w-[24px] rounded-full bg-gradient-to-t from-brand-accent via-brand-accent/80 to-white" style={{ height: `${entry.minutesMs > 0 ? 16 + ((entry.minutesMs / view.weekMaxMs) * 84) : 10}%` }} /></div>
+                <div className="text-[9px] font-black uppercase tracking-[0.16em] text-white/48">{entry.label}</div>
+                <div className="text-[9px] font-mono text-brand-accent">{Math.round(entry.minutesMs / 60000)}m</div>
+              </div>
+            ))}
+          </div>
+        </section>
+        <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.035] p-5 xl:col-span-7">
+          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Hourly Pulse</div>
+          <div className="mt-5 grid grid-cols-12 gap-1.5 md:grid-cols-[repeat(24,minmax(0,1fr))]">
+            {view.peakHours.map((entry) => (
+              <div key={entry.hour} className="flex min-w-0 flex-col items-center gap-2">
+                <div className="flex h-24 w-full items-end justify-center"><div className={`w-full rounded-full ${entry.count > 0 ? 'bg-brand-accent/85' : 'bg-white/[0.06]'}`} style={{ height: `${entry.count > 0 ? 12 + ((entry.count / view.peakHourMax) * 88) : 10}%` }} /></div>
+                <div className="text-[8px] font-mono text-white/26">{entry.hour % 3 === 0 ? String(entry.hour).padStart(2, '0') : ''}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+        <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.035] p-5 xl:col-span-8">
+          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Recent Sessions</div>
+          <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+            {view.recentSessions.length > 0 ? view.recentSessions.map((session) => (
+              <div key={session.id} className="flex min-w-0 items-center gap-3 rounded-[1.25rem] border border-white/10 bg-black/20 p-3">
+                <img src={getProxyUrl(session.thumbnail)} loading="lazy" decoding="async" className="h-14 w-14 rounded-xl bg-white/[0.03] object-cover" alt="" />
+                <div className="min-w-0 flex-1"><div className="text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent">{formatPlaybackDuration(session.playedMs)} - {session.completed ? 'completed' : session.reason}</div><div className="mt-1 truncate text-sm font-black uppercase tracking-tight text-white">{session.title}</div><div className="mt-1 truncate text-[10px] uppercase tracking-[0.16em] text-white/35">{session.author}</div></div>
+              </div>
+            )) : <div className="rounded-[1.25rem] border border-dashed border-white/10 bg-black/20 p-5 text-[11px] uppercase tracking-[0.18em] text-white/28 md:col-span-2">Play for at least 15 seconds and the live ledger will start filling in.</div>}
+          </div>
+        </section>
+        <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.035] p-5 xl:col-span-4">
+          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Top Artists</div>
+          <div className="mt-4 flex flex-col gap-2.5">
+            {view.topArtists.length > 0 ? view.topArtists.map(([name, entry], idx) => (
+              <div key={name} className="rounded-[1.15rem] border border-white/10 bg-black/20 p-3"><div className="text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent">#{idx + 1} - {entry.count} plays</div><div className="mt-1 truncate text-sm font-black uppercase tracking-tight text-white">{name}</div><div className="mt-1 text-[10px] font-mono text-white/35">{formatPlaybackDuration(entry.totalMs)}</div></div>
+            )) : <div className="rounded-[1.15rem] border border-dashed border-white/10 bg-black/20 p-4 text-[10px] uppercase tracking-[0.18em] text-white/28">Signals appear after a few qualified sessions.</div>}
+          </div>
+        </section>
+      </div>
+      <AnimatePresence>
+        {isClearLedgerOpen && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[360] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+            <motion.div initial={{ y: 12, scale: 0.98 }} animate={{ y: 0, scale: 1 }} exit={{ y: 8, scale: 0.98 }} className="w-full max-w-md rounded-[1.6rem] border border-red-500/20 bg-[#0b0d10] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.5)]">
+              <div className="text-[10px] font-black uppercase tracking-[0.24em] text-red-300">Protected Clear</div>
+              <div className="mt-2 text-xl font-black text-white">Clear Signal Ledger?</div>
+              <div className="mt-2 text-sm leading-6 text-white/52">This removes listening sessions, play counts, history windows, and genre signals from this device. App Lock verification is required.</div>
+              <input value={ledgerClearPassword} onChange={(event) => setLedgerClearPassword(event.target.value)} type="password" placeholder="App Lock password" className="mt-4 w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white outline-none transition-colors focus:border-red-300/45" disabled={isClearingLedger} />
+              {ledgerClearError && <div className="mt-3 rounded-2xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-100/80">{ledgerClearError}</div>}
+              <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+                <button onClick={() => { setIsClearLedgerOpen(false); setLedgerClearError(''); setLedgerClearPassword(''); }} className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-bold text-white/60 transition-colors hover:text-white" disabled={isClearingLedger}>Keep Data</button>
+                {window.aether?.verifyAppLockBiometric && <button onClick={() => clearLedgerAfterAuth('biometric')} className="rounded-xl border border-brand-accent/20 bg-brand-accent/10 px-4 py-2 text-sm font-black text-brand-accent transition-colors hover:bg-brand-accent/15" disabled={isClearingLedger}>Use Touch ID</button>}
+                <button onClick={() => clearLedgerAfterAuth('password')} className="rounded-xl bg-red-400 px-4 py-2 text-sm font-black text-black transition-transform active:scale-95 disabled:opacity-50" disabled={isClearingLedger}>{isClearingLedger ? 'Clearing...' : 'Clear Ledger'}</button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+});
+
+const ExperienceCenterShell = memo(function ExperienceCenterShell({
+  open,
+  onClose,
+  initialPage = 'home',
+  visualizerMode,
+  setVisualizerMode,
+  performanceMode,
+  setPerformanceMode,
+  auraPreset,
+  setAuraPreset,
+  isDepthMotionEnabled,
+  setIsDepthMotionEnabled,
+  isDoodleMode,
+  setIsDoodleMode,
+  doodleIntensityBadge,
+  setIsAuraStageOpen,
+  isGestureControlEnabled,
+  openGestureLab,
+  openSignalLedger,
+  openShortcutSettings,
+  openFeedbackPanel,
+  openAppLockSettings,
+  lockStatus,
+  isStandalone,
+  discordPrivate,
+  onToggleDiscordPrivate,
+  isOfflineMode,
+  onToggleOfflineMode,
+  flashLastAdded,
+  getProxyUrl,
+  currentTrack,
+  isPlaying,
+  getActivePlaybackPositionMs,
+  platform,
+  videoMode,
+  queueLength,
+  lyricsCount,
+  appendRecentEvent,
+  setIsGestureControlEnabled,
+  isFaceControlEnabled,
+  setIsFaceControlEnabled,
+  faceControlStatus,
+  faceControlSignal,
+  cameraHandSignal,
+  shortcuts,
+  shortcutDraft,
+  setShortcutDraft,
+  shortcutSettingsError,
+  setShortcutSettingsError,
+  globalMediaShortcutsEnabled,
+  setGlobalMediaShortcutsEnabled,
+  saveShortcutSettings,
+  isShortcutSettingsSaving,
+  resetShortcutSettingsToDefaults,
+  isMacPlatform,
+  openTipsOverlay,
+  lockIdleMinutes,
+  setLockIdleMinutes,
+  refreshLockStatus,
+  setIsAppLocked,
+  requestDestructiveConfirmation,
+  showShortcutHints,
+  setShowShortcutHints,
+}) {
+  const [page, setPage] = useState('home');
+  const pageHistoryRef = useRef([]);
+
+  useEffect(() => {
+    if (open) {
+      const nextPage = initialPage === 'visuals' || initialPage === 'tools' ? 'home' : (initialPage || 'home');
+      pageHistoryRef.current = [];
+      startTransition(() => setPage(nextPage));
+    } else {
+      startTransition(() => setPage('home'));
+    }
+  }, [initialPage, open]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return;
+      const target = event.target;
+      const isTypingTarget = target instanceof Element && (
+        target.tagName === 'INPUT'
+        || target.tagName === 'TEXTAREA'
+        || target.tagName === 'SELECT'
+        || target.isContentEditable
+        || target.closest('[data-shortcut-recording="true"]')
+      );
+      if (isTypingTarget) return;
+      event.preventDefault();
+      onClose?.();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [open, onClose]);
+
+  const navigate = useCallback((nextPage) => {
+    setPage((currentPage) => {
+      if (currentPage !== nextPage) pageHistoryRef.current = [...pageHistoryRef.current.slice(-8), currentPage];
+      return nextPage;
+    });
+  }, []);
+  const goBack = useCallback(() => {
+    setPage(() => {
+      const previous = pageHistoryRef.current.pop();
+      return previous || 'home';
+    });
+  }, []);
+  const closeShell = useCallback(() => onClose?.(), [onClose]);
+
+  const toolPages = useMemo(() => ({
+    'signal-ledger': {
+      icon: Signal,
+      title: 'Signal Ledger',
+      detail: 'Listening history, trends, replay stats, and protected clear controls.',
+      category: 'Listening Intelligence',
+    },
+    'gesture-face-lab': {
+      icon: Hand,
+      title: 'Gesture + Face Lab',
+      detail: 'Pointer, swipe, camera, and face controls for hands-free playback.',
+      category: 'Control Input',
+    },
+    'shortcut-settings': {
+      icon: Keyboard,
+      title: 'Shortcut Settings',
+      detail: 'Playback and command key bindings with global media shortcut options.',
+      category: 'Shortcuts',
+    },
+    feedback: {
+      icon: MessageSquare,
+      title: 'Feedback',
+      detail: 'Send feedback, report a bug, or open a GitHub issue draft with context.',
+      category: 'Support',
+    },
+    'app-lock': {
+      icon: Lock,
+      title: 'App Lock',
+      detail: lockStatus?.enabled ? 'Lock is enabled. Manage password, Touch ID, idle timeout, and recovery.' : 'Protect Aether with password, optional Touch ID, idle timeout, and recovery.',
+      category: 'Security',
+      hidden: !isStandalone,
+    },
+  }), [isStandalone, lockStatus?.enabled]);
+
+  const visibleTools = useMemo(() => Object.entries(toolPages).filter(([, item]) => !item.hidden), [toolPages]);
+  const activeTool = toolPages[page];
+
+  const pageMeta = {
+    home: { eyebrow: 'Control Surface', title: 'Experience Center', detail: 'Modes, visuals, privacy, and tools in one control hub.' },
+  }[page] || (activeTool ? { eyebrow: `Experience Center / ${activeTool.title}`, title: activeTool.title, detail: activeTool.detail } : { eyebrow: 'Experience Center / Tool', title: 'Tool', detail: 'Open a focused Aether utility.' });
+
+  if (!open || typeof document === 'undefined') return null;
+
+  return createPortal(
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-[345] flex items-start justify-center p-4 pt-6 md:items-center md:pt-4"
+        onClick={closeShell}
+      >
+        <div className="absolute inset-0 bg-black/82 backdrop-blur-xl" />
+        <motion.div
+          initial={{ opacity: 0, y: 18, scale: 0.985 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 12, scale: 0.985 }}
+          transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+          className="relative z-10 flex h-[min(92vh,860px)] w-full max-w-[1180px] flex-col overflow-hidden rounded-[2rem] border border-brand-accent/20 bg-[#070b0f]/96 shadow-[0_28px_100px_rgba(0,0,0,0.58)]"
+          onClick={(event) => event.stopPropagation()}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Experience Center"
+        >
+          <div className="flex items-center justify-between gap-4 border-b border-white/10 bg-black/22 px-5 py-4 md:px-6">
+            <div className="flex min-w-0 items-center gap-3">
+              {page !== 'home' && (
+                <button
+                  onClick={goBack}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/12 bg-white/[0.04] text-white/55 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
+                  title="Back"
+                >
+                  <ChevronLeft size={17} />
+                </button>
+              )}
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/10 text-brand-accent">
+                  <Layers size={18} />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-[9px] font-black uppercase tracking-[0.3em] text-white/34">{pageMeta.eyebrow}</div>
+                  <div className="truncate text-2xl font-black uppercase tracking-tight text-brand-accent">{pageMeta.title}</div>
+                  <div className="mt-1 truncate text-[11px] font-bold uppercase tracking-[0.16em] text-white/35">{pageMeta.detail}</div>
+                </div>
+              </div>
+            </div>
+            <SecondaryNowPlayingStrip
+              currentTrack={currentTrack}
+              isPlaying={isPlaying}
+              getProxyUrl={getProxyUrl}
+              className="hidden w-[min(32vw,320px)] lg:flex"
+            />
+            <button
+              onClick={closeShell}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/12 bg-white/[0.04] text-white/45 transition-all hover:border-red-500/40 hover:text-red-300"
+              title="Close Experience Center"
+            >
+              <X size={17} />
+            </button>
+          </div>
+
+          <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+            <aside className="custom-scrollbar-heavy flex shrink-0 gap-2 overflow-x-auto border-b border-white/10 bg-white/[0.018] p-3 md:w-72 md:flex-col md:overflow-x-hidden md:overflow-y-auto md:border-b-0 md:border-r">
+              {[
+                ['home', 'Control Hub', 'Overview, visuals, modes, and tools'],
+                ...visibleTools.map(([key, item]) => [key, item.title, item.detail]),
+              ].map(([key, label, detail]) => (
+                <button
+                  key={key}
+                  onClick={() => navigate(key)}
+                  className={`shrink-0 rounded-2xl border px-4 py-3 text-left transition-all md:shrink ${page === key ? 'border-brand-accent/35 bg-brand-accent/10 text-brand-accent' : 'border-white/10 bg-white/[0.035] text-white/62 hover:border-brand-accent/30 hover:text-brand-accent'}`}
+                >
+                  <div className="text-[10px] font-black uppercase tracking-[0.18em]">{label}</div>
+                  <div className="mt-1 hidden text-[10px] text-white/38 md:block">{detail}</div>
+                </button>
+              ))}
+            </aside>
+
+            <div className="custom-scrollbar-heavy min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
+              <AnimatePresence mode="wait">
+                {page === 'home' && (
+                  <motion.div
+                    key="experience-home"
+                    initial={{ opacity: 0, x: 18 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -18 }}
+                    transition={{ duration: 0.16 }}
+                    className="grid gap-4"
+                  >
+                    <section className="rounded-[1.5rem] border border-brand-accent/18 bg-brand-accent/[0.055] p-5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Session Mode</div>
+                          <div className="mt-2 text-3xl font-black uppercase tracking-tight text-white">{isOfflineMode ? 'Offline' : 'Online'}</div>
+                        </div>
+                        {isOfflineMode ? <Wifi size={20} className="text-white/36" /> : <Globe size={20} className="text-brand-accent" />}
+                      </div>
+                      <div className="mt-3 max-w-3xl text-sm leading-6 text-white/48">{isOfflineMode ? 'Downloaded tracks stay available. Internet-only discovery and party features stay quiet.' : 'Discovery, imports, visual video stages, and Party are available.'}</div>
+                      <div className="mt-5 grid gap-2 sm:grid-cols-2 lg:max-w-xl">
+                        <button
+                          onClick={onToggleOfflineMode}
+                          className={`inline-flex items-center justify-center gap-2 rounded-2xl border px-4 py-3 text-[11px] font-black uppercase tracking-[0.16em] transition-all ${isOfflineMode ? 'border-white/15 bg-white/[0.04] text-white/68 hover:border-brand-accent/35 hover:text-brand-accent' : 'border-brand-accent/35 bg-brand-accent/14 text-brand-accent hover:bg-brand-accent hover:text-black'}`}
+                        >
+                          {isOfflineMode ? <Wifi size={14} className="opacity-60 line-through" /> : <Globe size={14} />}
+                          {isOfflineMode ? 'Go Online' : 'Go Offline'}
+                        </button>
+                        <button
+                          onClick={onToggleDiscordPrivate}
+                          className={`inline-flex items-center justify-center gap-2 rounded-2xl border px-4 py-3 text-[11px] font-black uppercase tracking-[0.16em] transition-all ${discordPrivate ? 'border-purple-300/35 bg-purple-500/12 text-purple-200' : 'border-white/12 bg-white/[0.04] text-white/62 hover:border-brand-accent/35 hover:text-brand-accent'}`}
+                        >
+                          {discordPrivate ? <EyeOff size={14} /> : <Eye size={14} />}
+                          {discordPrivate ? 'Private On' : 'Discord Visible'}
+                        </button>
+                      </div>
+                    </section>
+
+                    <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Visual Stage</div>
+                          <div className="mt-1 text-xl font-black uppercase tracking-tight text-white">Presets + Performance</div>
+                        </div>
+                      </div>
+                      <div className="mt-5 grid gap-4 xl:grid-cols-3">
+                        <div>
+                          <div className="mb-2 text-[9px] font-black uppercase tracking-[0.2em] text-white/34">Visualizer</div>
+                          <div className="flex flex-wrap gap-2">
+                            {[
+                              { id: 'off', label: 'Off' },
+                              { id: 'bars', label: 'Bars' },
+                              { id: 'pulse', label: 'Aura' },
+                            ].map((mode) => (
+                              <button key={mode.id} onClick={() => setVisualizerMode(mode.id)} className={`min-w-[86px] rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.12em] transition-all ${visualizerMode === mode.id ? 'border-brand-accent/45 bg-brand-accent/16 text-brand-accent' : 'border-white/10 bg-white/[0.035] text-white/62 hover:border-brand-accent/30 hover:text-brand-accent'}`}>{mode.label}</button>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="mb-2 text-[9px] font-black uppercase tracking-[0.2em] text-white/34">Performance</div>
+                          <div className="flex flex-wrap gap-2">
+                            {PERFORMANCE_MODES.map((mode) => (
+                              <button key={mode.id} onClick={() => { setPerformanceMode(mode.id); flashLastAdded?.(`Performance - ${mode.label}`); }} className={`min-w-[96px] rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.12em] transition-all ${performanceMode === mode.id ? 'border-brand-accent/45 bg-brand-accent/16 text-brand-accent' : 'border-white/10 bg-white/[0.035] text-white/62 hover:border-brand-accent/30 hover:text-brand-accent'}`}>{mode.label}</button>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="mb-2 text-[9px] font-black uppercase tracking-[0.2em] text-white/34">Aura Preset</div>
+                          <div className="flex flex-wrap gap-2">
+                            {AURA_PRESETS.map((preset) => (
+                              <button key={preset.id} onClick={() => { setAuraPreset(preset.id); flashLastAdded?.(`Aura preset - ${preset.label}`); }} className={`min-w-[116px] rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.12em] transition-all ${auraPreset === preset.id ? 'border-brand-accent/45 bg-brand-accent/16 text-brand-accent' : 'border-white/10 bg-white/[0.035] text-white/62 hover:border-brand-accent/30 hover:text-brand-accent'}`}>{preset.label}</button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-5 grid gap-2 md:grid-cols-3">
+                        <button onClick={() => { setIsDepthMotionEnabled((prev) => !prev); flashLastAdded?.(isDepthMotionEnabled ? 'Depth motion disabled' : 'Depth motion enabled'); }} className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.14em] transition-all ${isDepthMotionEnabled ? 'border-brand-accent/45 bg-brand-accent/16 text-brand-accent' : 'border-white/10 bg-white/[0.035] text-white/62 hover:border-brand-accent/30 hover:text-brand-accent'}`}>Depth Motion {isDepthMotionEnabled ? 'On' : 'Off'}</button>
+                        <button onClick={() => { setIsDoodleMode((prev) => !prev); flashLastAdded?.(isDoodleMode ? 'Doodle mode disabled' : 'Doodle mode enabled', 1600); }} className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.14em] transition-all ${isDoodleMode ? 'border-brand-accent/45 bg-brand-accent/16 text-brand-accent' : 'border-white/10 bg-white/[0.035] text-white/62 hover:border-brand-accent/30 hover:text-brand-accent'}`}>{isDoodleMode ? `Doodle On - ${doodleIntensityBadge}` : 'Doodle Off'}</button>
+                        <button onClick={() => { setShowShortcutHints?.((prev) => !prev); flashLastAdded?.(showShortcutHints ? 'Shortcut hints hidden' : 'Shortcut hints visible'); }} className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.14em] transition-all ${showShortcutHints ? 'border-brand-accent/45 bg-brand-accent/16 text-brand-accent' : 'border-white/10 bg-white/[0.035] text-white/62 hover:border-brand-accent/30 hover:text-brand-accent'}`}>Hints {showShortcutHints ? 'On' : 'Off'}</button>
+                      </div>
+                    </section>
+
+                    <section>
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Tools</div>
+                          <div className="mt-1 text-sm text-white/42">Open any utility inside this same Experience Center shell.</div>
+                        </div>
+                      </div>
+                      <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(190px,1fr))]">
+                        {visibleTools.map(([key, item]) => {
+                          const Icon = item.icon;
+                          return (
+                            <button key={key} onClick={() => navigate(key)} className="rounded-[1.25rem] border border-white/10 bg-white/[0.035] p-4 text-left transition-all hover:border-brand-accent/30 hover:bg-brand-accent/[0.05]">
+                              <Icon size={18} className="text-brand-accent" />
+                              <div className="mt-3 text-[11px] font-black uppercase tracking-[0.16em] text-white">{item.title}</div>
+                              <div className="mt-1 text-[10px] leading-5 text-white/38">{item.detail}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  </motion.div>
+                )}
+
+                {page === 'signal-ledger' && (
+                  <motion.div key="experience-signal-ledger" initial={{ opacity: 0, x: 18 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -18 }} transition={{ duration: 0.16 }}>
+                    <ExperienceSignalLedgerPage getProxyUrl={getProxyUrl} currentTrack={currentTrack} isPlaying={isPlaying} getActivePlaybackPositionMs={getActivePlaybackPositionMs} setLastAdded={flashLastAdded} />
+                  </motion.div>
+                )}
+
+                {page === 'feedback' && (
+                  <motion.div key="experience-feedback" initial={{ opacity: 0, x: 18 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -18 }} transition={{ duration: 0.16 }}>
+                    <ExperienceFeedbackPage platform={platform} isStandalone={isStandalone} currentTrack={currentTrack} getActivePlaybackPositionMs={getActivePlaybackPositionMs} videoMode={videoMode} visualizerMode={visualizerMode} auraPreset={auraPreset} queueLength={queueLength} lyricsCount={lyricsCount} appendRecentEvent={appendRecentEvent} />
+                  </motion.div>
+                )}
+
+                {page === 'gesture-face-lab' && (
+                  <motion.div key="experience-gesture-face-lab" initial={{ opacity: 0, x: 18 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -18 }} transition={{ duration: 0.16 }}>
+                    <ExperienceGestureFaceLabPage isGestureControlEnabled={isGestureControlEnabled} setIsGestureControlEnabled={setIsGestureControlEnabled} isFaceControlEnabled={isFaceControlEnabled} setIsFaceControlEnabled={setIsFaceControlEnabled} faceControlStatus={faceControlStatus} faceControlSignal={faceControlSignal} cameraHandSignal={cameraHandSignal} setLastAdded={flashLastAdded} />
+                  </motion.div>
+                )}
+
+                {page === 'app-lock' && (
+                  <motion.div key="experience-app-lock" initial={{ opacity: 0, x: 18 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -18 }} transition={{ duration: 0.16 }}>
+                    <ExperienceAppLockPage isStandalone={isStandalone} lockStatus={lockStatus} lockIdleMinutes={lockIdleMinutes} setLockIdleMinutes={setLockIdleMinutes} refreshLockStatus={refreshLockStatus} setIsAppLocked={setIsAppLocked} setLastAdded={flashLastAdded} requestDestructiveConfirmation={requestDestructiveConfirmation} />
+                  </motion.div>
+                )}
+
+                {page === 'shortcut-settings' && (
+                  <motion.div key="experience-shortcut-settings" initial={{ opacity: 0, x: 18 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -18 }} transition={{ duration: 0.16 }}>
+                    <ExperienceShortcutSettingsPage shortcuts={shortcuts} shortcutDraft={shortcutDraft} setShortcutDraft={setShortcutDraft} shortcutSettingsError={shortcutSettingsError} setShortcutSettingsError={setShortcutSettingsError} globalMediaShortcutsEnabled={globalMediaShortcutsEnabled} setGlobalMediaShortcutsEnabled={setGlobalMediaShortcutsEnabled} saveShortcutSettings={saveShortcutSettings} isShortcutSettingsSaving={isShortcutSettingsSaving} resetShortcutSettingsToDefaults={resetShortcutSettingsToDefaults} isMacPlatform={isMacPlatform} openTipsOverlay={openTipsOverlay} requestDestructiveConfirmation={requestDestructiveConfirmation} />
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>,
+    document.body,
+  );
+});
+
+const SecondaryNowPlayingStrip = memo(function SecondaryNowPlayingStrip({
+  currentTrack,
+  isPlaying,
+  getProxyUrl,
+  className = '',
+}) {
+  const title = currentTrack?.title || '';
+  const artist = currentTrack?.author || currentTrack?.artist || '';
+  const thumbnail = currentTrack?.thumbnail || currentTrack?.artwork || '';
+  const imageSrc = thumbnail && getProxyUrl ? getProxyUrl(thumbnail) : thumbnail;
+
+  return (
+    <div className={`min-w-0 items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-2 shadow-[0_12px_36px_rgba(0,0,0,0.22)] ${className}`}>
+      <div className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-black/30 text-brand-accent">
+        {imageSrc ? (
+          <img src={imageSrc} alt="" className="h-full w-full object-cover" loading="lazy" />
+        ) : (
+          <Music size={15} />
+        )}
+        <span className={`absolute bottom-1 right-1 h-2 w-2 rounded-full border border-black/70 ${isPlaying ? 'animate-pulse bg-brand-accent' : 'bg-white/35'}`} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0 text-[8px] font-black uppercase tracking-[0.22em] text-brand-accent/70">{isPlaying ? 'Playing' : title ? 'Paused' : 'Now'}</span>
+          <span className="h-px flex-1 bg-white/8" />
+        </div>
+        <div className="mt-0.5 truncate text-[12px] font-black uppercase tracking-tight text-white/82">
+          {title || 'Nothing playing'}
+        </div>
+        <div className="truncate text-[9px] font-bold uppercase tracking-[0.18em] text-white/38">
+          {artist || (title ? 'Unknown artist' : 'Queue a track to see it here')}
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const CommandPalette = memo(function CommandPalette({
+  open,
+  onClose,
+  commands,
+  shortcutLabel,
+  showShortcutHints = true,
+}) {
+  const [query, setQuery] = useState('');
+  const [activeIndex, setActiveIndex] = useState(0);
+  const inputRef = useRef(null);
+  const composingRef = useRef(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setQuery('');
+    setActiveIndex(0);
+    const id = window.requestAnimationFrame(() => inputRef.current?.focus());
+    return () => window.cancelAnimationFrame(id);
+  }, [open]);
+
+  const filteredCommands = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    const available = (commands || []).filter((command) => !command.hidden && !command.disabled);
+    if (!needle) return available;
+    return available.filter((command) => {
+      const haystack = `${command.title || ''} ${command.detail || ''} ${command.keywords || ''}`.toLowerCase();
+      return haystack.includes(needle);
+    });
+  }, [commands, query]);
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [query]);
+
+  const runCommand = useCallback((command) => {
+    if (!command || command.disabled) return;
+    command.run?.();
+    onClose?.();
+  }, [onClose]);
+
+  const onKeyDown = useCallback((event) => {
+    if (event.isComposing || composingRef.current) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      onClose?.();
+      return;
+    }
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setActiveIndex((idx) => Math.min(filteredCommands.length - 1, idx + 1));
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setActiveIndex((idx) => Math.max(0, idx - 1));
+      return;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      runCommand(filteredCommands[activeIndex]);
+    }
+  }, [activeIndex, filteredCommands, onClose, runCommand]);
+
+  if (!open || typeof document === 'undefined') return null;
+
+  return createPortal(
+    <AnimatePresence>
+      <motion.div
+        key="aether-command-palette"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-[535] flex items-start justify-center bg-black/76 px-4 pt-[12vh] backdrop-blur-xl"
+        onClick={onClose}
+      >
+        <motion.div
+          initial={{ opacity: 0, y: 18, scale: 0.985 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 10, scale: 0.985 }}
+          transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+          className="w-full max-w-2xl overflow-hidden rounded-[1.7rem] border border-brand-accent/22 bg-[#070b0f]/96 shadow-[0_28px_100px_rgba(0,0,0,0.62)]"
+          onClick={(event) => event.stopPropagation()}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Command Palette"
+        >
+          <div className="border-b border-white/10 bg-black/28 p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[9px] font-black uppercase tracking-[0.28em] text-brand-accent/75">Aether Command</div>
+                <div className="mt-1 text-lg font-black uppercase tracking-tight text-white">Command Palette</div>
+              </div>
+              <ShortcutHint label={shortcutLabel} title="Command palette shortcut" visible={showShortcutHints} />
+            </div>
+            <div className="relative">
+              <Search size={18} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-brand-accent/70" />
+              <input
+                ref={inputRef}
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={onKeyDown}
+                onCompositionStart={() => { composingRef.current = true; }}
+                onCompositionEnd={() => { composingRef.current = false; }}
+                placeholder="Search commands..."
+                className="w-full rounded-2xl border border-white/10 bg-white/[0.04] py-3 pl-12 pr-4 text-sm font-bold text-white outline-none transition-colors placeholder:text-white/30 focus:border-brand-accent/45 focus:bg-brand-accent/[0.045]"
+              />
+            </div>
+          </div>
+
+          <div className="custom-scrollbar-heavy max-h-[min(54vh,440px)] overflow-y-auto p-2">
+            {filteredCommands.length === 0 ? (
+              <div className="rounded-2xl border border-white/8 bg-white/[0.025] p-6 text-center">
+                <div className="text-[10px] font-black uppercase tracking-[0.22em] text-white/38">No commands found</div>
+                <div className="mt-2 text-xs text-white/38">Try “library”, “feedback”, “gesture”, or “search”.</div>
+              </div>
+            ) : filteredCommands.map((command, index) => {
+              const Icon = command.icon || Sparkles;
+              const active = index === activeIndex;
+              return (
+                <button
+                  key={command.id}
+                  type="button"
+                  onMouseEnter={() => setActiveIndex(index)}
+                  onClick={() => runCommand(command)}
+                  className={`flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition-all ${active ? 'border-brand-accent/35 bg-brand-accent/12 text-brand-accent' : 'border-transparent text-white/68 hover:border-white/10 hover:bg-white/[0.035] hover:text-white'}`}
+                >
+                  <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border ${active ? 'border-brand-accent/35 bg-brand-accent/12' : 'border-white/10 bg-white/[0.035]'}`}>
+                    <Icon size={17} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-black uppercase tracking-[0.08em]">{command.title}</div>
+                    {command.detail && <div className="mt-0.5 truncate text-[11px] font-semibold text-white/38">{command.detail}</div>}
+                  </div>
+                  {command.shortcut && <ShortcutHint label={command.shortcut} className="hidden sm:inline-flex" visible={showShortcutHints} />}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex items-center justify-between gap-3 border-t border-white/10 bg-black/22 px-4 py-3 text-[10px] font-bold uppercase tracking-[0.16em] text-white/32">
+            <span>Enter to run</span>
+            <span>Esc to close</span>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>,
+    document.body,
+  );
+});
+
+const AetherConfirmDialog = memo(function AetherConfirmDialog({ request, onCancel, onConfirm }) {
+  const [dontAskAgain, setDontAskAgain] = useState(false);
+
+  useEffect(() => {
+    setDontAskAgain(false);
+  }, [request?.preferenceKey]);
+
+  useEffect(() => {
+    if (!request) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+      onCancel?.();
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [onCancel, request]);
+
+  if (!request || typeof document === 'undefined') return null;
+
+  return createPortal(
+    <AnimatePresence>
+      <motion.div
+        key="aether-destructive-confirm"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-[520] flex items-center justify-center p-4"
+        onClick={onCancel}
+      >
+        <div className="absolute inset-0 bg-black/82 backdrop-blur-xl" />
+        <motion.div
+          initial={{ opacity: 0, y: 18, scale: 0.97 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 12, scale: 0.98 }}
+          transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+          className="relative z-10 w-full max-w-md overflow-hidden rounded-[1.75rem] border border-red-400/25 bg-[#080c10]/96 shadow-[0_28px_90px_rgba(0,0,0,0.65)]"
+          onClick={(event) => event.stopPropagation()}
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="aether-confirm-title"
+          aria-describedby="aether-confirm-message"
+        >
+          <div className="border-b border-white/10 bg-red-500/[0.045] px-5 py-5">
+            <div className="flex items-start gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-red-400/30 bg-red-500/10 text-red-200">
+                <AlertTriangle size={19} />
+              </div>
+              <div className="min-w-0">
+                <div className="text-[10px] font-black uppercase tracking-[0.28em] text-red-200/65">Confirm Change</div>
+                <div id="aether-confirm-title" className="mt-1 text-xl font-black uppercase tracking-tight text-white">{request.title || 'Confirm action?'}</div>
+              </div>
+            </div>
+          </div>
+          <div className="px-5 py-5">
+            <div id="aether-confirm-message" className="text-sm leading-6 text-white/68">{request.message}</div>
+            {request.detail && (
+              <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.035] px-4 py-3 text-xs leading-5 text-white/45">{request.detail}</div>
+            )}
+            {request.allowDontAskAgain && request.preferenceKey && (
+              <label className="mt-4 flex cursor-pointer items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-xs font-bold text-white/55 transition-colors hover:border-brand-accent/25 hover:text-white/72">
+                <input
+                  type="checkbox"
+                  checked={dontAskAgain}
+                  onChange={(event) => setDontAskAgain(event.target.checked)}
+                  className="h-4 w-4 rounded border-white/20 bg-black/40 accent-brand-accent"
+                />
+                <span>Don&apos;t ask again for this action</span>
+              </label>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2 border-t border-white/10 bg-black/20 px-5 py-4">
+            <button
+              type="button"
+              onClick={onCancel}
+              autoFocus
+              className="rounded-xl border border-white/12 bg-white/[0.04] px-4 py-2 text-sm font-bold text-white/68 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
+            >
+              {request.cancelLabel || 'Cancel'}
+            </button>
+            <button
+              type="button"
+              onClick={() => onConfirm?.(dontAskAgain)}
+              className="rounded-xl border border-red-300/45 bg-red-500/18 px-4 py-2 text-sm font-black text-red-100 transition-all hover:bg-red-400 hover:text-black"
+            >
+              {request.confirmLabel || 'Confirm'}
+            </button>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>,
+    document.body,
+  );
+});
 
 const HeaderSleepTimerControls = memo(forwardRef(function HeaderSleepTimerControls({
   headerIconButtonClass,
@@ -1375,16 +2843,36 @@ const HeaderSleepTimerControls = memo(forwardRef(function HeaderSleepTimerContro
   );
 }));
 
+const ShortcutHint = memo(function ShortcutHint({ label, className = '', title = '', visible = true }) {
+  if (!label || !visible) return null;
+  return (
+    <kbd
+      className={`inline-flex h-6 items-center rounded-lg border border-white/10 bg-black/24 px-2 text-[9px] font-black uppercase tracking-[0.12em] text-white/42 shadow-inner shadow-white/[0.02] ${className}`}
+      title={title || label}
+    >
+      {label}
+    </kbd>
+  );
+});
+
 const HeaderSearchBox = memo(function HeaderSearchBox({
   searchQuery,
   isSearching,
   hasActiveSearchState,
   isAuraMode,
   disabled,
+  placeholder = 'Search tracks, artists, or paste a YouTube link',
   onSearch,
   onClear,
+  inputRef,
+  commandPaletteShortcutLabel = '',
+  showShortcutHints = true,
 }) {
   const [draft, setDraft] = useState(searchQuery || '');
+
+  useEffect(() => {
+    startTransition(() => setDraft(searchQuery || ''));
+  }, [searchQuery]);
 
   const trimmedDraft = draft.trim();
   const hasLocalSearchState = Boolean(trimmedDraft || hasActiveSearchState);
@@ -1405,9 +2893,10 @@ const HeaderSearchBox = memo(function HeaderSearchBox({
     <form onSubmit={submitSearch} className="relative w-full group no-drag" data-no-maximize="true">
       <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-brand-text-dim group-focus-within:text-brand-accent z-10 transition-colors" size={18} />
       <input
+        ref={inputRef}
         type="text"
-        placeholder="Search tracks, artists, or paste a YouTube link"
-        className={`w-full rounded-full pl-12 pr-28 h-11 text-sm md:text-[14px] outline-none transition-all text-ellipsis overflow-hidden whitespace-nowrap ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/[0.04] border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'} disabled:opacity-30 disabled:cursor-not-allowed`}
+        placeholder={placeholder}
+        className={`w-full rounded-full pl-12 pr-36 h-11 text-sm md:text-[14px] outline-none transition-all text-ellipsis overflow-hidden whitespace-nowrap ${isAuraMode ? 'bg-white/[0.035] border border-white/[0.14] focus:border-brand-accent/60 focus:bg-brand-accent/[0.06] shadow-[0_4px_20px_rgba(0,0,0,0.2)]' : 'bg-white/[0.04] border border-white/10 focus:border-brand-accent/50 focus:bg-brand-accent/[0.03]'} disabled:opacity-30 disabled:cursor-not-allowed`}
         value={draft}
         disabled={disabled}
         onChange={(event) => setDraft(event.target.value)}
@@ -1419,6 +2908,9 @@ const HeaderSearchBox = memo(function HeaderSearchBox({
         }}
       />
       <div className="absolute right-3 top-1/2 z-10 flex -translate-y-1/2 items-center gap-2">
+        {commandPaletteShortcutLabel && !hasLocalSearchState && !isSearching && (
+          <ShortcutHint label={commandPaletteShortcutLabel} className="hidden sm:inline-flex" title="Open command palette" visible={showShortcutHints} />
+        )}
         {isYouTubeLink && (
           <span className="rounded-full border border-brand-accent/22 bg-brand-accent/10 px-2 py-1 text-[8px] font-black uppercase tracking-[0.18em] text-brand-accent/78">
             Link
@@ -1490,6 +2982,57 @@ const StudioLibrarySongRow = memo(function StudioLibrarySongRow({
   );
 });
 
+const StudioLibrarySearchIsland = memo(function StudioLibrarySearchIsland({
+  isOpen,
+  librarySearchTerm,
+  setLibrarySearchTerm,
+  libraryBrowseMode,
+}) {
+  const [draft, setDraft] = useState(() => librarySearchTerm || '');
+  const commitRef = useRef(0);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    startTransition(() => setDraft(librarySearchTerm || ''));
+  }, [isOpen, librarySearchTerm]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    if (draft === (librarySearchTerm || '')) return undefined;
+    window.clearTimeout(commitRef.current);
+    commitRef.current = window.setTimeout(() => {
+      startTransition(() => setLibrarySearchTerm(draft));
+    }, 140);
+    return () => window.clearTimeout(commitRef.current);
+  }, [draft, isOpen, librarySearchTerm, setLibrarySearchTerm]);
+
+  const clear = useCallback(() => {
+    setDraft('');
+    startTransition(() => setLibrarySearchTerm(''));
+  }, [setLibrarySearchTerm]);
+
+  return (
+    <div className="relative">
+      <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
+      <input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        placeholder={libraryBrowseMode === 'songs' ? 'Search songs, artists, vaults...' : 'Search vaults, songs, artists...'}
+        className="no-drag w-full rounded-2xl border border-white/10 bg-white/[0.035] py-2.5 pl-9 pr-9 text-[12px] font-bold text-white outline-none transition-colors placeholder:text-white/25 focus:border-brand-accent/35 focus:bg-brand-accent/[0.045]"
+      />
+      {draft && (
+        <button
+          onClick={clear}
+          className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-xl text-white/35 transition-colors hover:text-brand-accent"
+          title="Clear library search"
+        >
+          <X size={13} />
+        </button>
+      )}
+    </div>
+  );
+});
+
 const StudioLibraryPlaylistRow = memo(function StudioLibraryPlaylistRow({
   name,
   isRenaming,
@@ -1514,6 +3057,12 @@ const StudioLibraryPlaylistRow = memo(function StudioLibraryPlaylistRow({
   const isFocused = viewingPlaylist === name;
   const isDragging = draggedPlaylistName === name;
   const isDragEnabled = !isRenaming;
+  const beginRename = useCallback((event) => {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    setIsRenamingPlaylist(name);
+    setRenameValue(name);
+  }, [name, setIsRenamingPlaylist, setRenameValue]);
   return (
     <div
       key={name}
@@ -1564,12 +3113,7 @@ const StudioLibraryPlaylistRow = memo(function StudioLibraryPlaylistRow({
               onPointerDown={(e) => {
                 e.stopPropagation();
               }}
-              onDoubleClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setIsRenamingPlaylist(name);
-                setRenameValue(name);
-              }}
+              onDoubleClick={beginRename}
               className="font-black uppercase tracking-tight truncate group-hover:text-brand-accent transition-colors cursor-default"
               title="Double-click to rename"
             >
@@ -1582,6 +3126,7 @@ const StudioLibraryPlaylistRow = memo(function StudioLibraryPlaylistRow({
             <span className="px-2 py-1 rounded-md bg-brand-accent/12 border border-brand-accent/25 text-brand-accent text-[8px] font-black uppercase tracking-[0.2em]">Focused</span>
           )}
           <button onClick={(e) => { e.stopPropagation(); onAddPending(name); }} disabled={!canAddPendingToVault && !currentTrack} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent/70 hover:text-brand-accent hover:bg-brand-accent/20 transition-all disabled:opacity-30 disabled:cursor-not-allowed" title={`Add pending context to ${name}`}><Plus size={12} /></button>
+          <button onClick={beginRename} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title={`Rename ${name}`}><Edit3 size={12} /></button>
           <button onClick={(e) => { e.stopPropagation(); onMove(name, -1); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title="Move up"><ChevronLeft size={12} /></button>
           <button onClick={(e) => { e.stopPropagation(); onMove(name, 1); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title="Move down"><ChevronRight size={12} /></button>
           {isStandalone && <button onClick={(e) => { e.stopPropagation(); onExport(name); }} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title={`Export ${name} to .aether`}><Download size={12} /></button>}
@@ -1622,8 +3167,10 @@ const StudioLibraryOverlayIsland = memo(function StudioLibraryOverlayIsland({
   isOpen,
   isStandalone,
   isVaultCleaning,
+  isVaultImporting,
   libraryActionTarget,
   currentTrack,
+  isPlaying,
   getProxyUrl,
   libraryOverlayCreateInputRef,
   newPlaylistName,
@@ -1694,21 +3241,7 @@ const StudioLibraryOverlayIsland = memo(function StudioLibraryOverlayIsland({
   handleCleanVault,
   onClose,
 }) {
-  const [searchDraft, setSearchDraft] = useState(() => librarySearchTerm || '');
-  const searchCommitRef = useRef(0);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    if (searchDraft === librarySearchTerm) return;
-    window.clearTimeout(searchCommitRef.current);
-    searchCommitRef.current = window.setTimeout(() => {
-      startTransition(() => setLibrarySearchTerm(searchDraft));
-    }, 140);
-    return () => window.clearTimeout(searchCommitRef.current);
-  }, [isOpen, librarySearchTerm, searchDraft, setLibrarySearchTerm]);
-
   const clearLibrarySearch = useCallback(() => {
-    setSearchDraft('');
     startTransition(() => setLibrarySearchTerm(''));
   }, [setLibrarySearchTerm]);
 
@@ -1793,8 +3326,14 @@ const StudioLibraryOverlayIsland = memo(function StudioLibraryOverlayIsland({
               <div className="text-xl md:text-2xl font-black uppercase tracking-tight text-brand-accent truncate">Studio Library</div>
             </div>
           </div>
+          <SecondaryNowPlayingStrip
+            currentTrack={currentTrack}
+            isPlaying={isPlaying}
+            getProxyUrl={getProxyUrl}
+            className="hidden max-w-sm flex-1 xl:flex"
+          />
           <div className="flex items-center gap-2 flex-wrap justify-end">
-            {isStandalone && <button onClick={handleImportVault} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all" title="Import Vault (.aether)">Import</button>}
+            {isStandalone && <button onClick={handleImportVault} disabled={isVaultImporting} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all disabled:opacity-50" title="Import Vault (.aether)">{isVaultImporting ? 'Importing...' : 'Import'}</button>}
             <button onClick={handleGenerateSmartMix} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all" title="Generate Smart Mix">Smart Mix</button>
             <button onClick={handleCleanVault} disabled={isVaultCleaning} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all disabled:opacity-40" title="Clean Vault">Clean</button>
             <button onClick={onClose} className="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close">
@@ -1871,24 +3410,12 @@ const StudioLibraryOverlayIsland = memo(function StudioLibraryOverlayIsland({
             </div>
 
             <div className="studio-library-controls shrink-0 border-y border-white/8 bg-black/28 p-4 space-y-3">
-              <div className="relative">
-                <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
-                <input
-                  value={searchDraft}
-                  onChange={(e) => setSearchDraft(e.target.value)}
-                  placeholder={libraryBrowseMode === 'songs' ? 'Search songs, artists, vaults...' : 'Search vaults, songs, artists...'}
-                  className="no-drag w-full rounded-2xl border border-white/10 bg-white/[0.035] py-2.5 pl-9 pr-9 text-[12px] font-bold text-white outline-none transition-colors placeholder:text-white/25 focus:border-brand-accent/35 focus:bg-brand-accent/[0.045]"
-                />
-                {searchDraft && (
-                  <button
-                    onClick={clearLibrarySearch}
-                    className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-xl text-white/35 transition-colors hover:text-brand-accent"
-                    title="Clear library search"
-                  >
-                    <X size={13} />
-                  </button>
-                )}
-              </div>
+              <StudioLibrarySearchIsland
+                isOpen={isOpen}
+                librarySearchTerm={librarySearchTerm}
+                setLibrarySearchTerm={setLibrarySearchTerm}
+                libraryBrowseMode={libraryBrowseMode}
+              />
               <div className="grid grid-cols-2 rounded-2xl border border-white/8 bg-black/28 p-1">
                 {libraryModeOptions.map((option) => (
                   <button
@@ -2217,7 +3744,7 @@ const PlaybackProgressIsland = memo(function PlaybackProgressIsland({
   );
 });
 
-const PlayerModePill = memo(function PlayerModePill({ videoMode, switchVideoMode, variant = 'main' }) {
+const PlayerModePill = memo(function PlayerModePill({ videoMode, switchVideoMode, variant = 'main', isOfflineMode = false }) {
   const isCompact = variant === 'dual';
   const activeClass = 'bg-brand-accent text-black shadow-[0_0_12px_rgba(0,255,191,0.34)]';
   const inactiveClass = isCompact ? 'text-white/45 hover:text-white' : 'text-white/40 hover:text-white';
@@ -2234,10 +3761,10 @@ const PlayerModePill = memo(function PlayerModePill({ videoMode, switchVideoMode
       <button onClick={() => switchVideoMode(null)} className={`${buttonClass} ${videoMode === null ? activeClass : inactiveClass}`}>
         <Music size={iconSize} /> Audio
       </button>
-      <button onClick={() => switchVideoMode('dual')} className={`${buttonClass} ${videoMode === 'dual' ? activeClass : inactiveClass}`}>
+      <button disabled={isOfflineMode} onClick={() => switchVideoMode('dual')} className={`${buttonClass} ${videoMode === 'dual' ? activeClass : inactiveClass} ${isOfflineMode ? 'opacity-30 cursor-not-allowed' : ''}`} title={isOfflineMode ? 'Dual view needs Online Mode' : 'Dual view'}>
         <Columns2 size={iconSize} /> Dual
       </button>
-      <button onClick={() => switchVideoMode('cinema')} className={`${buttonClass} ${videoMode === 'cinema' ? activeClass : inactiveClass}`}>
+      <button disabled={isOfflineMode} onClick={() => switchVideoMode('cinema')} className={`${buttonClass} ${videoMode === 'cinema' ? activeClass : inactiveClass} ${isOfflineMode ? 'opacity-30 cursor-not-allowed' : ''}`} title={isOfflineMode ? 'Cinema needs Online Mode' : 'Cinema'}>
         <Clapperboard size={iconSize} /> Cinema
       </button>
     </div>
@@ -2252,6 +3779,8 @@ const PlayerTransportControls = memo(function PlayerTransportControls({
   beatRingsRef,
   trackControlAccent,
   trackControlGlow,
+  playPauseShortcutLabel = '',
+  showShortcutHints = true,
 }) {
   return (
     <div className="flex items-center justify-center w-full mt-2 relative">
@@ -2265,6 +3794,7 @@ const PlayerTransportControls = memo(function PlayerTransportControls({
         >
           {isAuraMode && <div ref={beatRingsRef} className="absolute inset-0" />}
           {isPlaying ? <Pause size={28} fill="currentColor" /> : <Play size={28} fill="currentColor" className="ml-1" />}
+          <ShortcutHint label={playPauseShortcutLabel} className="pointer-events-none absolute -bottom-2 left-1/2 hidden -translate-x-1/2 bg-black/42 text-[8px] text-white/55 md:inline-flex" title="Play / Pause shortcut" visible={showShortcutHints} />
         </button>
         <button onClick={() => handleControl('skip')} className="p-3 hover:text-brand-accent transition-colors active:scale-90"><FastForward size={22} fill="currentColor" /></button>
       </div>
@@ -2376,6 +3906,7 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
   const [ledgerClearPassword, setLedgerClearPassword] = useState('');
   const [ledgerClearError, setLedgerClearError] = useState('');
   const [isClearingLedger, setIsClearingLedger] = useState(false);
+  const [isSyncingLedger, setIsSyncingLedger] = useState(false);
   const ledgerMountedRef = useRef(true);
   const ledgerRefreshIntervalRef = useRef(0);
   const ledgerLiveIntervalRef = useRef(0);
@@ -2386,16 +3917,6 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
     if (ledgerLiveIntervalRef.current) window.clearInterval(ledgerLiveIntervalRef.current);
     ledgerRefreshIntervalRef.current = 0;
     ledgerLiveIntervalRef.current = 0;
-  }, []);
-
-  const scoreLedgerPayload = useCallback((payload) => {
-    const data = normalizePlaybackLedgerData(payload);
-    const totalTracksPlayed = Math.max(0, Math.floor(Number(data.totalPlays) || 0));
-    const totalSessions = Math.max(0, Math.floor(Number(data.totalSessions) || 0));
-    const totalMs = Math.max(0, Math.floor(Number(data.totalMs) || 0));
-    const tracks = Object.keys(data.tracks || {}).length;
-    const sessions = Array.isArray(data.recentSessions) ? data.recentSessions.length : 0;
-    return { data, score: (totalTracksPlayed * 1000000) + (totalSessions * 100000) + totalMs + (tracks * 1000) + sessions };
   }, []);
 
   const loadLedger = useCallback(async () => {
@@ -2451,7 +3972,7 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
       setSoundCapsuleData(fallback);
       return fallback;
     }
-  }, [scoreLedgerPayload]);
+  }, []);
 
   const soundLedgerView = useMemo(() => {
     const data = normalizePlaybackLedgerData(soundCapsuleData);
@@ -2578,15 +4099,25 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
   }, []);
 
   const syncLedger = useCallback(async () => {
-    const res = await loadLedger();
-    const committed = normalizePlaybackLedgerData(res);
-    if (ledgerMountedRef.current) {
-      setSoundCapsuleData(committed);
-      setLastUpdatedAt(Date.now());
+    if (isSyncingLedger) return;
+    setIsSyncingLedger(true);
+    try {
+      const res = await loadLedger();
+      const committed = normalizePlaybackLedgerData(res);
+      if (ledgerMountedRef.current) {
+        setSoundCapsuleData(committed);
+        setLastUpdatedAt(Date.now());
+      }
+      setLastAdded?.('Signal Ledger synced');
+      window.setTimeout(() => setLastAdded?.(null), 2200);
+    } catch (error) {
+      setLedgerError(error?.message || 'Could not sync Signal Ledger.');
+      setLastAdded?.('Signal Ledger sync failed');
+      window.setTimeout(() => setLastAdded?.(null), 2400);
+    } finally {
+      setIsSyncingLedger(false);
     }
-    setLastAdded?.('Signal Ledger synced');
-    window.setTimeout(() => setLastAdded?.(null), 2200);
-  }, [loadLedger, setLastAdded]);
+  }, [isSyncingLedger, loadLedger, setLastAdded]);
 
   const requestClearLedger = useCallback(async () => {
     setLedgerClearPassword('');
@@ -2712,8 +4243,8 @@ const SignalLedgerIsland = memo(forwardRef(function SignalLedgerIsland({
               <button onClick={requestClearLedger} className="flex h-10 items-center gap-2 rounded-xl border border-red-500/18 bg-red-500/[0.06] px-3 text-[10px] font-black uppercase tracking-[0.18em] text-red-200/70 transition-colors hover:border-red-400/40 hover:text-red-200" title="Clear Signal Ledger">
                 <Trash2 size={13} /> Clear
               </button>
-              <button onClick={syncLedger} className="flex h-10 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/55 transition-colors hover:border-brand-accent/35 hover:text-brand-accent" title="Refresh ledger">
-                <RefreshCw size={13} /> Sync
+              <button onClick={syncLedger} disabled={isSyncingLedger} className="flex h-10 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/55 transition-colors hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-50" title="Refresh ledger">
+                <RefreshCw size={13} className={isSyncingLedger ? 'animate-spin' : ''} /> {isSyncingLedger ? 'Syncing...' : 'Sync'}
               </button>
               <button onClick={close} className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/12 bg-white/[0.04] text-white/45 transition-colors hover:border-red-500/40 hover:text-red-400" title="Close">
                 <X size={17} />
@@ -3078,7 +4609,7 @@ const FeedbackIsland = memo(forwardRef(function FeedbackIsland({
               <div className="text-[10px] uppercase tracking-[0.2em] text-white/30">Build {BUILD_VERSION} // {platform || 'web'}</div>
               <button onClick={submitFeedback} disabled={isFeedbackSending || !feedbackDraft.summary.trim() || !feedbackDraft.details.trim()} className="flex items-center gap-2 rounded-2xl bg-brand-accent px-5 py-3 text-[11px] font-black uppercase tracking-[0.2em] text-black transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-45 disabled:hover:scale-100">
                 {isFeedbackSending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-                Send
+                {isFeedbackSending ? 'Sending...' : 'Send'}
               </button>
             </div>
           </div>
@@ -3182,6 +4713,7 @@ const AppLockSettingsIsland = memo(forwardRef(function AppLockSettingsIsland({
   setIsAppLocked,
   setLastAdded,
   sharedModalCloseButtonClass,
+  requestDestructiveConfirmation,
 }, ref) {
   const [isOpen, setIsOpen] = useState(false);
   const [lockPasswordInput, setLockPasswordInput] = useState('');
@@ -3285,6 +4817,13 @@ const AppLockSettingsIsland = memo(forwardRef(function AppLockSettingsIsland({
       setLockError('Enter password to disable lock.');
       return;
     }
+    const confirmed = requestDestructiveConfirmation ? await requestDestructiveConfirmation({
+      title: 'Disable App Lock?',
+      message: 'Aether will remove the password gate and idle lock protection from this device.',
+      detail: 'You can turn App Lock back on later from Security.',
+      confirmLabel: 'Disable Lock',
+    }) : true;
+    if (!confirmed) return;
     setIsLockBusy(true);
     setLockError('');
     try {
@@ -3302,7 +4841,7 @@ const AppLockSettingsIsland = memo(forwardRef(function AppLockSettingsIsland({
     } finally {
       setIsLockBusy(false);
     }
-  }, [lockDisablePassword, refreshLockStatus, setIsAppLocked, setLastAdded]);
+  }, [lockDisablePassword, refreshLockStatus, requestDestructiveConfirmation, setIsAppLocked, setLastAdded]);
 
   const handleToggleTouchIdLock = useCallback(async (enabled) => {
     setLockUseTouchId(enabled);
@@ -3619,6 +5158,49 @@ const DiscoveryGridSection = memo(function DiscoveryGridSection({
   );
 });
 
+const OfflineAvailablePanel = memo(function OfflineAvailablePanel({
+  tracks,
+  query,
+  getProxyUrl,
+  handleAdd,
+  openTrackInspect,
+  isTrackFavorite,
+  toggleFavoriteTrack,
+  isDoodleMode,
+  catDoodlePeek,
+}) {
+  return (
+    <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3 pb-6 custom-scrollbar">
+      {tracks.length > 0 ? tracks.map((track) => (
+        <div key={`offline-${track.offlineKey || track.id}`} className="performance-list-item group glass-card p-3 flex items-center gap-4 border-white/5 hover:border-brand-accent/30 transition-all">
+          <img src={getProxyUrl(track.thumbnail)} className="w-12 h-12 rounded-xl object-cover bg-white/[0.04] border border-white/10" alt="" />
+          <div className="min-w-0 flex-1">
+            <div className="text-[12px] font-black truncate uppercase tracking-widest text-white group-hover:text-brand-accent transition-colors">{track.title || 'Downloaded Track'}</div>
+            <div className="mt-1 text-[9px] font-bold uppercase tracking-[0.18em] text-white/35 truncate">{track.author || 'Available Offline'}</div>
+            {track.offlineSource && <div className="mt-1 text-[8px] uppercase tracking-[0.16em] text-brand-accent/45 truncate">{track.offlineSource}</div>}
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <button onClick={() => handleAdd(track)} className="h-9 w-9 rounded-xl border border-brand-accent/20 bg-brand-accent/10 text-brand-accent hover:bg-brand-accent hover:text-black transition-all flex items-center justify-center" title="Queue offline track"><Plus size={16} /></button>
+            <button onClick={() => toggleFavoriteTrack(track)} className={`h-9 w-9 rounded-xl border transition-all flex items-center justify-center ${isTrackFavorite(track) ? 'bg-rose-400/15 text-rose-300 border-rose-300/30' : 'bg-white/5 text-white/30 border-white/10 hover:text-rose-300 hover:border-rose-300/30'}`} title={isTrackFavorite(track) ? 'Remove from Favorites' : 'Add to Favorites'}><Heart size={15} fill={isTrackFavorite(track) ? 'currentColor' : 'none'} /></button>
+            <button onClick={() => openTrackInspect(track, 'offline-library')} className="h-9 w-9 rounded-xl border border-white/10 bg-white/5 text-white/35 hover:text-brand-accent hover:border-brand-accent/30 transition-all flex items-center justify-center" title="Inspect downloaded track"><Eye size={15} /></button>
+          </div>
+        </div>
+      )) : (
+        <div className="h-full flex flex-col items-center justify-center gap-3 py-12 text-center opacity-35">
+          <HardDrive size={30} strokeWidth={1.4} />
+          <div className="text-[9px] font-black uppercase tracking-[0.3em] text-white/70">
+            {query ? 'No downloaded match' : 'No downloaded tracks'}
+          </div>
+          <div className="max-w-[240px] text-[8px] font-bold uppercase tracking-[0.2em] text-white/35">
+            {query ? 'Try another header search.' : 'Download tracks in Online Mode to make them available offline.'}
+          </div>
+          {isDoodleMode && <img src={catDoodlePeek} alt="doodle" className="mt-2 h-10 w-auto opacity-70 select-none pointer-events-none" draggable={false} />}
+        </div>
+      )}
+    </div>
+  );
+});
+
 // ===  LIBRARY CONTENT SECTIONS (Memoized) ===
 const LibrarySongRowsGrid = memo(function LibrarySongRowsGrid({
   libraryVisibleSongEntries,
@@ -3860,6 +5442,7 @@ function App() {
   const activeLyricRef = useRef(null);
   const lyricsFetchRequestRef = useRef(0);
   const [searchQuery, setSearchQuery] = useState('');
+  const headerSearchInputRef = useRef(null);
   const [searchResults, setSearchResults] = useState([]);
   const [neuralRecommendations, setNeuralRecommendations] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -3889,7 +5472,15 @@ function App() {
     lastTransportGuardAction: null,
   });
   const [repairResult, setRepairResult] = useState(null);
+  const [runtimeIssuePrompt, setRuntimeIssuePrompt] = useState(null);
+  const runtimeIssueDismissedRef = useRef(false);
   const [lastAdded, setLastAdded] = useState(null);
+  const [lastAddedTone, setLastAddedTone] = useState('success');
+  const flashLastAdded = useCallback((message, delay = 1600, tone = '') => {
+    setLastAddedTone(tone || inferToastTone(message));
+    setLastAdded(message);
+    window.setTimeout(() => setLastAdded(null), delay);
+  }, []);
   const [currentTrackTitle, setCurrentTrackTitle] = useState("");
   const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
   const [isDoodleMode, setIsDoodleMode] = useState(true);
@@ -3911,6 +5502,7 @@ function App() {
   const [faceControlStatus, setFaceControlStatus] = useState('Camera off');
   const [faceControlSignal, setFaceControlSignal] = useState({ x: 0, y: 0, confidence: 0, source: 'idle' });
   const [cameraHandSignal, setCameraHandSignal] = useState({ x: 0, y: 0, motion: 0, last: 'idle' });
+  const [isCameraPreviewVisible, setIsCameraPreviewVisible] = useState(true);
   const [gestureNotice, setGestureNotice] = useState('');
   const [inspectTarget, setInspectTarget] = useState(null);
   const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
@@ -3920,7 +5512,25 @@ function App() {
   const [isLyricsExpanded, setIsLyricsExpanded] = useState(false);
   const typedBufferRef = useRef('');
   const [isMixtapeVaultOpen, setIsMixtapeVaultOpen] = useState(false);
+  const [isPartyModeOpen, setIsPartyModeOpen] = useState(false);
+  const [isExperienceCenterOpen, setIsExperienceCenterOpen] = useState(false);
+  const [experienceCenterInitialPage, setExperienceCenterInitialPage] = useState('home');
+  const [showShortcutHints, setShowShortcutHints] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('aether.showShortcutHints') ?? 'true'); } catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('aether.showShortcutHints', JSON.stringify(showShortcutHints)); } catch { /* ignore */ }
+  }, [showShortcutHints]);
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [partyInfo, setPartyInfo] = useState(null);
+  const [discordPrivate, setDiscordPrivate] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('aether.discordPrivate')) ?? false; } catch { return false; }
+  });
   const [cassetteSide, setCassetteSide] = useState('A');
+  // Sync private mode to main process on startup
+  useEffect(() => {
+    if (discordPrivate) window.aether?.setDiscordPrivate?.(true);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const prevCassetteTrackIdRef = useRef(null);
   useEffect(() => {
     const trackId = queue?.[0]?.id || queue?.[0]?.youtubeId;
@@ -3978,8 +5588,10 @@ function App() {
   const faceLoopRef = useRef(0);
   const faceActionRef = useRef({ lastActionAt: 0, lastZone: 'center', centeredFrames: 0 });
   const cameraMotionRef = useRef({ prevLuma: null, active: false, startX: 0, startY: 0, lastX: 0, lastY: 0, startAt: 0, lastSeenAt: 0, lastActionAt: 0 });
+  const cameraUiUpdateRef = useRef({ faceAt: 0, handAt: 0, status: '' });
   const [hideFirstRunTips, setHideFirstRunTips] = useState(false);
   const [tipsDontShowAgain, setTipsDontShowAgain] = useState(false);
+  const firstRunTipsTimerRef = useRef(null);
   const [draggedPlaylistName, setDraggedPlaylistName] = useState(null);
   const [draggedQueueIndex, setDraggedQueueIndex] = useState(null);
   const [isCreatingPlaylist, setIsCreatingPlaylist] = useState(false);
@@ -4013,6 +5625,8 @@ function App() {
   const [spotifyImportProgress, setSpotifyImportProgress] = useState({ stage: 'idle', progress: 0, message: '' });
   const [isSpotifyImporting, setIsSpotifyImporting] = useState(false);
   const [spotifyImportLogs, setSpotifyImportLogs] = useState([]);
+  const [isVaultImporting, setIsVaultImporting] = useState(false);
+  const [isShortcutSettingsSaving, setIsShortcutSettingsSaving] = useState(false);
   const [updateInfo, setUpdateInfo] = useState({ enabled: false, status: 'idle', message: '', available: false, downloaded: false, version: null, progress: 0 });
   const [isUpdateBusy, setIsUpdateBusy] = useState(false);
   const [updateToast, setUpdateToast] = useState('');
@@ -4039,6 +5653,8 @@ function App() {
   const [engineStatus, setEngineStatus] = useState(null);
   const [offlineDownloads, setOfflineDownloads] = useState([]);
   const [isOfflineDownloadsBusy, setIsOfflineDownloadsBusy] = useState(false);
+  const [destructiveConfirmRequest, setDestructiveConfirmRequest] = useState(null);
+  const destructiveConfirmResolverRef = useRef(null);
 
   const isStandalone = !!window.aether;
   const [videoMode, setVideoMode] = useState(null); // null | 'dual' | 'cinema'
@@ -4046,7 +5662,15 @@ function App() {
 
 
   const fileInputRef = useRef(null);
-  const [isAutoplayEnabled, setIsAutoplayEnabled] = useState(true);
+  const [isOfflineMode, setIsOfflineMode] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('aether.offlineMode')) ?? false;
+    } catch {
+      return false;
+    }
+  });
+  const [offlineLibrarySearchTerm, setOfflineLibrarySearchTerm] = useState('');
+  const [isAutoplayEnabled, setIsAutoplayEnabled] = useState(false);
   const [autoplayMoodMode, setAutoplayMoodMode] = useState('flow');
   const [isAutoplayMenuOpen, setIsAutoplayMenuOpen] = useState(false);
   const [isVerticalStack, setIsVerticalStack] = useState(false);
@@ -4057,8 +5681,6 @@ function App() {
   const idlePhraseRef = useRef(null);
   const lastRPCTrackIdRef = useRef(null);
   const lastRPCPlayingRef = useRef(null);
-  const lastRPCStartRef = useRef(null);
-  const lastRPCEndRef = useRef(null);
   const sessionReadyRef = useRef(false);
   const pendingResumeTimeRef = useRef(null);
 
@@ -4501,6 +6123,11 @@ function App() {
     const next = nextMode || null;
     const currentMode = videoModeRef.current;
     if (next === currentMode) return;
+    if (isOfflineMode && next) {
+      setLastAdded('Offline Mode keeps visual video stages off');
+      window.setTimeout(() => setLastAdded(null), 1800);
+      return;
+    }
     if (next === null) {
       if (!currentMode) return;
       exitVideoMode({ reason: 'user_switch_to_audio' });
@@ -4546,11 +6173,11 @@ function App() {
     setIsAudioBuffering(true);
     setCinemaControlsVisible(true);
     setVideoMode(next);
-  }, [exitVideoMode, getActivePlaybackPositionMs, isVerticalStack, stopVideoElement]);
+  }, [exitVideoMode, getActivePlaybackPositionMs, isOfflineMode, isVerticalStack, setLastAdded, stopVideoElement]);
 
   // Resolve missing YouTube ID when user enters video mode from vault/playlist tracks.
   useEffect(() => {
-    if (!isStandalone || !videoMode || !queue?.[0] || !window.aether?.search) return;
+    if (isOfflineMode || !isStandalone || !videoMode || !queue?.[0] || !window.aether?.search) return;
 
     const track = queue[0];
     if (track.youtubeId || track.videoResolveAttempted) return;
@@ -4611,7 +6238,7 @@ function App() {
         });
       }
     })();
-  }, [isStandalone, videoMode, queue]);
+  }, [isOfflineMode, isStandalone, videoMode, queue]);
 
   useEffect(() => {
     if (!isStandalone || !window.aether?.onYouTubeAuthRequired) return;
@@ -4642,6 +6269,18 @@ function App() {
   }, [currentTime]);
   useEffect(() => { currentTrackRef.current = queue?.[0] || null; }, [queue]);
   useEffect(() => { pendingResumeTimeRef.current = pendingResumeTime; }, [pendingResumeTime]);
+  useEffect(() => {
+    if (!isOfflineMode) return;
+    if (videoModeRef.current) {
+      exitVideoMode({ reason: 'offline_mode' });
+    }
+    setIsViewingFullDiscovery(false);
+    setIsSharedSceneOpen(false);
+    setIsSpotifyImportOpen(false);
+    setIsPartyModeOpen(false);
+    setIsAutoplayMenuOpen(false);
+    setIsAutoplayEnabled(false);
+  }, [exitVideoMode, isOfflineMode]);
   useEffect(() => {
     let raf = 0;
     if (isViewingFullQueue) {
@@ -5398,6 +7037,46 @@ function App() {
     });
   }, [markUiInteraction]);
 
+  const requestDestructiveConfirmation = useCallback((options = {}) => {
+    const preferenceKey = String(options.preferenceKey || '');
+    const allowDontAskAgain = Boolean(options.allowDontAskAgain && preferenceKey);
+    if (allowDontAskAgain && readConfirmationSkipPrefs()[preferenceKey]) {
+      return Promise.resolve(true);
+    }
+    return new Promise((resolve) => {
+      if (destructiveConfirmResolverRef.current) {
+        destructiveConfirmResolverRef.current(false);
+      }
+      destructiveConfirmResolverRef.current = resolve;
+      setDestructiveConfirmRequest({
+        title: options.title || 'Confirm action?',
+        message: options.message || 'This action changes saved Aether data.',
+        detail: options.detail || '',
+        confirmLabel: options.confirmLabel || 'Confirm',
+        cancelLabel: options.cancelLabel || 'Cancel',
+        allowDontAskAgain,
+        preferenceKey,
+      });
+    });
+  }, []);
+
+  const closeDestructiveConfirmation = useCallback((confirmed = false, dontAskAgain = false) => {
+    if (confirmed && dontAskAgain && destructiveConfirmRequest?.allowDontAskAgain && destructiveConfirmRequest?.preferenceKey) {
+      setConfirmationSkipPref(destructiveConfirmRequest.preferenceKey, true);
+    }
+    const resolve = destructiveConfirmResolverRef.current;
+    destructiveConfirmResolverRef.current = null;
+    setDestructiveConfirmRequest(null);
+    resolve?.(Boolean(confirmed));
+  }, [destructiveConfirmRequest]);
+
+  useEffect(() => () => {
+    if (destructiveConfirmResolverRef.current) {
+      destructiveConfirmResolverRef.current(false);
+      destructiveConfirmResolverRef.current = null;
+    }
+  }, []);
+
   const openLibraryOverlay = useCallback((target = null) => {
     runAfterInputPaint(() => {
       const favoriteCount = Object.keys(favoriteTracks || {}).length;
@@ -5420,21 +7099,44 @@ function App() {
   const openFeedbackPanel = useCallback(() => {
     runAfterInputPaint(() => {
       closeHeaderSurfaces('feedback');
-      feedbackRef.current?.open();
+      setExperienceCenterInitialPage('feedback');
+      setIsExperienceCenterOpen(true);
     });
   }, [closeHeaderSurfaces, runAfterInputPaint]);
 
   const openGestureLab = useCallback(() => {
     runAfterInputPaint(() => {
       closeHeaderSurfaces('gesture');
-      gestureLabRef.current?.open();
+      setExperienceCenterInitialPage('gesture-face-lab');
+      setIsExperienceCenterOpen(true);
     });
   }, [closeHeaderSurfaces, runAfterInputPaint]);
 
   const openSignalLedger = useCallback(() => {
     runAfterInputPaint(() => {
       closeHeaderSurfaces('ledger');
-      soundCapsuleRef.current?.open();
+      setExperienceCenterInitialPage('signal-ledger');
+      setIsExperienceCenterOpen(true);
+    });
+  }, [closeHeaderSurfaces, runAfterInputPaint]);
+
+  const openExperienceCenterPage = useCallback((page = 'home') => {
+    runAfterInputPaint(() => {
+      closeHeaderSurfaces('experience');
+      setExperienceCenterInitialPage(page || 'home');
+      setIsExperienceCenterOpen(true);
+    });
+  }, [closeHeaderSurfaces, runAfterInputPaint]);
+
+  const openMusicImport = useCallback(() => {
+    runAfterInputPaint(() => {
+      closeHeaderSurfaces();
+      setMusicImportProvider('');
+      setSpotifyImportUrl('');
+      setSpotifyImportPlaylistName('');
+      setSpotifyImportProgress({ stage: 'idle', progress: 0, message: '' });
+      setSpotifyImportLogs([]);
+      setIsSpotifyImportOpen(true);
     });
   }, [closeHeaderSurfaces, runAfterInputPaint]);
 
@@ -5491,15 +7193,37 @@ function App() {
 
   const closeTipsOverlay = useCallback(() => {
     const nextHide = Boolean(tipsDontShowAgain);
+    if (firstRunTipsTimerRef.current) {
+      window.clearTimeout(firstRunTipsTimerRef.current);
+      firstRunTipsTimerRef.current = null;
+    }
     setIsTipsOverlayOpen(false);
     setHideFirstRunTips(nextHide);
     persistHideFirstRunTips(nextHide);
   }, [persistHideFirstRunTips, tipsDontShowAgain]);
 
+  useEffect(() => () => {
+    if (firstRunTipsTimerRef.current) {
+      window.clearTimeout(firstRunTipsTimerRef.current);
+      firstRunTipsTimerRef.current = null;
+    }
+  }, []);
+
   const openShortcutSettings = useCallback(() => {
     runAfterInputPaint(() => {
       closeHeaderSurfaces('shortcuts');
-      headerControlsRef.current?.openShortcutSettings();
+      setShortcutSettingsError('');
+      setShortcutDraft(sanitizeShortcutMap(shortcuts, isMacPlatform));
+      setExperienceCenterInitialPage('shortcut-settings');
+      setIsExperienceCenterOpen(true);
+    });
+  }, [closeHeaderSurfaces, isMacPlatform, runAfterInputPaint, shortcuts]);
+
+  const openAppLockSettings = useCallback(() => {
+    runAfterInputPaint(() => {
+      closeHeaderSurfaces('lock');
+      setExperienceCenterInitialPage('app-lock');
+      setIsExperienceCenterOpen(true);
     });
   }, [closeHeaderSurfaces, runAfterInputPaint]);
 
@@ -5511,9 +7235,11 @@ function App() {
   const resetShortcutSettingsToDefaults = useCallback(() => {
     setShortcutSettingsError('');
     setShortcutDraft(sanitizeShortcutMap(DEFAULT_SHORTCUTS, isMacPlatform));
-  }, [isMacPlatform]);
+    flashLastAdded('Shortcut defaults staged', 1800, 'warning');
+  }, [flashLastAdded, isMacPlatform]);
 
   const saveShortcutSettings = useCallback(async () => {
+    if (isShortcutSettingsSaving) return;
     const normalized = sanitizeShortcutMap(shortcutDraft, isMacPlatform);
     const seen = new Map();
 
@@ -5531,22 +7257,25 @@ function App() {
       seen.set(key, label);
     }
 
-    setShortcuts(normalized);
-    setShortcutSettingsError('');
-    setIsShortcutSettingsOpen(false);
-    setLastAdded('Shortcuts updated');
-    setTimeout(() => setLastAdded(null), 1600);
-
+    setIsShortcutSettingsSaving(true);
     try {
       if (isStandalone && window.aether?.store?.set) {
         await window.aether.store.set(GLOBAL_SHORTCUTS_ENABLED_STORAGE_KEY, !!globalMediaShortcutsEnabled);
       } else {
         localStorage.setItem(GLOBAL_SHORTCUTS_ENABLED_STORAGE_KEY, JSON.stringify(!!globalMediaShortcutsEnabled));
       }
+      setShortcuts(normalized);
+      setShortcutSettingsError('');
+      setIsShortcutSettingsOpen(false);
+      flashLastAdded('Shortcuts saved', 1800, 'success');
     } catch (e) {
       console.warn('[Aether/Shortcuts] Failed to persist global media shortcut toggle', e);
+      setShortcutSettingsError('Could not save shortcuts. Try again.');
+      flashLastAdded('Shortcut save failed', 2200, 'error');
+    } finally {
+      setIsShortcutSettingsSaving(false);
     }
-  }, [globalMediaShortcutsEnabled, isMacPlatform, isStandalone, shortcutDraft]);
+  }, [flashLastAdded, globalMediaShortcutsEnabled, isMacPlatform, isShortcutSettingsSaving, isStandalone, shortcutDraft]);
 
   const copyVaultSceneEmbed = useCallback(async () => {
     const totalDurationMs = currentTrack?.totalDurationMs || currentTrack?.duration || 0;
@@ -5592,7 +7321,9 @@ function App() {
     setIsSharedSceneOpen(true);
 
     try {
-      if (navigator.clipboard?.writeText) {
+      if (isStandalone && window.aether?.clipboard?.writeText) {
+        await window.aether.clipboard.writeText(sceneUrl);
+      } else if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(sceneUrl);
       } else {
         const fallback = document.createElement('textarea');
@@ -5613,7 +7344,7 @@ function App() {
       setLastAdded('Scene link unavailable');
       setTimeout(() => setLastAdded(null), 2200);
     }
-  }, [appendRecentEvent, currentTrack, currentTrack?.actualUrl, currentTrack?.author, currentTrack?.duration, currentTrack?.thumbnail, currentTrack?.title, currentTrack?.youtubeId, formatTime, getActivePlaybackPositionMs, isPlaying, livePulseReadout, lyrics, themeColor, visualizerMode, vaultPulse]);
+  }, [appendRecentEvent, currentTrack, currentTrack?.actualUrl, currentTrack?.author, currentTrack?.duration, currentTrack?.thumbnail, currentTrack?.title, currentTrack?.youtubeId, formatTime, getActivePlaybackPositionMs, isPlaying, isStandalone, livePulseReadout, lyrics, themeColor, visualizerMode, vaultPulse]);
 
   const refreshLockStatus = useCallback(async () => {
     if (!isStandalone || !window.aether?.getLockStatus) return;
@@ -5699,6 +7430,13 @@ function App() {
       setLockError('Enter password to disable lock.');
       return;
     }
+    const confirmed = await requestDestructiveConfirmation({
+      title: 'Disable App Lock?',
+      message: 'Aether will remove the password gate and idle lock protection from this device.',
+      detail: 'You can turn App Lock back on later from Security.',
+      confirmLabel: 'Disable Lock',
+    });
+    if (!confirmed) return;
     setIsLockBusy(true);
     setLockError('');
     try {
@@ -5716,7 +7454,7 @@ function App() {
     } finally {
       setIsLockBusy(false);
     }
-  }, [lockDisablePassword, refreshLockStatus]);
+  }, [lockDisablePassword, refreshLockStatus, requestDestructiveConfirmation]);
 
   const handleToggleTouchIdLock = useCallback(async (enabled) => {
     setLockUseTouchId(enabled);
@@ -5761,6 +7499,13 @@ function App() {
       setRecoveryError('Passwords do not match.');
       return;
     }
+    const confirmed = await requestDestructiveConfirmation({
+      title: 'Reset App Lock password?',
+      message: 'Aether will replace the current App Lock password with the new password you entered.',
+      detail: 'Use the new password the next time Aether locks.',
+      confirmLabel: 'Reset Password',
+    });
+    if (!confirmed) return;
     setRecoveryError('');
     setRecoveryResetBusy(true);
     try {
@@ -5786,7 +7531,7 @@ function App() {
     } finally {
       setRecoveryResetBusy(false);
     }
-  }, [lockUseTouchId, recoveryNewPassword, recoveryNewPasswordConfirm, recoveryToken, refreshLockStatus]);
+  }, [lockUseTouchId, recoveryNewPassword, recoveryNewPasswordConfirm, recoveryToken, refreshLockStatus, requestDestructiveConfirmation]);
 
   const handleCopyPhrase = useCallback(() => {
     if (!phraseGenerated) return;
@@ -6251,6 +7996,13 @@ function App() {
   }, [appendRecentEvent, currentTrack?.title, currentTrackPresetKey, currentTrackTitle, lyricOffsetPresets, lyricOffsetMs, persistLyricPresets]);
 
   const handleResetLyricPreset = useCallback(async () => {
+    const confirmed = await requestDestructiveConfirmation({
+      title: 'Reset subtitle sync?',
+      message: 'Aether will remove the saved subtitle timing adjustment for this track and return it to 0ms.',
+      detail: 'This only changes subtitle timing for the current track.',
+      confirmLabel: 'Reset Sync',
+    });
+    if (!confirmed) return;
     if (!currentTrackPresetKey) {
       setLyricOffsetMs(0);
       setIsLyricPresetSaved(false);
@@ -6263,7 +8015,7 @@ function App() {
     setIsLyricPresetSaved(false);
     await persistLyricPresets(next);
     appendRecentEvent('sync_reset', 'Subtitle sync reset to 0ms', { tone: 'warning', title: currentTrack?.title || currentTrackTitle });
-  }, [appendRecentEvent, currentTrack?.title, currentTrackPresetKey, currentTrackTitle, lyricOffsetPresets, persistLyricPresets]);
+  }, [appendRecentEvent, currentTrack?.title, currentTrackPresetKey, currentTrackTitle, lyricOffsetPresets, persistLyricPresets, requestDestructiveConfirmation]);
 
 
 
@@ -6783,7 +8535,11 @@ function App() {
         }
 
         if (!resolvedHideFirstRunTips) {
-          setTimeout(() => setIsTipsOverlayOpen(true), 700);
+          if (firstRunTipsTimerRef.current) window.clearTimeout(firstRunTipsTimerRef.current);
+          firstRunTipsTimerRef.current = window.setTimeout(() => {
+            firstRunTipsTimerRef.current = null;
+            setIsTipsOverlayOpen(true);
+          }, 700);
         }
 
         const savedPlaylists = await window.aether?.store?.get('playlists');
@@ -6912,7 +8668,11 @@ function App() {
         }
 
         if (!resolvedHideFirstRunTips) {
-          setTimeout(() => setIsTipsOverlayOpen(true), 700);
+          if (firstRunTipsTimerRef.current) window.clearTimeout(firstRunTipsTimerRef.current);
+          firstRunTipsTimerRef.current = window.setTimeout(() => {
+            firstRunTipsTimerRef.current = null;
+            setIsTipsOverlayOpen(true);
+          }, 700);
         }
 
         const rawShortcuts = localStorage.getItem(SHORTCUTS_STORAGE_KEY);
@@ -7077,7 +8837,8 @@ function App() {
     const loadStartTime = Date.now();
     const trackUrl = track.actualUrl || track.url;
     const baseTrackLoadKey = track.queueNonce || track.id || track.youtubeId || `${track.title || ''}|${track.author || ''}|${trackUrl || ''}`;
-    const isHeadDownloaded = downloadedTracks.includes(track.id);
+    const resolvedHeadId = resolveWarmupTrackId(track);
+    const isHeadDownloaded = downloadedTracks.includes(track.id) || downloadedTracks.includes(String(resolvedHeadId));
     const trackLoadKey = `${baseTrackLoadKey}|p:${streamPort}|r:${playbackResetNonce}`;
     const resumeMs = Math.max(0, Math.floor(Number(pendingResumeTimeRef.current || 0)));
     const startSec = resumeMs > 0 ? (resumeMs / 1000) : 0;
@@ -7094,8 +8855,17 @@ function App() {
       downloaded: isHeadDownloaded,
     });
 
+    if (isOfflineMode && !isHeadDownloaded) {
+      console.warn('[Aether/Audio] Offline Mode skipped non-downloaded queue head', { id: track.id, title: track.title });
+      setLastAdded('Offline Mode skipped a non-downloaded track');
+      window.setTimeout(() => setLastAdded(null), 2200);
+      setQueue((prev) => (Array.isArray(prev) ? prev.slice(1) : []));
+      setIsAudioBuffering(false);
+      return undefined;
+    }
+
     // Pre-warm next queue tracks
-    queue.slice(0, 3).forEach((item) => {
+    if (!isOfflineMode) queue.slice(0, 3).forEach((item) => {
       if (!downloadedTracks.includes(item.id) && !warmingTrackIds.has(item.id)) {
         console.log(`[Aether] Warmup pre-download for queued track: ${item.title} (${item.id})`);
         warmupTrack(item);
@@ -7113,7 +8883,7 @@ function App() {
         localAudioRef.current.volume = volume;
       }
 
-      const isLocalDownloaded = downloadedTracks.includes(track.id);
+      const isLocalDownloaded = isHeadDownloaded;
       let resumeApplied = false;
       const streamNonce = encodeURIComponent(String(track.queueNonce || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`));
       const resetQuery = `&_r=${playbackResetNonce}`;
@@ -7124,6 +8894,7 @@ function App() {
       const streamBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
       let didOfflineFallback = false;
       const fallbackToOnlineStream = () => {
+        if (isOfflineMode) return;
         if (!isPlayingRef.current || !isLocalDownloaded || didOfflineFallback) return;
         didOfflineFallback = true;
         const onlineUrl = `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&_q=${streamNonce}${resetQuery}`;
@@ -7212,6 +8983,11 @@ function App() {
         const completion = durationMs > 0 ? playedMs / durationMs : 1;
 
         if (completion > 0 && completion < 0.9 && !prematureEndGuardRef.current.retried) {
+          if (isOfflineMode) {
+            console.warn('[Aether/Audio] Offline source ended early; no live recovery in Offline Mode', { title: track.title });
+            advanceQueueRef.current('offline_premature_end');
+            return;
+          }
           prematureEndGuardRef.current = { trackId: track.id, retried: true };
           const youtubeUrl = track.youtubeId
             ? `https://www.youtube.com/watch?v=${track.youtubeId}`
@@ -7251,6 +9027,11 @@ function App() {
         if (localAudioRef.current) localAudioRef.current.muted = true;
         if (isPlayingRef.current) {
           setIsAudioBuffering(true);
+          if (isOfflineMode) {
+            setIsAudioBuffering(false);
+            advanceQueueRef.current('offline_audio_error');
+            return;
+          }
           fallbackToOnlineStream();
         }
       };
@@ -7265,8 +9046,9 @@ function App() {
         return;
       }
 
+      const offlineAudioId = resolvedHeadId || track.id;
       const streamUrl = isLocalDownloaded
-        ? `${streamBase}/offline/${track.id}.m4a?_q=${streamNonce}${resetQuery}`
+        ? `${streamBase}/offline/${offlineAudioId}.m4a?_q=${streamNonce}${resetQuery}`
         : `${streamBase}/stream?url=${encodeURIComponent(youtubeUrl)}&_q=${streamNonce}${resetQuery}${startSec > 0 ? `&t=${startSec}` : ''}`;
       prematureEndGuardRef.current = { trackId: track.id, retried: false };
 
@@ -7313,7 +9095,7 @@ function App() {
       }, 12000);
 
       // Trigger background download if not already cached / warming
-      if (window.aether?.download && !downloadedTracks.includes(track.id) && !warmingTrackIds.has(track.id)) {
+      if (!isOfflineMode && window.aether?.download && !downloadedTracks.includes(track.id) && !warmingTrackIds.has(track.id)) {
         console.log(`[Aether] Triggering background download for track ${track.id}`);
         warmupTrack(track);
       }
@@ -7504,26 +9286,6 @@ function App() {
 
       if (hasValidTrack) {
         const rpcTrackId = String(track.id || track.youtubeId || `${track.title || ''}|${track.author || ''}`);
-        const sameTrack = lastRPCTrackIdRef.current === rpcTrackId;
-        const samePlayState = lastRPCPlayingRef.current === isPlaying;
-        if (sameTrack && samePlayState) return;
-
-        const durationMs = Number(track.totalDurationMs || track.duration || 0);
-        const shouldRecalculateClock =
-          !sameTrack ||
-          (sameTrack && !samePlayState && isPlaying) ||
-          !lastRPCStartRef.current ||
-          !lastRPCEndRef.current;
-
-        if (shouldRecalculateClock) {
-          const liveCurrentTime = Math.max(0, Math.floor(currentTimeRef.current || 0));
-          lastRPCStartRef.current = Date.now() - liveCurrentTime;
-          const computedEnd = Date.now() + Math.max(0, durationMs - liveCurrentTime);
-          lastRPCEndRef.current = Number.isFinite(durationMs) && durationMs > liveCurrentTime + 1000
-            ? computedEnd
-            : null;
-        }
-
         lastRPCTrackIdRef.current = rpcTrackId;
         lastRPCPlayingRef.current = isPlaying;
         idleStartTimeRef.current = null;
@@ -7535,15 +9297,14 @@ function App() {
           thumbnail: track.thumbnail,
           isPlaying: isPlaying,
           url: track.actualUrl || track.url || '',
-          startTime: lastRPCStartRef.current,
-          endTime: lastRPCEndRef.current
+          currentTime: Math.max(0, Math.floor(currentTimeRef.current || 0)),
+          duration: Math.max(0, Math.floor(track.totalDurationMs || track.duration || 0)),
+          ...(partyInfo || {})
         });
       } else {
         // Idle Lobby State
         lastRPCTrackIdRef.current = null;
         lastRPCPlayingRef.current = null;
-        lastRPCStartRef.current = null;
-        lastRPCEndRef.current = null;
         if (!idleStartTimeRef.current) {
           idleStartTimeRef.current = Date.now();
           idlePhraseRef.current = IDLE_PHRASES[Math.floor(Math.random() * IDLE_PHRASES.length)];
@@ -7552,7 +9313,8 @@ function App() {
         window.aether.updateRPC({
           title: "Music Lobby",
           artist: idlePhraseRef.current,
-          startTime: idleStartTimeRef.current
+          startTime: idleStartTimeRef.current,
+          ...(partyInfo || {})
         });
 
         // Start cycler if not already running
@@ -7567,7 +9329,8 @@ function App() {
             window.aether.updateRPC({
               title: "Music Lobby",
               artist: idlePhraseRef.current,
-              startTime: idleStartTimeRef.current
+              startTime: idleStartTimeRef.current,
+              ...(partyInfo || {})
             });
           }, 20000);
         }
@@ -7582,7 +9345,7 @@ function App() {
         cycleInterval = null;
       }
     };
-  }, [queue, isPlaying, isStandalone]);
+  }, [queue, isPlaying, isStandalone, currentTime, partyInfo]);
 
   // Combined effect replaced the previous two RPC effects
 
@@ -8210,6 +9973,13 @@ function App() {
 
   const handleCleanVault = useCallback(async () => {
     if (isVaultCleaning) return;
+    const confirmed = await requestDestructiveConfirmation({
+      title: 'Clean vault data?',
+      message: 'Aether will remove duplicate or unavailable vault entries and normalize saved track metadata.',
+      detail: 'This changes your saved vault lists, but it does not delete audio files from disk.',
+      confirmLabel: 'Clean Vault',
+    });
+    if (!confirmed) return;
     setIsVaultCleaning(true);
     setLastAdded('Cleaning vault…');
 
@@ -8326,7 +10096,7 @@ function App() {
     } finally {
       setIsVaultCleaning(false);
     }
-  }, [isStandalone, isVaultCleaning, normalizeTrackIdentity, playlists]);
+  }, [isStandalone, isVaultCleaning, normalizeTrackIdentity, playlists, requestDestructiveConfirmation]);
 
 
 
@@ -8350,7 +10120,7 @@ function App() {
 
 
   const triggerAutoplay = async (seedTrack = null) => {
-    if (!isAutoplayEnabled || !isStandalone) return;
+    if (!isAutoplayEnabled || !isStandalone || isOfflineMode) return;
     const seed = seedTrack || currentTrack || history[0];
     if (!seed) return;
 
@@ -8524,7 +10294,7 @@ function App() {
 
   // Autoplay Trigger Logic
   useEffect(() => {
-    if (isStandalone && isAutoplayEnabled && queue.length === 0 && !isManualStop && !isAutoplaySeeking) {
+    if (!isOfflineMode && isStandalone && isAutoplayEnabled && queue.length === 0 && !isManualStop && !isAutoplaySeeking) {
       const seed = currentTrack || history[0] || prevTrackRef.current;
       if (seed) {
         console.log('[Aether/Autoplay] Queue empty, triggering autoplay', {
@@ -8535,7 +10305,7 @@ function App() {
         triggerAutoplay(seed);
       }
     }
-  }, [queue.length, isAutoplayEnabled, isStandalone, isManualStop, isAutoplaySeeking, currentTrack, history, autoplayMoodMode, skipEvents]);
+  }, [queue.length, isAutoplayEnabled, isOfflineMode, isStandalone, isManualStop, isAutoplaySeeking, currentTrack, history, autoplayMoodMode, skipEvents]);
 
   useEffect(() => {
     if (!isStandalone || !window.aether?.onSpotifyImportProgress) return;
@@ -8985,8 +10755,41 @@ function App() {
     }
   }, [isStandalone]);
 
+  useEffect(() => {
+    try {
+      runtimeIssueDismissedRef.current = sessionStorage.getItem('aether.runtimeIssueDismissed') === 'true';
+    } catch {
+      runtimeIssueDismissedRef.current = false;
+    }
+  }, []);
+
+  const showRuntimeIssuePrompt = useCallback((nextPrompt) => {
+    if (!isStandalone || runtimeIssueDismissedRef.current) return;
+    setRuntimeIssuePrompt({
+      title: 'Playback Tools Need Repair',
+      message: 'Aether could not confirm the local download engine. Repair can reinstall or relink yt-dlp and FFmpeg automatically.',
+      actionLabel: 'Repair Runtime',
+      ...nextPrompt,
+    });
+  }, [isStandalone]);
+
+  const dismissRuntimeIssuePrompt = useCallback(() => {
+    runtimeIssueDismissedRef.current = true;
+    try {
+      sessionStorage.setItem('aether.runtimeIssueDismissed', 'true');
+    } catch { }
+    setRuntimeIssuePrompt(null);
+  }, []);
+
   const handleRepairEnvironment = useCallback(async () => {
     if (!isStandalone || !window.aether?.repairEnvironment) return;
+    const confirmed = await requestDestructiveConfirmation({
+      title: 'Repair playback environment?',
+      message: 'Aether will inspect local playback helpers and may relink bundled runtime paths.',
+      detail: 'This can change local helper settings used for yt-dlp and FFmpeg.',
+      confirmLabel: 'Repair Environment',
+    });
+    if (!confirmed) return;
     setRepairResult({ status: 'running' });
     try {
       const res = await window.aether.repairEnvironment();
@@ -8996,19 +10799,33 @@ function App() {
     } catch (e) {
       setRepairResult({ status: 'error', error: e?.message || String(e) });
     }
-  }, [isStandalone, refreshEngineStatus]);
+  }, [isStandalone, refreshEngineStatus, requestDestructiveConfirmation]);
 
   const handleAttemptFixes = useCallback(async () => {
     if (!isStandalone || !window.aether?.repairEnvironment) return;
+    const confirmed = await requestDestructiveConfirmation({
+      title: 'Attempt platform fixes?',
+      message: 'Aether will try to fix local playback helper paths and permissions for this platform.',
+      detail: 'This changes local runtime settings so playback and downloads can recover automatically.',
+      confirmLabel: 'Attempt Fixes',
+    });
+    if (!confirmed) return;
     setRepairResult({ status: 'running' });
     try {
       const res = await window.aether.repairEnvironment({ runFixes: true });
       setRepairResult({ status: 'done', result: res });
       await refreshEngineStatus();
+      if (res?.ytDlpReady && res?.ffmpegReady) {
+        runtimeIssueDismissedRef.current = false;
+        try {
+          sessionStorage.removeItem('aether.runtimeIssueDismissed');
+        } catch { }
+        setRuntimeIssuePrompt(null);
+      }
     } catch (e) {
       setRepairResult({ status: 'error', error: e?.message || String(e) });
     }
-  }, [isStandalone, refreshEngineStatus]);
+  }, [isStandalone, refreshEngineStatus, requestDestructiveConfirmation]);
 
   const handleRunInstaller = useCallback(async () => {
     if (!isStandalone || !window.aether?.runInstaller) return;
@@ -9016,7 +10833,11 @@ function App() {
       const res = await window.aether.runInstaller();
       if (!res?.success && res?.releasesUrl) {
         // Open releases page in default browser
-        window.open(res.releasesUrl, '_blank');
+        if (window.aether?.openExternal) {
+          window.aether.openExternal(res.releasesUrl);
+        } else {
+          window.open(res.releasesUrl, '_blank');
+        }
       }
       // Save result for user to see
       setRepairResult((prev) => ({ ...(prev || {}), installerResult: res }));
@@ -9056,6 +10877,35 @@ function App() {
       setTimeout(() => setLastAdded(null), 2500);
     }
   }, [appendRecentEvent, isStandalone, refreshEngineStatus]);
+
+  useEffect(() => {
+    if (!isStandalone || !engineStatus) return;
+    if (engineStatus.ytDlpReady && engineStatus.ffmpegReady) {
+      setRuntimeIssuePrompt(null);
+      return;
+    }
+    showRuntimeIssuePrompt({
+      title: 'Download Engine Needs Attention',
+      message: engineStatus.ytDlpReady
+        ? 'FFmpeg is missing or not executable. Repair Runtime can relink the bundled binary or guide you to the release installer.'
+        : 'yt-dlp is missing or not executable. Repair Runtime can fetch the correct binary for this platform.',
+    });
+  }, [engineStatus, isStandalone, showRuntimeIssuePrompt]);
+
+  useEffect(() => {
+    if (!isStandalone || !window.aether?.onUserError) return undefined;
+    const unsubscribe = window.aether.onUserError((payload = {}) => {
+      const errorText = String(payload?.message || payload?.error || '').toLowerCase();
+      if (!/(yt-dlp|ffmpeg|ffprobe|enoent|eacces|eperm|spawn)/.test(errorText)) return;
+      showRuntimeIssuePrompt({
+        title: 'Playback Engine Error',
+        message: payload?.message || 'Aether hit a local playback tool error. Repair Runtime can attempt an automatic fix.',
+      });
+    });
+    return () => {
+      if (typeof unsubscribe === 'function') unsubscribe();
+    };
+  }, [isStandalone, showRuntimeIssuePrompt]);
 
   const handleCopyDiagnosticsValue = useCallback(async (value, successLabel = 'Copied to clipboard') => {
     const text = String(value || '').trim();
@@ -9121,6 +10971,14 @@ function App() {
 
   const runStorageOptimize = useCallback(async (mode) => {
     if (!isStandalone || !window.aether?.optimizeStorage) return;
+    const modeLabel = mode === 'downloads-only' ? 'keep downloaded only' : mode === 'age' ? 'clean old cache' : 'trim cache to cap';
+    const confirmed = await requestDestructiveConfirmation({
+      title: 'Run storage cleanup?',
+      message: `Aether will ${modeLabel} and remove matching cached playback files.`,
+      detail: 'Downloaded tracks are kept unless this cleanup mode marks cache-only files as removable.',
+      confirmLabel: 'Clean Storage',
+    });
+    if (!confirmed) return;
     setIsStorageBusy(true);
     try {
       const payload = mode === 'cap'
@@ -9140,7 +10998,7 @@ function App() {
     } finally {
       setIsStorageBusy(false);
     }
-  }, [isStandalone, refreshStorageEstimate, refreshStorageStats, storagePolicy.cacheCapMb, storagePolicy.maxCacheAgeDays]);
+  }, [isStandalone, refreshStorageEstimate, refreshStorageStats, storagePolicy.cacheCapMb, storagePolicy.maxCacheAgeDays, requestDestructiveConfirmation]);
 
   const refreshOfflineDownloads = useCallback(async () => {
     if (!isStandalone) return;
@@ -9416,6 +11274,10 @@ function App() {
   };
 
   const closeTopmostOverlay = useCallback(() => {
+    if (isCommandPaletteOpen) {
+      setIsCommandPaletteOpen(false);
+      return true;
+    }
     if (headerControlsRef.current?.isOpen()) {
       headerControlsRef.current.close();
       return true;
@@ -9462,6 +11324,10 @@ function App() {
     }
     if (isGestureLabOpen) {
       setIsGestureLabOpen(false);
+      return true;
+    }
+    if (isExperienceCenterOpen) {
+      setIsExperienceCenterOpen(false);
       return true;
     }
     if (inspectTarget) {
@@ -9545,11 +11411,13 @@ function App() {
     closeTipsOverlay,
     exitVideoMode,
     isAutoplayMenuOpen,
+    isCommandPaletteOpen,
     inspectTarget,
     isAuraStageOpen,
     isDiagnosticsOpen,
     isFeedbackOpen,
     isGestureLabOpen,
+    isExperienceCenterOpen,
     isLibraryOverlayOpen,
     isLockBusy,
     isLockModalOpen,
@@ -9576,6 +11444,16 @@ function App() {
   useEffect(() => {
     const onKeyDown = (e) => {
       if (e.key !== 'Escape') return;
+      const target = e.target instanceof Element ? e.target : document.activeElement;
+      const activeTarget = document.activeElement instanceof Element ? document.activeElement : null;
+      const isEditingTarget = [target, activeTarget].some((node) => node && (
+        node.tagName === 'INPUT'
+        || node.tagName === 'TEXTAREA'
+        || node.tagName === 'SELECT'
+        || node.isContentEditable
+        || node.closest('[data-shortcut-recording="true"]')
+      ));
+      if (isEditingTarget) return;
       if (!closeTopmostOverlay()) return;
       e.preventDefault();
       e.stopPropagation();
@@ -9944,20 +11822,29 @@ function App() {
     return Boolean(key && favoriteTracks?.[key]);
   }, [favoriteTracks, normalizeTrackIdentity]);
 
-  const toggleFavoriteTrack = useCallback((track) => {
+  const toggleFavoriteTrack = useCallback(async (track, options = {}) => {
     const normalizedTrack = normalizeQueueTrack(track);
     const key = normalizeTrackIdentity(normalizedTrack || track);
     if (!key) return;
 
     const next = { ...(favoriteTracks || {}) };
     const wasFavorite = Boolean(next[key]);
+    if (wasFavorite && !options.skipConfirm) {
+      const confirmed = await requestDestructiveConfirmation({
+        title: 'Remove favorite?',
+        message: `Aether will remove "${(normalizedTrack || track)?.title || 'this track'}" from Favorites.`,
+        detail: 'The track is not deleted from disk or from your vaults.',
+        confirmLabel: 'Remove Favorite',
+      });
+      if (!confirmed) return;
+    }
     if (wasFavorite) delete next[key];
     else next[key] = normalizedTrack || track;
 
     persistFavoriteTracks(next);
     setLastAdded(wasFavorite ? 'Removed from favorites' : `Favorited: ${(normalizedTrack || track)?.title || 'Track'}`);
     setTimeout(() => setLastAdded(null), 2200);
-  }, [favoriteTracks, normalizeQueueTrack, normalizeTrackIdentity, persistFavoriteTracks]);
+  }, [favoriteTracks, normalizeQueueTrack, normalizeTrackIdentity, persistFavoriteTracks, requestDestructiveConfirmation]);
 
   const handleFavoriteAddAll = useCallback(() => {
     if (!favoriteTracksList.length) {
@@ -10004,10 +11891,19 @@ function App() {
     playLibraryTracks(playlists[name] || [], name || 'Vault', shuffle);
   }, [handleFavoritePlayAll, playLibraryTracks, playlists]);
 
-  const handleRemoveFromPlaylist = useCallback((name, index) => {
+  const handleRemoveFromPlaylist = useCallback(async (name, index) => {
+    const confirmed = await requestDestructiveConfirmation({
+      title: name === FAVORITES_PLAYLIST_ID ? 'Remove favorite?' : 'Remove track from vault?',
+      message: name === FAVORITES_PLAYLIST_ID
+        ? 'Aether will remove this track from Favorites.'
+        : `Aether will remove this track from "${name || 'this vault'}".`,
+      detail: 'The track is not deleted from disk or from other vaults.',
+      confirmLabel: 'Remove Track',
+    });
+    if (!confirmed) return;
     if (name === FAVORITES_PLAYLIST_ID) {
       const track = favoriteTracksList[index];
-      if (track) toggleFavoriteTrack(track);
+      if (track) toggleFavoriteTrack(track, { skipConfirm: true });
       return;
     }
     const newPlaylists = { ...playlists };
@@ -10017,7 +11913,7 @@ function App() {
     setTimeout(() => setLastAdded(null), 2000);
     setPlaylists(newPlaylists);
     window.aether?.store?.set('playlists', newPlaylists);
-  }, [playlists, favoriteTracksList, toggleFavoriteTrack]);
+  }, [playlists, favoriteTracksList, toggleFavoriteTrack, requestDestructiveConfirmation]);
 
   const handlePlaylistAddAll = useCallback((name) => {
     if (name === FAVORITES_PLAYLIST_ID) {
@@ -10069,7 +11965,17 @@ function App() {
     setTimeout(() => setLastAdded(null), 2200);
   }, [playlists, playlistOrder, persistPlaylistOrder, viewingPlaylist]);
 
-  const handleDeletePlaylist = useCallback((name) => {
+  const handleDeletePlaylist = useCallback(async (name) => {
+    const isFavorites = name === FAVORITES_PLAYLIST_ID;
+    const confirmed = await requestDestructiveConfirmation({
+      title: isFavorites ? 'Clear Favorites?' : 'Delete vault?',
+      message: isFavorites
+        ? 'Aether will remove every track saved in Favorites.'
+        : `Aether will delete the "${name || 'selected'}" vault and its saved track list.`,
+      detail: 'Audio files and downloads are not deleted from disk.',
+      confirmLabel: isFavorites ? 'Clear Favorites' : 'Delete Vault',
+    });
+    if (!confirmed) return;
     if (name === FAVORITES_PLAYLIST_ID) {
       persistFavoriteTracks({});
       setViewingPlaylist(Object.keys(playlists)[0] || null);
@@ -10086,11 +11992,18 @@ function App() {
     if (viewingPlaylist === name) {
       setViewingPlaylist(nextOrder.find((playlistName) => Array.isArray(newPlaylists[playlistName])) || Object.keys(newPlaylists)[0] || null);
     }
-  }, [playlists, playlistOrder, persistPlaylistOrder, viewingPlaylist, persistFavoriteTracks]);
+  }, [playlists, playlistOrder, persistPlaylistOrder, viewingPlaylist, persistFavoriteTracks, requestDestructiveConfirmation]);
 
-  const handleRemoveTrackFromPlaylist = useCallback((name, track, fallbackIndex = -1) => {
+  const handleRemoveTrackFromPlaylist = useCallback(async (name, track, fallbackIndex = -1) => {
     if (name === FAVORITES_PLAYLIST_ID) {
-      if (track) toggleFavoriteTrack(track);
+      const confirmed = await requestDestructiveConfirmation({
+        title: 'Remove favorite?',
+        message: `Aether will remove "${track?.title || 'this track'}" from Favorites.`,
+        detail: 'The track is not deleted from disk or from your vaults.',
+        confirmLabel: 'Remove Favorite',
+      });
+      if (!confirmed) return;
+      if (track) toggleFavoriteTrack(track, { skipConfirm: true });
       return;
     }
     const tracks = playlists[name] || [];
@@ -10098,11 +12011,18 @@ function App() {
     const resolvedIndex = key ? tracks.findIndex((item) => normalizeTrackIdentity(item) === key) : fallbackIndex;
     if (resolvedIndex < 0) return;
     handleRemoveFromPlaylist(name, resolvedIndex);
-  }, [handleRemoveFromPlaylist, normalizeTrackIdentity, playlists, toggleFavoriteTrack]);
+  }, [handleRemoveFromPlaylist, normalizeTrackIdentity, playlists, toggleFavoriteTrack, requestDestructiveConfirmation]);
 
-  const handleRemoveTrackEverywhere = useCallback((track) => {
+  const handleRemoveTrackEverywhere = useCallback(async (track) => {
     const key = normalizeTrackIdentity(track);
     if (!key) return;
+    const confirmed = await requestDestructiveConfirmation({
+      title: 'Delete track from every vault?',
+      message: `Aether will remove "${track?.title || 'this track'}" from every vault and Favorites.`,
+      detail: 'This does not delete downloaded audio files from disk.',
+      confirmLabel: 'Delete Track',
+    });
+    if (!confirmed) return;
 
     const nextPlaylists = {};
     let removedCount = 0;
@@ -10128,13 +12048,17 @@ function App() {
 
     setLastAdded(removedCount > 0 ? `Deleted track from ${removedCount} vault${removedCount === 1 ? '' : 's'}` : 'Track not found in vaults');
     setTimeout(() => setLastAdded(null), 2600);
-  }, [favoriteTracks, normalizeTrackIdentity, persistFavoriteTracks, playlists]);
+  }, [favoriteTracks, normalizeTrackIdentity, persistFavoriteTracks, playlists, requestDestructiveConfirmation]);
 
   const handleSearch = async (eventOrQuery) => {
     if (eventOrQuery?.preventDefault) eventOrQuery.preventDefault();
     const submittedQuery = typeof eventOrQuery === 'string' ? eventOrQuery : searchQuery;
     const normalizedQuery = submittedQuery.trim();
     if (!normalizedQuery) return;
+    if (isOfflineMode) {
+      setOfflineLibrarySearchTerm(normalizedQuery);
+      return;
+    }
     setSearchQuery(normalizedQuery);
     setIsSearching(true);
     setHasCompletedSearch(true);
@@ -10169,7 +12093,7 @@ function App() {
 
   // -- NEURAL DISCOVERY (AUTO-FETCH) --
   useEffect(() => {
-    if (!currentTrack) return;
+    if (!currentTrack || isOfflineMode) return;
     const fetchNeural = async () => {
       try {
         const query = currentTrack.author || currentTrack.title?.split('-')?.[0] || 'music';
@@ -10185,7 +12109,7 @@ function App() {
       }
     };
     fetchNeural();
-  }, [API_BASE, currentTrack?.title, currentTrack?.author, currentTrack?.id, currentTrack?.youtubeId, isStandalone]);
+  }, [API_BASE, currentTrack?.title, currentTrack?.author, currentTrack?.id, currentTrack?.youtubeId, isOfflineMode, isStandalone]);
 
   const warmupTrack = async (track) => {
     if (!window.aether?.download || !track || isWarmupUnavailable) return;
@@ -10227,6 +12151,10 @@ function App() {
         const failures = (prev?.failures || 0) + 1;
         warmupRetryRef.current.set(id, { failures, nextTryAt: Date.now() + Math.min(180000, 12000 * failures) });
         setIsWarmupUnavailable(true);
+        showRuntimeIssuePrompt({
+          title: 'Download Engine Needs Repair',
+          message: 'Aether could not warm up downloads because yt-dlp is missing or blocked. Repair Runtime can fetch or relink the correct binary.',
+        });
         setLastAdded('Warmup unavailable: yt-dlp missing');
         setTimeout(() => setLastAdded(null), 2400);
       } else {
@@ -10241,6 +12169,12 @@ function App() {
       const prev = warmupRetryRef.current.get(id);
       const failures = (prev?.failures || 0) + 1;
       warmupRetryRef.current.set(id, { failures, nextTryAt: Date.now() + Math.min(180000, 10000 * failures) });
+      if (/(yt-dlp|ffmpeg|ffprobe|enoent|eacces|eperm|spawn)/i.test(String(err?.message || err || ''))) {
+        showRuntimeIssuePrompt({
+          title: 'Download Engine Error',
+          message: 'Aether hit a local playback tool error while warming up a track. Repair Runtime can attempt an automatic fix.',
+        });
+      }
     } finally {
       setWarmingTrackIds(prev => {
         const next = new Set(prev);
@@ -10276,8 +12210,64 @@ function App() {
     return map;
   }, [playlists, queue, resolveWarmupTrackId]);
 
+  const offlineAvailableTracks = useMemo(() => {
+    const downloadedSet = new Set((downloadedTracks || []).map((id) => String(id)));
+    const byId = new Map();
+    const addTrack = (track, offlineSource = '') => {
+      if (!track) return;
+      const resolvedId = resolveWarmupTrackId(track);
+      const trackId = track?.id;
+      const key = String(resolvedId || trackId || '');
+      if (!key) return;
+      if (!downloadedSet.has(String(resolvedId)) && !downloadedSet.has(String(trackId))) return;
+      if (byId.has(key)) return;
+      byId.set(key, {
+        ...track,
+        id: trackId || key,
+        offlineKey: key,
+        offlineSource,
+      });
+    };
+
+    librarySongEntries.forEach((entry) => addTrack(entry.track, entry.playlists?.slice(0, 2).join(' / ')));
+    favoriteTracksList.forEach((track) => addTrack(track, FAVORITES_PLAYLIST_NAME));
+    queue.forEach((track) => addTrack(track, 'Queue'));
+    (offlineDownloads || []).forEach((download) => {
+      const id = String(download?.id || download?.trackId || download?.youtubeId || download?.fileName || '').trim();
+      if (!id || byId.has(id)) return;
+      const label = downloadLabelById.get(id);
+      byId.set(id, {
+        id,
+        offlineKey: id,
+        title: label?.title || download?.title || download?.fileName || id,
+        author: label?.author || download?.author || 'Downloaded',
+        thumbnail: download?.thumbnail || '',
+        offlineSource: 'Downloaded',
+      });
+    });
+
+    return Array.from(byId.values()).sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')));
+  }, [downloadLabelById, downloadedTracks, favoriteTracksList, librarySongEntries, offlineDownloads, queue, resolveWarmupTrackId]);
+
+  const offlineVisibleTracks = useMemo(() => {
+    const needle = offlineLibrarySearchTerm.trim().toLowerCase();
+    if (!needle) return offlineAvailableTracks;
+    return offlineAvailableTracks.filter((track) => [
+      track?.title,
+      track?.author,
+      track?.offlineSource,
+    ].some((value) => String(value || '').toLowerCase().includes(needle)));
+  }, [offlineAvailableTracks, offlineLibrarySearchTerm]);
+
   const removeDownloadedById = useCallback(async (resolvedId, label = '') => {
     if (!isStandalone || !window.aether?.removeOfflineTrack || !resolvedId || isOfflineRemovalBusy) return;
+    const confirmed = await requestDestructiveConfirmation({
+      title: 'Delete downloaded file?',
+      message: `Aether will remove the local downloaded copy for "${label || resolvedId}".`,
+      detail: 'The track stays in your vaults and can be downloaded again later.',
+      confirmLabel: 'Delete Download',
+    });
+    if (!confirmed) return;
 
     setIsOfflineRemovalBusy(true);
     setWarmingTrackIds(prev => {
@@ -10309,10 +12299,17 @@ function App() {
     } finally {
       setIsOfflineRemovalBusy(false);
     }
-  }, [isOfflineRemovalBusy, isStandalone, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats]);
+  }, [isOfflineRemovalBusy, isStandalone, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats, requestDestructiveConfirmation]);
 
   const clearAllDownloadedTracks = useCallback(async () => {
     if (!isStandalone || !window.aether?.clearOfflineDownloads || isOfflineRemovalBusy) return;
+    const confirmed = await requestDestructiveConfirmation({
+      title: 'Clear all downloads?',
+      message: 'Aether will delete every downloaded audio file stored for offline playback on this device.',
+      detail: 'Your vaults, favorites, and queue are not deleted.',
+      confirmLabel: 'Clear Downloads',
+    });
+    if (!confirmed) return;
     setIsOfflineRemovalBusy(true);
     setIsOfflineDownloadsBusy(true);
     try {
@@ -10340,7 +12337,7 @@ function App() {
       setIsOfflineDownloadsBusy(false);
       setIsOfflineRemovalBusy(false);
     }
-  }, [isOfflineRemovalBusy, isStandalone, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats]);
+  }, [isOfflineRemovalBusy, isStandalone, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats, requestDestructiveConfirmation]);
 
   const handleAdd = async (track) => {
     if (isStandalone) {
@@ -10352,6 +12349,13 @@ function App() {
       }
       const url = newTrack.actualUrl || newTrack.url;
       const stableId = newTrack.id;
+      const resolvedOfflineId = resolveWarmupTrackId(newTrack);
+      const canPlayOffline = !isOfflineMode || downloadedTracks.includes(String(resolvedOfflineId)) || downloadedTracks.includes(String(stableId));
+      if (!canPlayOffline) {
+        setLastAdded('Offline Mode can only queue downloaded tracks');
+        window.setTimeout(() => setLastAdded(null), 2200);
+        return;
+      }
       const queueNonce = newTrack.queueNonce;
       console.log(`[Aether] Adding standalone track to queue: ${newTrack.title} (${url}) -> id=${stableId}`);
       setQueue(prev => {
@@ -10361,19 +12365,22 @@ function App() {
         return next;
       });
       console.log(`[Aether] Track queued in ${Date.now() - addStartTime}ms`);
-      setLastAdded(track.title);
-      setTimeout(() => setLastAdded(null), 3000);
+      flashLastAdded(`Queued: ${track.title || 'Track'}`, 2400, 'success');
 
-      warmupTrack({ ...newTrack, id: stableId, actualUrl: url, url, title: track.title });
+      if (!isOfflineMode) {
+        warmupTrack({ ...newTrack, id: stableId, actualUrl: url, url, title: track.title });
 
-      // --- AETHER: NEURAL METADATA SYNC (NOVA ---
-      window.aether.getMetadata(newTrack.actualUrl || newTrack.url).then(fullTrack => {
-        if (fullTrack) {
-          setQueue(current => current.map(item =>
-            item.queueNonce === queueNonce ? mergeTrackMetadata(item, fullTrack) : item
-          ));
-        }
-      });
+        // --- AETHER: NEURAL METADATA SYNC (NOVA ---
+        window.aether.getMetadata(newTrack.actualUrl || newTrack.url).then(fullTrack => {
+          if (fullTrack) {
+            setQueue(current => current.map(item =>
+              item.queueNonce === queueNonce ? mergeTrackMetadata(item, fullTrack) : item
+            ));
+          }
+        }).catch(() => {
+          flashLastAdded('Metadata refresh failed', 2200, 'warning');
+        });
+      }
       return;
     }
 
@@ -10398,9 +12405,10 @@ function App() {
         return next;
       });
       setIsManualStop(false);
-      setLastAdded(track.title);
-      setTimeout(() => setLastAdded(null), 3000);
-    } catch (err) { } finally {
+      flashLastAdded(`Queued: ${track.title || 'Track'}`, 2400, 'success');
+    } catch (err) {
+      flashLastAdded('Add to queue failed', 2200, 'error');
+    } finally {
       setAddingIds(prev => { const next = new Set(prev); next.delete(track.id); return next; });
       setIsAutoplaySeeking(false);
     }
@@ -10471,31 +12479,36 @@ function App() {
   };
 
   const handleImportVault = async () => {
+    if (isVaultImporting) return;
     if (!isStandalone || !window.aether?.importVault) {
-      setLastAdded('Vault import unavailable');
-      setTimeout(() => setLastAdded(null), 2200);
+      flashLastAdded('Vault import unavailable', 2200, 'warning');
       return;
     }
-    const res = await window.aether.importVault();
-    if (res?.success && res.data && Array.isArray(res.data)) {
-      const normalized = res.data.map(normalizeQueueTrack).filter(Boolean);
-      const importName = buildUniquePlaylistName(res.name || 'Imported Vault', playlists);
-      const p = { ...playlists };
-      p[importName] = normalized;
-      setPlaylists(p);
-      window.aether?.store?.set('playlists', p);
-      if (!playlistOrder.includes(importName)) {
-        persistPlaylistOrder([...playlistOrder, importName]);
+    setIsVaultImporting(true);
+    flashLastAdded('Importing vault...', 1600, 'warning');
+    try {
+      const res = await window.aether.importVault();
+      if (res?.success && res.data && Array.isArray(res.data)) {
+        const normalized = res.data.map(normalizeQueueTrack).filter(Boolean);
+        const importName = buildUniquePlaylistName(res.name || 'Imported Vault', playlists);
+        const p = { ...playlists };
+        p[importName] = normalized;
+        setPlaylists(p);
+        window.aether?.store?.set('playlists', p);
+        if (!playlistOrder.includes(importName)) {
+          persistPlaylistOrder([...playlistOrder, importName]);
+        }
+        setViewingPlaylist(importName);
+        flashLastAdded(`Imported vault: ${importName} (${normalized.length})`, 2800, 'success');
+      } else if (res?.cancel) {
+        flashLastAdded('Vault import cancelled', 1800, 'warning');
+      } else {
+        flashLastAdded(`Import failed${res?.error ? `: ${String(res.error).slice(0, 36)}` : ''}`, 3000, 'error');
       }
-      setViewingPlaylist(importName);
-      setLastAdded(`Imported vault: ${importName} (${normalized.length})`);
-      setTimeout(() => setLastAdded(null), 2800);
-    } else if (res?.cancel) {
-      setLastAdded('Vault import cancelled');
-      setTimeout(() => setLastAdded(null), 1800);
-    } else {
-      setLastAdded(`Import failed${res?.error ? `: ${String(res.error).slice(0, 36)}` : ''}`);
-      setTimeout(() => setLastAdded(null), 3000);
+    } catch (error) {
+      flashLastAdded(`Import failed${error?.message ? `: ${String(error.message).slice(0, 36)}` : ''}`, 3000, 'error');
+    } finally {
+      setIsVaultImporting(false);
     }
   };
 
@@ -10510,6 +12523,7 @@ function App() {
         progress: 0,
         message: provider === 'apple' ? 'Apple Music import is unavailable in this desktop build.' : 'Spotify import is unavailable in this desktop build.',
       });
+      flashLastAdded('Playlist import unavailable', 2400, 'warning');
       return;
     }
 
@@ -10536,6 +12550,7 @@ function App() {
         const debug = debugParts ? ` [${debugParts}]` : '';
         setSpotifyImportProgress({ stage: 'error', progress: 0, message: `${res?.error || 'Playlist import failed.'}${debug}` });
         appendSpotifyImportLog(`error ${res?.error || 'Playlist import failed.'}${debug}`);
+        flashLastAdded('Playlist import failed', 2800, 'error');
         return;
       }
 
@@ -10544,6 +12559,7 @@ function App() {
           ? ` (${res.debug.matchedTracks}/${res.debug.searchedTracks} matched${res.debug.missedSamples?.length ? ` • sample misses: ${res.debug.missedSamples.slice(0, 2).join(' | ')}` : ''})`
           : '';
         setSpotifyImportProgress({ stage: 'complete', progress: 100, message: `Imported the shell for "${res.playlistName}", but no playable matches were found${debugHint}.` });
+        flashLastAdded('No playable tracks found', 2600, 'warning');
         return;
       }
 
@@ -10556,8 +12572,7 @@ function App() {
       persistPlaylistOrder([...playlistOrder.filter((name) => name !== uniquePlaylistName), uniquePlaylistName]);
       window.aether?.store?.set('playlists', nextPlaylists);
       setViewingPlaylist(uniquePlaylistName);
-      setLastAdded(`Imported ${importedTracks.length}/${res.totalTracks} ${providerLabel} tracks`);
-      setTimeout(() => setLastAdded(null), 3500);
+      flashLastAdded(`Imported ${importedTracks.length}/${res.totalTracks} ${providerLabel} tracks`, 3500, 'success');
       setIsSpotifyImportOpen(false);
       setSpotifyImportUrl('');
       setSpotifyImportPlaylistName('');
@@ -10567,6 +12582,7 @@ function App() {
       const message = err?.message || 'Playlist import failed.';
       appendSpotifyImportLog(`exception ${message}`);
       setSpotifyImportProgress({ stage: 'error', progress: 0, message });
+      flashLastAdded('Playlist import failed', 2800, 'error');
     } finally {
       setIsSpotifyImporting(false);
     }
@@ -10890,12 +12906,26 @@ function App() {
     advanceQueueRef.current = advanceQueue;
   }, [advanceQueue]);
 
-  const handleControl = useCallback(async (action) => {
-    console.log("[Aether/Control] Signal Bridge Active:", action);
+  const handleControl = useCallback(async (action, value) => {
+    console.log("[Aether/Control] Signal Bridge Active:", action, value);
+    if (action === 'clear' || action === 'stop') {
+      const confirmed = await requestDestructiveConfirmation({
+        title: action === 'stop' ? 'Stop and clear queue?' : 'Clear queue?',
+        message: 'Aether will stop playback and remove every track from the queue.',
+        detail: 'Your vaults, favorites, downloads, and listening history are not changed.',
+        confirmLabel: action === 'stop' ? 'Stop Playback' : 'Clear Queue',
+        allowDontAskAgain: true,
+        preferenceKey: action === 'stop' ? 'queue.stopClear' : 'queue.clear',
+      });
+      if (!confirmed) return;
+    }
     if (isStandalone) {
       if (action === 'pause') setIsPlaying(false);
       if (action === 'resume') setIsPlaying(true);
       if (action === 'toggle') setIsPlaying(prev => !prev);
+      if (action === 'seek' && typeof value === 'number') {
+        seekActivePlaybackTo(value);
+      }
       if (action === 'mute') {
         setVolume(prev => {
           const nextV = prev > 0 ? 0 : 0.5;
@@ -11075,7 +13105,7 @@ function App() {
         localAudioRef.current.load();
       }
     }
-  }, [isStandalone, history, queue, getTrackActionKey, seekActivePlaybackTo]);
+  }, [isStandalone, history, queue, getTrackActionKey, seekActivePlaybackTo, requestDestructiveConfirmation]);
 
   useEffect(() => {
     handleControlRef.current = handleControl;
@@ -11119,6 +13149,14 @@ function App() {
   }), [lyrics, activeLyricIndex, isDualWorkspaceMode, handleLyricLineSeek]);
 
   const handleRemove = useCallback(async (index) => {
+    const track = queue?.[index];
+    const confirmed = await requestDestructiveConfirmation({
+      title: 'Remove track from queue?',
+      message: `Aether will remove "${track?.title || 'this track'}" from the queue.`,
+      detail: 'The track is not removed from vaults, favorites, or downloads.',
+      confirmLabel: 'Remove Track',
+    });
+    if (!confirmed) return;
     if (isStandalone || !discordSdkRef.current?.guildId) {
       setQueue(prev => {
         const next = [...prev];
@@ -11129,7 +13167,7 @@ function App() {
     }
     const guildId = getEffectiveGuildId();
     try { await axios.post(`${API_BASE}/api/remove/${guildId}/${index}`); fetchQueue(); } catch (err) { }
-  }, [isStandalone, API_BASE, getEffectiveGuildId]);
+  }, [isStandalone, API_BASE, getEffectiveGuildId, queue, requestDestructiveConfirmation]);
 
   const handleSync = async (offset) => {
     if (isStandalone || !discordSdkRef.current?.guildId) {
@@ -11171,6 +13209,132 @@ function App() {
       setIsDiagnosticsOpen(next);
     });
   }, [closeHeaderSurfaces, isDiagnosticsOpen, runAfterInputPaint]);
+
+  const commandPaletteShortcutLabel = useMemo(() => getCommandPaletteShortcutLabel(isMacPlatform), [isMacPlatform]);
+  const shortcutLabel = useCallback((id) => toReadableShortcut(shortcuts?.[id], isMacPlatform), [isMacPlatform, shortcuts]);
+
+  const focusMusicSearch = useCallback(() => {
+    setIsMobileSearchOpen(false);
+    runAfterInputPaint(() => {
+      headerSearchInputRef.current?.focus();
+      headerSearchInputRef.current?.select?.();
+    });
+  }, [runAfterInputPaint]);
+
+  const commandPaletteCommands = useMemo(() => [
+    {
+      id: 'search-music',
+      title: 'Search music',
+      detail: 'Focus the main music search box.',
+      icon: Search,
+      keywords: 'find track artist youtube',
+      run: focusMusicSearch,
+    },
+    {
+      id: 'import-playlist',
+      title: 'Import playlist',
+      detail: 'Match a Spotify or Apple Music playlist into Aether.',
+      icon: Upload,
+      keywords: 'spotify apple music import',
+      hidden: isOfflineMode,
+      run: openMusicImport,
+    },
+    {
+      id: 'studio-library',
+      title: 'Open Studio Library',
+      detail: 'Browse vaults, playlists, and saved tracks.',
+      icon: HardDrive,
+      keywords: 'vault library playlist songs',
+      run: () => openLibraryOverlay(),
+    },
+    {
+      id: 'experience-center',
+      title: 'Open Experience Center',
+      detail: 'Modes, visuals, privacy, and tools.',
+      icon: SlidersHorizontal,
+      keywords: 'controls settings tools',
+      run: () => openExperienceCenterPage('home'),
+    },
+    {
+      id: 'signal-ledger',
+      title: 'Open Signal Ledger',
+      detail: 'Open Signal Ledger inside Experience Center.',
+      icon: Signal,
+      keywords: 'history stats ledger',
+      run: () => openExperienceCenterPage('signal-ledger'),
+    },
+    {
+      id: 'feedback',
+      title: 'Open Feedback',
+      detail: 'Send feedback inside Experience Center.',
+      icon: MessageSquare,
+      keywords: 'issue bug idea support',
+      run: () => openExperienceCenterPage('feedback'),
+    },
+    {
+      id: 'gesture-lab',
+      title: 'Open Gesture + Face Lab',
+      detail: 'Camera, pointer, swipe, and face controls.',
+      icon: Hand,
+      keywords: 'camera gesture face hand pointer',
+      run: () => openExperienceCenterPage('gesture-face-lab'),
+    },
+    {
+      id: 'app-lock',
+      title: 'Open App Lock',
+      detail: 'Password, Touch ID, idle lock, and recovery.',
+      icon: Lock,
+      keywords: 'security password touch id',
+      hidden: !isStandalone,
+      run: () => openExperienceCenterPage('app-lock'),
+    },
+    {
+      id: 'shortcut-settings',
+      title: 'Open Shortcut Settings',
+      detail: 'Customize playback and command shortcuts.',
+      icon: Keyboard,
+      keywords: 'keybindings hotkeys keyboard',
+      run: () => openExperienceCenterPage('shortcut-settings'),
+    },
+    {
+      id: 'toggle-mini-player',
+      title: 'Toggle Mini Player',
+      detail: 'Switch between dock view and studio view.',
+      icon: AppWindow,
+      keywords: 'mini dock compact',
+      shortcut: isStandalone ? shortcutLabel('miniPlayer') : '',
+      hidden: !isStandalone,
+      run: toggleMiniPlayer,
+    },
+    {
+      id: 'aura-stage',
+      title: 'Open Aura Stage',
+      detail: 'Open the full visual stage.',
+      icon: Layers,
+      keywords: 'visualizer stage visuals',
+      run: () => {
+        closeHeaderSurfaces('aura-stage');
+        setIsAuraStageOpen(true);
+      },
+    },
+    {
+      id: 'lock-app',
+      title: 'Lock App',
+      detail: 'Lock Aether now.',
+      icon: Lock,
+      keywords: 'security lock now',
+      hidden: !(isStandalone && lockStatus?.enabled),
+      run: () => setIsAppLocked(true),
+    },
+    {
+      id: 'send-feedback',
+      title: 'Send Feedback',
+      detail: 'Report a problem, improvement, or idea.',
+      icon: Send,
+      keywords: 'issue bug support',
+      run: openFeedbackPanel,
+    },
+  ], [closeHeaderSurfaces, focusMusicSearch, isOfflineMode, isStandalone, lockStatus?.enabled, openExperienceCenterPage, openFeedbackPanel, openLibraryOverlay, openMusicImport, shortcutLabel, toggleMiniPlayer]);
 
   const toggleLooksPanel = useCallback(() => {
     const next = !isLooksPanelOpen;
@@ -11222,16 +13386,40 @@ function App() {
       return undefined;
     }
 
+    setIsCameraPreviewVisible(true);
     let cancelled = false;
     let detector = null;
+    const hasFaceDetector = typeof window !== 'undefined' && 'FaceDetector' in window;
     const fallbackCanvas = document.createElement('canvas');
     fallbackCanvas.width = 72;
     fallbackCanvas.height = 54;
     const fallbackCtx = fallbackCanvas.getContext('2d', { willReadFrequently: true });
-    const supportStatus = typeof window !== 'undefined' && 'FaceDetector' in window
+    const supportStatus = hasFaceDetector
       ? 'Starting face and hand tracker...'
-      : 'Starting camera face/hand fallback...';
+      : 'Starting camera (no FaceDetector API — using fallback)...';
+    console.log('[Aether/Camera] Initialising. FaceDetector available:', hasFaceDetector);
     setFaceControlStatus(supportStatus);
+    cameraUiUpdateRef.current.status = supportStatus;
+
+    const updateFaceStatus = (status) => {
+      if (cameraUiUpdateRef.current.status === status) return;
+      cameraUiUpdateRef.current.status = status;
+      setFaceControlStatus(status);
+    };
+
+    const updateFaceSignal = (next, minDelay = 220) => {
+      const now = Date.now();
+      if (now - cameraUiUpdateRef.current.faceAt < minDelay) return;
+      cameraUiUpdateRef.current.faceAt = now;
+      setFaceControlSignal(next);
+    };
+
+    const updateHandSignal = (next, minDelay = 240) => {
+      const now = Date.now();
+      if (now - cameraUiUpdateRef.current.handAt < minDelay) return;
+      cameraUiUpdateRef.current.handAt = now;
+      setCameraHandSignal(next);
+    };
 
     const nudgeCameraVolume = (delta) => {
       setVolume((prev) => {
@@ -11367,7 +13555,7 @@ function App() {
         if (motionState.active && now - motionState.lastSeenAt > 240) {
           motionState.active = false;
         }
-        setCameraHandSignal((prev) => ({ ...prev, motion: normalizedMotion, last: normalizedMotion > 0.02 ? prev.last : 'ready' }));
+        updateHandSignal((prev) => ({ ...prev, motion: normalizedMotion, last: normalizedMotion > 0.02 ? prev.last : 'ready' }));
         return;
       }
 
@@ -11384,7 +13572,7 @@ function App() {
 
       motionState.lastX = x;
       motionState.lastY = y;
-      setCameraHandSignal({ x, y, motion: normalizedMotion, last: 'tracking' });
+      updateHandSignal({ x, y, motion: normalizedMotion, last: 'tracking' });
 
       const dx = x - motionState.startX;
       const dy = y - motionState.startY;
@@ -11429,8 +13617,8 @@ function App() {
           if (cancelled) return;
           const face = faces?.[0];
           if (!face?.boundingBox) {
-            setFaceControlStatus('Looking for face; hand gestures active...');
-            setFaceControlSignal((prev) => ({ ...prev, confidence: 0, source: 'searching' }));
+            updateFaceStatus('Looking for face; hand gestures active...');
+            updateFaceSignal({ x: 0, y: 0, confidence: 0, source: 'searching' }, 600);
             runFaceAction('center');
             return;
           }
@@ -11465,8 +13653,8 @@ function App() {
           }
 
           if (sum < 180) {
-            setFaceControlStatus('Looking for camera subject; hand gestures active...');
-            setFaceControlSignal((prev) => ({ ...prev, confidence: 0, source: 'searching' }));
+            updateFaceStatus('Looking for camera subject; hand gestures active...');
+            updateFaceSignal({ x: 0, y: 0, confidence: 0, source: 'searching' }, 600);
             runFaceAction('center');
             return;
           }
@@ -11478,8 +13666,8 @@ function App() {
         }
 
         const { safeX, safeY } = setHeadPosition(x, y);
-        setFaceControlSignal({ x: safeX, y: safeY, confidence, source });
-        setFaceControlStatus(status);
+        updateFaceSignal({ x: safeX, y: safeY, confidence, source });
+        updateFaceStatus(status);
 
         const absX = Math.abs(safeX);
         const absY = Math.abs(safeY);
@@ -11492,7 +13680,7 @@ function App() {
         runFaceAction(zone);
       } catch (error) {
         console.warn('[Aether/FaceControl] detection failed', error);
-        setFaceControlStatus(`Face tracking failed: ${String(error?.message || error).slice(0, 46)}`);
+        updateFaceStatus(`Face tracking failed: ${String(error?.message || error).slice(0, 46)}`);
       } finally {
         scheduleLoop();
       }
@@ -11501,17 +13689,23 @@ function App() {
     const startCamera = async () => {
       try {
         if (!navigator.mediaDevices?.getUserMedia) {
-          setFaceControlStatus('Camera API unavailable');
+          console.warn('[Aether/Camera] getUserMedia not available on this context.');
+          setFaceControlStatus('Camera API unavailable — check HTTPS or Electron permissions');
           return;
         }
-        detector = 'FaceDetector' in window
+        console.log('[Aether/Camera] Requesting camera permission...');
+        updateFaceStatus('Requesting camera permission...');
+        detector = hasFaceDetector
           ? new window.FaceDetector({ fastMode: true, maxDetectedFaces: 1 })
           : null;
+        console.log('[Aether/Camera] FaceDetector instance:', detector ? 'created' : 'null (fallback mode)');
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { width: { ideal: 320 }, height: { ideal: 240 }, facingMode: 'user' },
           audio: false,
         });
+        console.log('[Aether/Camera] Stream acquired:', stream.id, 'Tracks:', stream.getTracks().map((t) => `${t.kind}:${t.readyState}`));
         if (cancelled) {
+          console.log('[Aether/Camera] Cancelled after stream acquired — stopping tracks.');
           stream.getTracks().forEach((track) => track.stop());
           return;
         }
@@ -11519,14 +13713,27 @@ function App() {
         const video = faceVideoRef.current;
         if (video) {
           video.srcObject = stream;
-          await video.play().catch(() => { });
+          console.log('[Aether/Camera] Assigned stream to video element. Calling play()...');
+          await video.play().catch((playErr) => {
+            console.warn('[Aether/Camera] video.play() rejected:', playErr);
+          });
+          console.log('[Aether/Camera] video.play() resolved. readyState:', video.readyState, 'size:', video.videoWidth, 'x', video.videoHeight);
+          updateFaceStatus('Camera connected — waiting for first video frame...');
+        } else {
+          console.warn('[Aether/Camera] faceVideoRef.current is null — video element not mounted yet.');
+          updateFaceStatus('Camera connected but video element missing. Try reopening.');
         }
         showGestureNotice(detector ? 'Camera face + hand enabled' : 'Camera hand fallback enabled');
         gestureRuntimeRef.current.appendRecentEvent?.('camera_control', detector ? 'Camera face and hand controls enabled' : 'Camera fallback controls enabled', { tone: 'neutral' });
         detectLoop();
       } catch (error) {
-        console.warn('[Aether/FaceControl] camera failed', error);
-        setFaceControlStatus(`Camera blocked: ${String(error?.message || error).slice(0, 54)}`);
+        console.error('[Aether/Camera] startCamera failed:', error?.name, error?.message, error);
+        const msg = error?.name === 'NotAllowedError'
+          ? 'Camera blocked — permission denied. Allow camera access and retry.'
+          : error?.name === 'NotFoundError'
+            ? 'No camera found on this device.'
+            : `Camera error: ${String(error?.message || error).slice(0, 60)}`;
+        setFaceControlStatus(msg);
         setIsFaceControlEnabled(false);
       }
     };
@@ -11551,7 +13758,7 @@ function App() {
 
   useEffect(() => {
     if (!isGestureControlEnabled) {
-      setIsFaceControlEnabled(false);
+      // Camera controls are independent — do NOT force-disable them here.
       document.documentElement.style.setProperty('--aether-head-x', '0');
       document.documentElement.style.setProperty('--aether-head-y', '0');
       return undefined;
@@ -11828,12 +14035,23 @@ function App() {
     toggleWindowMaximize();
   }, [isStandalone, toggleWindowMaximize]);
 
-  const handleResetPlaybackEngine = useCallback(() => {
+  const handleResetPlaybackEngine = useCallback(async (options = {}) => {
     const sourceUrl = currentTrack?.actualUrl || currentTrack?.url;
     if (!sourceUrl) {
       setLastAdded('No active playback to reset');
       setTimeout(() => setLastAdded(null), 1800);
       return;
+    }
+    if (!options.skipConfirm) {
+      const confirmed = await requestDestructiveConfirmation({
+        title: 'Reset playback engine?',
+        message: 'Aether will stop and rebuild the active playback transport, then try to resume from the current position.',
+        detail: 'Your queue and saved library are not deleted, but current playback can briefly restart.',
+        confirmLabel: 'Reset Engine',
+        allowDontAskAgain: true,
+        preferenceKey: 'diagnostics.resetPlaybackEngine',
+      });
+      if (!confirmed) return;
     }
 
     const resumeAtMs = getActivePlaybackPositionMs();
@@ -11879,15 +14097,24 @@ function App() {
     appendRecentEvent('engine_reset', `${activeMode} transport`, { tone: 'warning', title: currentTrack?.title || 'Playback' });
     setLastAdded(`Engine reset • ${activeMode} transport`);
     setTimeout(() => setLastAdded(null), 2200);
-  }, [appendRecentEvent, currentTrack?.actualUrl, currentTrack?.title, currentTrack?.url, getActivePlaybackPositionMs, isStandalone, stopVideoElement]);
+  }, [appendRecentEvent, currentTrack?.actualUrl, currentTrack?.title, currentTrack?.url, getActivePlaybackPositionMs, isStandalone, requestDestructiveConfirmation, stopVideoElement]);
 
   const handleRunRuntimeRepair = useCallback(async () => {
     if (!isStandalone) return;
+    const confirmed = await requestDestructiveConfirmation({
+      title: 'Repair runtime?',
+      message: 'Aether will attempt to repair local playback helpers such as yt-dlp and FFmpeg.',
+      detail: 'This may change local helper files or paths. Playback may reset after the repair.',
+      confirmLabel: 'Repair Runtime',
+    });
+    if (!confirmed) return;
     setIsRuntimeRepairing(true);
     try {
-      const repairResult = await window.aether?.repairRuntime?.();
+      const repairResult = window.aether?.repairRuntime
+        ? await window.aether.repairRuntime()
+        : await window.aether?.repairEnvironment?.({ runFixes: true });
       if (currentTrack?.actualUrl || currentTrack?.url) {
-        handleResetPlaybackEngine();
+        handleResetPlaybackEngine({ skipConfirm: true });
       }
       await refreshEngineStatus();
       await refreshStorageStats();
@@ -11895,8 +14122,17 @@ function App() {
       await refreshOfflineDownloads();
 
       const notes = Array.isArray(repairResult?.notes) ? repairResult.notes.filter(Boolean) : [];
-      const summary = notes[0] || 'Runtime repair complete';
-      appendRecentEvent('runtime_repair', summary, { tone: 'success' });
+      const failedFix = Array.isArray(repairResult?.fixAttempts) && repairResult.fixAttempts.some((attempt) => !attempt?.success);
+      const ready = repairResult?.ytDlpReady && repairResult?.ffmpegReady;
+      const summary = notes[0] || (ready ? 'Runtime repair complete' : 'Runtime repair checked environment');
+      if (ready) {
+        runtimeIssueDismissedRef.current = false;
+        try {
+          sessionStorage.removeItem('aether.runtimeIssueDismissed');
+        } catch { }
+        setRuntimeIssuePrompt(null);
+      }
+      appendRecentEvent('runtime_repair', summary, { tone: failedFix && !ready ? 'warning' : 'success' });
       setLastAdded(summary);
       setTimeout(() => setLastAdded(null), 3200);
     } catch (e) {
@@ -11907,7 +14143,29 @@ function App() {
     } finally {
       setIsRuntimeRepairing(false);
     }
-  }, [appendRecentEvent, currentTrack?.actualUrl, currentTrack?.url, handleResetPlaybackEngine, isStandalone, refreshEngineStatus, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats]);
+  }, [appendRecentEvent, currentTrack?.actualUrl, currentTrack?.url, handleResetPlaybackEngine, isStandalone, refreshEngineStatus, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats, requestDestructiveConfirmation]);
+
+  useEffect(() => {
+    const isEditingTarget = (event) => {
+      const target = getKeyboardEventElement(event) || (document.activeElement instanceof Element ? document.activeElement : null);
+      if (!target) return false;
+      return Boolean(target.closest('input, textarea, select, [contenteditable="true"], [data-shortcut-recording="true"]'));
+    };
+
+    const onCommandPaletteShortcut = (event) => {
+      if (event.defaultPrevented || event.repeat || event.isComposing) return;
+      const key = getEventKeyToken(event);
+      const wantsPalette = key === 'K' && (isMacPlatform ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey) && !event.altKey && !event.shiftKey;
+      if (!wantsPalette) return;
+      if (isEditingTarget(event) || destructiveConfirmRequest || isLockModalOpen) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setIsCommandPaletteOpen(true);
+    };
+
+    window.addEventListener('keydown', onCommandPaletteShortcut, true);
+    return () => window.removeEventListener('keydown', onCommandPaletteShortcut, true);
+  }, [destructiveConfirmRequest, isLockModalOpen, isMacPlatform]);
 
   useEffect(() => {
     const isTypingTarget = (el) => {
@@ -11921,6 +14179,7 @@ function App() {
 
       const hasBlockingOverlayOpen = Boolean(
         oauthPrompt
+        || destructiveConfirmRequest
         || isTipsOverlayOpen
         || headerControlsRef.current?.isOpen()
         || feedbackRef.current?.isOpen()
@@ -11928,6 +14187,7 @@ function App() {
         || soundCapsuleRef.current?.isOpen()
         || appLockSettingsRef.current?.isOpen()
         || isShortcutSettingsOpen
+        || isExperienceCenterOpen
         || isLockModalOpen
         || isSpotifyImportOpen
         || isFeedbackOpen
@@ -11943,6 +14203,7 @@ function App() {
         || isMixtapeVaultOpen
         || isManualLyricsEditorOpen
         || isManualLyricsRawEditorOpen
+        || isCommandPaletteOpen
       );
       if (hasBlockingOverlayOpen) {
         return;
@@ -12018,7 +14279,7 @@ function App() {
 
     window.addEventListener('keydown', onShortcut);
     return () => window.removeEventListener('keydown', onShortcut);
-  }, [handleControl, inspectTarget, isAuraStageOpen, isFeedbackOpen, isGestureLabOpen, isLibraryOverlayOpen, isLockModalOpen, isManualLyricsEditorOpen, isManualLyricsRawEditorOpen, isMixtapeVaultOpen, isPlayerOverlayOpen, isPlaying, isShortcutSettingsOpen, isSharedSceneOpen, isSpotifyImportOpen, isStandalone, isTipsOverlayOpen, isViewingFullDiscovery, isViewingFullPlaylist, isViewingFullQueue, oauthPrompt, parsedShortcuts, toggleDiagnostics, toggleFocusMode, toggleMiniPlayer]);
+  }, [destructiveConfirmRequest, handleControl, inspectTarget, isAuraStageOpen, isCommandPaletteOpen, isExperienceCenterOpen, isFeedbackOpen, isGestureLabOpen, isLibraryOverlayOpen, isLockModalOpen, isManualLyricsEditorOpen, isManualLyricsRawEditorOpen, isMixtapeVaultOpen, isPlayerOverlayOpen, isPlaying, isShortcutSettingsOpen, isSharedSceneOpen, isSpotifyImportOpen, isStandalone, isTipsOverlayOpen, isViewingFullDiscovery, isViewingFullPlaylist, isViewingFullQueue, oauthPrompt, parsedShortcuts, toggleDiagnostics, toggleFocusMode, toggleMiniPlayer]);
 
   const musicImportTheme = musicImportProvider === 'apple'
     ? {
@@ -12389,6 +14650,7 @@ function App() {
                           <div className={`min-w-0 truncate text-[11px] ${miniShowingLyric ? 'text-white/58 italic' : 'text-white/46'}`}>
                             {miniMetaLine}
                           </div>
+                          <ShortcutHint label={shortcutLabel('miniPlayer')} className="hidden sm:inline-flex" title="Toggle mini player" visible={showShortcutHints} />
                         </div>
                       </button>
 
@@ -12580,7 +14842,7 @@ function App() {
   const doodleIntensityScale = doodleIntensity === 'subtle' ? 0.75 : doodleIntensity === 'dreamy' ? 1.35 : 1;
   const doodleIntensityBadge = doodlePresetConfig.badge;
   const workspaceModeLabel = isFocusedMode ? 'Focus' : isVerticalStack ? 'Stack' : 'Studio';
-  const playbackModeLabel = videoMode === 'cinema' ? 'Cinema' : videoMode === 'dual' ? 'Dual Stage' : isPlaying ? 'Audio Live' : 'Ready';
+  const playbackModeLabel = isOfflineMode ? 'Offline Ready' : videoMode === 'cinema' ? 'Cinema' : videoMode === 'dual' ? 'Dual Stage' : isPlaying ? 'Audio Live' : 'Ready';
   const repeatModeLabel = repeatMode === 'track' ? 'Repeat Track' : repeatMode === 'queue' ? 'Repeat Queue' : 'Repeat Off';
   const repeatModeBadge = repeatMode === 'track' ? '1' : repeatMode === 'queue' ? 'Q' : null;
   const hasLyricPreset = Boolean(currentTrackPresetKey && Object.prototype.hasOwnProperty.call(lyricOffsetPresets, currentTrackPresetKey));
@@ -12699,13 +14961,52 @@ function App() {
         <div className="absolute inset-0 bg-mesh pointer-events-none z-[-1]" />
 
         {isFaceControlEnabled && (
-          <video
-            ref={faceVideoRef}
-            autoPlay
-            muted
-            playsInline
-            className={`fixed bottom-4 left-4 z-[360] h-24 w-32 rounded-2xl border border-brand-accent/25 bg-black/70 object-cover shadow-[0_18px_50px_rgba(0,0,0,0.45)] transition-opacity ${isGestureLabOpen ? 'opacity-80' : 'pointer-events-none opacity-0'}`}
-          />
+          <div className="no-drag fixed bottom-4 left-4 z-[360] overflow-hidden rounded-2xl border border-brand-accent/25 bg-[#070b0f]/92 shadow-[0_18px_50px_rgba(0,0,0,0.45)] backdrop-blur-xl">
+            <div className={isCameraPreviewVisible ? 'relative h-28 w-40 bg-black' : 'relative h-px w-px opacity-0'}>
+              <video
+                ref={faceVideoRef}
+                autoPlay
+                muted
+                playsInline
+                className="h-full w-full scale-x-[-1] object-cover"
+              />
+              {isCameraPreviewVisible && (
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5">
+                  <div className="truncate text-[8px] font-black uppercase tracking-[0.16em] text-brand-accent">{faceControlStatus || 'Camera active'}</div>
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-1.5 border-t border-white/10 bg-black/40 p-1.5">
+              <button
+                onClick={() => setIsCameraPreviewVisible((prev) => !prev)}
+                className="rounded-lg border border-white/10 bg-white/[0.05] px-2 py-1 text-[8px] font-black uppercase tracking-[0.14em] text-white/62 transition-colors hover:border-brand-accent/35 hover:text-brand-accent"
+                title={isCameraPreviewVisible ? 'Hide camera preview' : 'Show camera preview'}
+              >
+                {isCameraPreviewVisible ? 'Hide' : 'Preview'}
+              </button>
+              <button
+                onClick={() => {
+                  setIsFaceControlEnabled(false);
+                  flashLastAdded('Camera controls disabled', 1800, 'warning');
+                }}
+                className="rounded-lg border border-red-400/25 bg-red-500/10 px-2 py-1 text-[8px] font-black uppercase tracking-[0.14em] text-red-200 transition-colors hover:bg-red-500/15"
+                title="Turn off camera controls"
+              >
+                Camera Off
+              </button>
+              <button
+                onClick={() => {
+                  setIsFaceControlEnabled(false);
+                  setIsGestureControlEnabled(false);
+                  flashLastAdded('Gesture controls disabled', 1800, 'warning');
+                }}
+                className="rounded-lg border border-white/10 bg-white/[0.05] px-2 py-1 text-[8px] font-black uppercase tracking-[0.14em] text-white/50 transition-colors hover:border-red-400/35 hover:text-red-200"
+                title="Turn off all gesture controls"
+              >
+                All Off
+              </button>
+            </div>
+          </div>
         )}
 
 
@@ -12941,8 +15242,8 @@ function App() {
 
         {/* APP HEADER */}
         {!showImmersiveLyricsOverlay && (
-          <header className={topHeaderClass} onDoubleClick={handleHeaderDoubleClick} title={isStandalone ? 'Double-click the header background to maximize or restore' : undefined}>
-            <div className="flex min-w-0 items-center gap-3 lg:min-w-[220px]">
+          <header className={topHeaderClass} onDoubleClick={handleHeaderDoubleClick}>
+            <div className="flex min-w-0 items-center gap-3 lg:min-w-[210px]">
               <div className="relative flex h-11 w-11 items-center justify-center overflow-hidden rounded-[1.35rem] border border-brand-accent/25 bg-white/[0.04] shadow-[0_0_28px_rgba(0,255,191,0.08)]">
                 <img src="aether-logo.png" alt="Aether" className="h-6 w-6 object-contain" onError={(e) => e.target.src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiMwMGZmYmYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cG9seWdvbiBwb2ludHM9IjEzIDIgMyAxNCAxMiAxNCAxMSAyMiAyMSAxMCAxMiAxMCAxMyAyIj48L3BvbHlnb24+PC9zdmc+'} />
                 <div className="absolute inset-0 bg-brand-accent/6 opacity-70" />
@@ -12965,52 +15266,60 @@ function App() {
               </div>
             </div>
 
-            <HeaderVisualControls
-              ref={headerControlsRef}
-              headerIconButtonClass={headerIconButtonClass}
-              headerAccentButtonClass={headerAccentButtonClass}
-              isGestureControlEnabled={isGestureControlEnabled}
-              openFeedbackPanel={openFeedbackPanel}
-              openGestureLab={openGestureLab}
-              openSignalLedger={openSignalLedger}
-              setVisualizerMode={setVisualizerMode}
-              visualizerMode={visualizerMode}
-              auraPreset={auraPreset}
-              setAuraPreset={setAuraPreset}
-              isDepthMotionEnabled={isDepthMotionEnabled}
-              setIsDepthMotionEnabled={setIsDepthMotionEnabled}
-              isDoodleMode={isDoodleMode}
-              setIsDoodleMode={setIsDoodleMode}
-              doodleIntensity={doodleIntensity}
-              setDoodleIntensity={setDoodleIntensity}
-              doodleIntensityBadge={doodleIntensityBadge}
-              setIsAuraStageOpen={setIsAuraStageOpen}
-              toggleDiagnostics={toggleDiagnostics}
-              isDiagnosticsOpen={isDiagnosticsOpen}
-              setLastAdded={setLastAdded}
-              shortcuts={shortcuts}
-              setShortcuts={setShortcuts}
-              isMacPlatform={isMacPlatform}
-              isStandalone={isStandalone}
-              globalMediaShortcutsEnabled={globalMediaShortcutsEnabled}
-              setGlobalMediaShortcutsEnabled={setGlobalMediaShortcutsEnabled}
-              performanceMode={performanceMode}
-              setPerformanceMode={setPerformanceMode}
-              onSurfaceOpen={(surface) => closeHeaderSurfaces(surface)}
-            />
-            <div className="order-3 flex w-full justify-center ultra-compact-hide no-drag md:order-2 md:flex-1 md:max-w-[900px] md:px-4 lg:px-6" data-no-maximize="true">
-              <HeaderSearchBox
-                searchQuery={searchQuery}
-                isSearching={isSearching}
-                hasActiveSearchState={hasActiveSearchState}
-                isAuraMode={isAuraMode}
-                disabled={videoMode === 'dual'}
-                onSearch={handleSearch}
-                onClear={() => {
-                  setSearchQuery('');
-                  clearDiscoveryResults();
+            <div className="order-3 flex w-full items-center justify-center gap-2 ultra-compact-hide no-drag md:order-2 md:flex-[1_1_980px] md:max-w-[1260px] md:px-3 lg:px-5" data-no-maximize="true">
+              <button
+                onClick={() => runAfterInputPaint(() => {
+                  closeHeaderSurfaces();
+                  setExperienceCenterInitialPage('home');
+                  setIsExperienceCenterOpen(true);
+                })}
+                className={`${headerIconButtonClass} shrink-0 ${isExperienceCenterOpen ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`}
+                title="Experience Center"
+                aria-label="Experience Center"
+              >
+                <SlidersHorizontal size={15} />
+              </button>
+              <button
+                onClick={toggleDiagnostics}
+                className={`${headerIconButtonClass} shrink-0 ${isDiagnosticsOpen ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`}
+                title="Diagnostics"
+                aria-label="Diagnostics"
+              >
+                <Monitor size={15} />
+              </button>
+              <button
+                onClick={() => {
+                  closeHeaderSurfaces('aura-stage');
+                  setIsAuraStageOpen(true);
                 }}
-              />
+                className={`${headerIconButtonClass} shrink-0`}
+                title="Aura Stage"
+                aria-label="Aura Stage"
+              >
+                <Layers size={15} />
+              </button>
+              <div className="min-w-[280px] flex-1">
+                <HeaderSearchBox
+                  searchQuery={isOfflineMode ? offlineLibrarySearchTerm : searchQuery}
+                  isSearching={isOfflineMode ? false : isSearching}
+                  hasActiveSearchState={isOfflineMode ? Boolean(offlineLibrarySearchTerm) : hasActiveSearchState}
+                  isAuraMode={isAuraMode}
+                  disabled={!isOfflineMode && videoMode === 'dual'}
+                  placeholder={isOfflineMode ? 'Search downloaded tracks' : 'Search tracks, artists, or paste a YouTube link'}
+                  onSearch={isOfflineMode ? setOfflineLibrarySearchTerm : handleSearch}
+                  inputRef={headerSearchInputRef}
+                  commandPaletteShortcutLabel={commandPaletteShortcutLabel}
+                  showShortcutHints={showShortcutHints}
+                  onClear={() => {
+                    if (isOfflineMode) {
+                      setOfflineLibrarySearchTerm('');
+                    } else {
+                      setSearchQuery('');
+                      clearDiscoveryResults();
+                    }
+                  }}
+                />
+              </div>
             </div>
 
             <div className="flex items-center justify-end gap-2 min-w-fit order-3 no-drag" data-no-maximize="true">
@@ -13046,20 +15355,26 @@ function App() {
                 </button>
               </div>
 
-              {isStandalone && (
+              <div className="flex items-center justify-end gap-2 pr-2 no-drag" data-no-maximize="true">
+                {updateInfo?.downloaded && (
+                  <button
+                    onClick={() => window.aether?.restartApp?.()}
+                    className="flex items-center gap-2 rounded-xl border border-brand-accent/30 bg-brand-accent/15 px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent hover:bg-brand-accent/25 transition-all"
+                  >
+                    <RefreshCw size={12} /> Update Ready
+                  </button>
+                )}
+
                 <button
-                  onClick={() => {
-                    runAfterInputPaint(() => {
-                      closeHeaderSurfaces('lock');
-                      appLockSettingsRef.current?.open();
-                    });
-                  }}
-                  className={`${headerIconButtonClass} ${lockStatus.enabled ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`}
-                  title="App Lock"
+                  className={`${headerAccentButtonClass} no-drag ${isPartyModeOpen ? 'bg-brand-accent/18 border-brand-accent/60 shadow-[0_0_18px_rgba(0,255,191,0.22)]' : ''}`}
+                  onClick={() => setIsPartyModeOpen(true)}
+                  title={isPartyModeOpen ? 'Party is open' : 'Start Party'}
+                  aria-label={isPartyModeOpen ? 'Party is open' : 'Start Party'}
+                  disabled={isOfflineMode}
+                  style={{ opacity: isOfflineMode ? 0.3 : 1 }}
                 >
-                  <Lock size={16} />
+                  <Users size={16} />
                 </button>
-              )}
 
               {showWindowsHeaderWindowControls && (
                 <div className="ml-1 flex items-center gap-1 rounded-2xl border border-white/10 bg-white/[0.04] p-1 no-drag">
@@ -13087,351 +15402,13 @@ function App() {
                 </div>
               )}
             </div>
+            </div>
           </header>
         )}
 
-        <SignalLedgerIsland
-          ref={soundCapsuleRef}
-          getProxyUrl={getProxyUrl}
-          currentTrack={currentTrack}
-          isPlaying={isPlaying}
-          getActivePlaybackPositionMs={getActivePlaybackPositionMs}
-          setLastAdded={setLastAdded}
-        />
-        <GestureLabIsland
-          ref={gestureLabRef}
-          isGestureControlEnabled={isGestureControlEnabled}
-          setIsGestureControlEnabled={setIsGestureControlEnabled}
-          isFaceControlEnabled={isFaceControlEnabled}
-          setIsFaceControlEnabled={setIsFaceControlEnabled}
-          faceControlStatus={faceControlStatus}
-          faceControlSignal={faceControlSignal}
-          cameraHandSignal={cameraHandSignal}
-          sharedModalCloseButtonClass={sharedModalCloseButtonClass}
-        />
-        <FeedbackIsland
-          ref={feedbackRef}
-          platform={platform}
-          isStandalone={isStandalone}
-          currentTrack={currentTrack}
-          getActivePlaybackPositionMs={getActivePlaybackPositionMs}
-          videoMode={videoMode}
-          visualizerMode={visualizerMode}
-          auraPreset={auraPreset}
-          queueLength={queue.length}
-          lyricsCount={lyrics.length}
-          appendRecentEvent={appendRecentEvent}
-          sharedModalCloseButtonClass={sharedModalCloseButtonClass}
-        />
-        <AppLockSettingsIsland
-          ref={appLockSettingsRef}
-          isStandalone={isStandalone}
-          lockStatus={lockStatus}
-          lockIdleMinutes={lockIdleMinutes}
-          setLockIdleMinutes={setLockIdleMinutes}
-          refreshLockStatus={refreshLockStatus}
-          setIsAppLocked={setIsAppLocked}
-          setLastAdded={setLastAdded}
-          sharedModalCloseButtonClass={sharedModalCloseButtonClass}
-        />
 
-        <AnimatePresence>
-          {isSoundCapsuleOpen && soundCapsuleData && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.96 }}
-              className="fixed inset-0 z-[350] overflow-y-auto px-4 py-5 md:px-8 md:py-8"
-            >
-              <div className="absolute inset-0 bg-black/85 backdrop-blur-2xl" onClick={() => setIsSoundCapsuleOpen(false)} />
-              <div className="relative z-10 mx-auto flex min-h-full w-full items-start justify-center">
-                <div className="w-full max-w-[1180px] max-h-[calc(100vh-2.5rem)] glass-card bg-[#090b0f]/96 border border-brand-accent/20 rounded-[2.2rem] overflow-hidden flex flex-col shadow-[0_28px_100px_rgba(0,0,0,0.55)]">
-                  <div className="flex items-center justify-between gap-4 p-5 md:p-6 border-b border-white/8 bg-black/25 backdrop-blur-md">
-                    <div className="flex items-center gap-4 min-w-0">
-                      <div className="w-11 h-11 rounded-2xl bg-brand-accent/10 border border-brand-accent/25 flex items-center justify-center shrink-0">
-                        <Signal size={18} className="text-brand-accent" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-[9px] font-black uppercase tracking-[0.32em] text-white/30">PLAYBACK INTELLIGENCE</div>
-                        <div className="text-xl md:text-2xl font-black uppercase tracking-tight text-brand-accent truncate">Signal Ledger</div>
-                        <div className="mt-1 text-[10px] font-black uppercase tracking-[0.18em] text-white/34">
-                          {soundLedgerView.activeDays > 0 ? `${soundLedgerView.activeDays} active days • ${soundLedgerView.totalSessions} sessions captured` : 'Listening patterns appear as you play'}
-                        </div>
-                      </div>
-                    </div>
-                    <button onClick={() => setIsSoundCapsuleOpen(false)} className="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close"><X size={18} /></button>
-                  </div>
 
-                  <div className="flex-1 overflow-y-auto px-5 pb-5 pt-4 md:px-6 md:pb-6 md:pt-5 lg:px-7 lg:pb-7 lg:pt-6 custom-scrollbar">
-                    <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
-                      <div className="xl:col-span-8 flex flex-col gap-5">
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                          <div className="glass-card bg-brand-accent/6 border border-brand-accent/20 rounded-[1.6rem] p-5">
-                            <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/38">Listening Time</div>
-                            <div className="mt-4 text-3xl md:text-4xl font-black text-brand-accent">{formatPlaybackDuration(soundLedgerView.totalMs)}</div>
-                            <div className="mt-2 text-[10px] uppercase tracking-[0.18em] text-white/34">Across {soundLedgerView.activeDays || 0} recent active days</div>
-                          </div>
-                          <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.6rem] p-5">
-                            <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/38">Qualified Plays</div>
-                            <div className="mt-4 text-3xl md:text-4xl font-black text-white">{soundLedgerView.totalTracksPlayed}</div>
-                            <div className="mt-2 text-[10px] uppercase tracking-[0.18em] text-white/34">{soundLedgerView.totalSessions} playback sessions tracked</div>
-                          </div>
-                          <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.6rem] p-5">
-                            <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/38">Peak Windows</div>
-                            <div className="mt-4 flex flex-wrap gap-2">
-                              {soundLedgerView.topWindow.length > 0 ? soundLedgerView.topWindow.map((entry) => (
-                                <span key={entry.hour} className="rounded-full border border-brand-accent/18 bg-brand-accent/10 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent">
-                                  {entry.label} • {entry.count}
-                                </span>
-                              )) : (
-                                <span className="text-[10px] uppercase tracking-[0.18em] text-white/28">Collecting signal…</span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
 
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                          <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
-                            <div className="flex items-center justify-between gap-3">
-                              <div>
-                                <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Recent Week</div>
-                                <div className="mt-1 text-[11px] text-white/34 uppercase tracking-[0.14em]">Daily listening bars + play counts</div>
-                              </div>
-                              <div className="text-[10px] text-white/30 uppercase tracking-[0.16em]">{Math.round(soundLedgerView.totalMs / 60000)} min total</div>
-                            </div>
-                            <div className="mt-5 grid grid-cols-7 gap-2">
-                              {soundLedgerView.recentWeek.map((entry) => (
-                                <div key={entry.key} className="rounded-[1.3rem] border border-white/8 bg-black/20 px-2 py-3 flex flex-col items-center gap-3">
-                                  <div className="h-28 w-full flex items-end justify-center">
-                                    <div
-                                      className="w-full max-w-[26px] rounded-full bg-gradient-to-t from-brand-accent via-brand-accent/80 to-white shadow-[0_0_18px_rgba(0,255,191,0.18)]"
-                                      style={{ height: `${entry.minutesMs > 0 ? 18 + ((entry.minutesMs / soundLedgerView.weekMaxMs) * 82) : 12}%` }}
-                                    />
-                                  </div>
-                                  <div className="text-[9px] font-black uppercase tracking-[0.2em] text-white/50">{entry.label}</div>
-                                  <div className="text-[9px] font-mono text-brand-accent">{Math.round(entry.minutesMs / 60000)}m</div>
-                                  <div className="text-[8px] uppercase tracking-[0.16em] text-white/28">{entry.plays}p</div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-
-                          <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
-                            <div className="flex items-center justify-between gap-3">
-                              <div>
-                                <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Hourly Pulse</div>
-                                <div className="mt-1 text-[11px] text-white/34 uppercase tracking-[0.14em]">When you most often press play</div>
-                              </div>
-                              <Signal size={16} className="text-brand-accent/70" />
-                            </div>
-                            <div className="mt-5 grid grid-cols-12 gap-1.5">
-                              {soundLedgerView.peakHours.map((entry) => (
-                                <div key={entry.hour} className="flex flex-col items-center gap-2">
-                                  <div className="h-24 w-full flex items-end justify-center">
-                                    <div
-                                      className={`w-full rounded-full ${entry.count > 0 ? 'bg-brand-accent/85 shadow-[0_0_14px_rgba(0,255,191,0.14)]' : 'bg-white/[0.06]'}`}
-                                      style={{ height: `${entry.count > 0 ? 12 + ((entry.count / soundLedgerView.peakHourMax) * 88) : 10}%` }}
-                                    />
-                                  </div>
-                                  <div className="text-[8px] font-mono text-white/28">{entry.label}</div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
-                          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Recent Sessions</div>
-                          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-                            {soundLedgerView.recentSessions.length > 0 ? soundLedgerView.recentSessions.map((session) => (
-                              <div key={session.id} className="rounded-[1.4rem] border border-white/10 bg-black/20 p-3 flex items-center gap-3">
-                                <img src={getProxyUrl(session.thumbnail)} className="w-14 h-14 rounded-xl object-cover bg-white/[0.03]" alt="" />
-                                <div className="min-w-0 flex-1">
-                                  <div className="text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent">
-                                    {formatPlaybackDuration(session.playedMs)} • {session.completed ? 'completed' : 'session'}
-                                  </div>
-                                  <div className="mt-1 text-sm font-black text-white truncate uppercase tracking-tight">{session.title}</div>
-                                  <div className="mt-1 text-[10px] uppercase tracking-[0.16em] text-white/35 truncate">{session.author}</div>
-                                </div>
-                              </div>
-                            )) : (
-                              <div className="md:col-span-2 rounded-[1.4rem] border border-dashed border-white/10 bg-black/20 p-5 text-[11px] uppercase tracking-[0.18em] text-white/28">
-                                Finish a couple of real listens and this panel will start showing your latest sessions.
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="xl:col-span-4 flex flex-col gap-4">
-                        <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
-                          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Top Artists</div>
-                          <div className="mt-4 flex flex-col gap-2.5">
-                            {soundLedgerView.topArtists.length > 0 ? soundLedgerView.topArtists.map(([name, entry], idx) => (
-                              <div key={name} className="rounded-[1.25rem] border border-white/10 bg-black/20 px-3.5 py-3 flex items-center justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent">#{idx + 1}</div>
-                                  <div className="mt-1 text-sm font-black text-white truncate uppercase tracking-tight">{name}</div>
-                                </div>
-                                <div className="text-right">
-                                  <div className="text-[10px] font-black uppercase tracking-[0.16em] text-white/48">{entry.count} plays</div>
-                                  <div className="mt-1 text-[10px] font-mono text-white/28">{formatPlaybackDuration(entry.totalMs)}</div>
-                                </div>
-                              </div>
-                            )) : (
-                              <div className="rounded-[1.25rem] border border-dashed border-white/10 bg-black/20 p-4 text-[10px] uppercase tracking-[0.18em] text-white/28">
-                                Artist rankings appear after a few qualified sessions.
-                              </div>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
-                          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Genre Pulse</div>
-                          <div className="mt-4 flex flex-wrap gap-2">
-                            {soundLedgerView.genreMix.length > 0 ? soundLedgerView.genreMix.map(([genre, count]) => (
-                              <span key={genre} className="rounded-full border border-brand-accent/18 bg-brand-accent/10 px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent">
-                                {genre} • {count}
-                              </span>
-                            )) : (
-                              <span className="text-[10px] uppercase tracking-[0.18em] text-white/28">No pattern clusters yet</span>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="glass-card bg-white/[0.03] border border-white/10 rounded-[1.75rem] p-5">
-                          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Most Replayed</div>
-                          <div className="mt-4 flex flex-col gap-2.5">
-                            {soundLedgerView.topTracks.length > 0 ? soundLedgerView.topTracks.map(([id, entry], idx) => (
-                              <div key={id} className="rounded-[1.25rem] border border-white/10 bg-black/20 p-3 flex items-center gap-3">
-                                <img src={getProxyUrl(entry.thumbnail)} className="w-12 h-12 rounded-xl object-cover bg-white/[0.03]" alt="" />
-                                <div className="min-w-0 flex-1">
-                                  <div className="text-[9px] font-black uppercase tracking-[0.18em] text-brand-accent">#{idx + 1} • {entry.count} plays</div>
-                                  <div className="mt-1 text-sm font-black text-white truncate uppercase tracking-tight">{entry.title}</div>
-                                  <div className="mt-1 text-[10px] uppercase tracking-[0.16em] text-white/35 truncate">{entry.author}</div>
-                                </div>
-                              </div>
-                            )) : (
-                              <div className="rounded-[1.25rem] border border-dashed border-white/10 bg-black/20 p-4 text-[10px] uppercase tracking-[0.18em] text-white/28">
-                                Repeats land here once a track gets replayed.
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <AnimatePresence>
-          {isShortcutSettingsOpen && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[340] flex items-start justify-center p-4 pt-6 md:items-center md:pt-4"
-              onClick={closeShortcutSettings}
-            >
-              <div className="absolute inset-0 bg-black/85 backdrop-blur-md" />
-              <motion.div
-                initial={{ scale: 0.96, y: 14 }}
-                animate={{ scale: 1, y: 0 }}
-                exit={{ scale: 0.96, y: 10 }}
-                className="relative z-10 flex w-[min(96vw,920px)] max-h-[min(92vh,calc(100vh-2rem))] flex-col overflow-hidden rounded-[2rem] border border-brand-accent/25 bg-[#090b0f]/95 shadow-[0_0_90px_rgba(0,255,191,0.15)]"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="flex items-start justify-between gap-4 border-b border-white/10 bg-black/20 px-5 py-5 md:px-6 md:py-6">
-                  <div>
-                    <div className="text-[10px] font-black uppercase tracking-[0.28em] text-white/35">Settings</div>
-                    <div className="text-2xl md:text-3xl font-black text-brand-accent uppercase tracking-tight">Shortcut Settings</div>
-                    <div className="text-white/55 mt-2 text-sm">Use formats like <span className="text-brand-accent">Mod+Alt+Space</span>, <span className="text-brand-accent">Shift+M</span>, <span className="text-brand-accent">D</span>.</div>
-                  </div>
-                  <button onClick={closeShortcutSettings} className="w-10 h-10 rounded-xl border border-white/15 bg-white/[0.03] text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close shortcut settings">
-                    <X size={16} />
-                  </button>
-                </div>
-
-                <div className="flex-1 overflow-y-auto px-5 py-4 md:px-6 md:py-5 custom-scrollbar-heavy">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {SHORTCUT_FIELDS.map((field) => (
-                      <label key={field.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-white/75 text-sm">
-                        <div className="text-[11px] uppercase tracking-[0.2em] text-white/50 mb-2">{field.label}</div>
-                        <input
-                          value={shortcutDraft[field.id] || ''}
-                          onChange={(e) => {
-                            const value = e.target.value;
-                            setShortcutSettingsError('');
-                            setShortcutDraft((prev) => ({ ...prev, [field.id]: value }));
-                          }}
-                          className="w-full rounded-xl border border-white/15 bg-black/30 px-3 py-2 text-white outline-none focus:border-brand-accent/50"
-                          placeholder="Mod+Alt+Space"
-                        />
-                        <div className="mt-1 text-[11px] text-white/40">Current: {toReadableShortcut(shortcuts[field.id], isMacPlatform)}</div>
-                      </label>
-                    ))}
-                  </div>
-
-                  <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                    <label className="flex items-start gap-3 text-sm text-white/75">
-                      <input
-                        type="checkbox"
-                        checked={globalMediaShortcutsEnabled}
-                        onChange={(e) => setGlobalMediaShortcutsEnabled(e.target.checked)}
-                        className="mt-0.5 w-4 h-4 accent-brand-accent"
-                      />
-                      <span>
-                        Enable global media shortcuts (play/pause, next, previous)
-                        <span className="block text-[11px] text-white/45 mt-1">This affects system-wide key capture and may conflict with OS/app controls. Restart app after change.</span>
-                      </span>
-                    </label>
-                  </div>
-
-                  {shortcutSettingsError && (
-                    <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-                      {shortcutSettingsError}
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex items-center justify-between gap-3 flex-wrap border-t border-white/10 bg-black/20 px-5 py-4 md:px-6 md:py-5">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <button
-                      onClick={resetShortcutSettingsToDefaults}
-                      className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
-                    >
-                      Reset to Defaults
-                    </button>
-                    <button
-                      onClick={() => {
-                        closeShortcutSettings();
-                        setTimeout(() => openTipsOverlay(), 0);
-                      }}
-                      className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
-                    >
-                      Open Guide
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={closeShortcutSettings}
-                      className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={saveShortcutSettings}
-                      className="px-4 py-2 rounded-xl border border-brand-accent/35 bg-brand-accent/10 text-brand-accent hover:bg-brand-accent/20 transition-all"
-                    >
-                      Save
-                    </button>
-                  </div>
-                </div>
-              </motion.div>
-            </motion.div>
-          )}
-        </AnimatePresence>
 
         <AnimatePresence>
           {isTipsOverlayOpen && (
@@ -13497,7 +15474,7 @@ function App() {
                   <input
                     type="checkbox"
                     checked={tipsDontShowAgain}
-                    onChange={(e) => setTipsDontShowAgain(e.checked)}
+                    onChange={(e) => setTipsDontShowAgain(e.target.checked)}
                     className="w-4 h-4 accent-brand-accent"
                   />
                   Don’t show this again on app startup
@@ -13518,6 +15495,71 @@ function App() {
                     className="px-4 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 hover:border-brand-accent/40 hover:text-brand-accent transition-all"
                   >
                     Got it
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {runtimeIssuePrompt && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[330] flex items-center justify-center p-4"
+              onClick={dismissRuntimeIssuePrompt}
+            >
+              <div className="absolute inset-0 bg-black/78 backdrop-blur-md" />
+              <motion.div
+                initial={{ scale: 0.96, y: 12 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.96, y: 10 }}
+                className="relative z-10 w-[min(94vw,560px)] rounded-3xl border border-yellow-300/25 bg-[#0b0d10]/96 p-5 shadow-[0_24px_80px_rgba(0,0,0,0.5)]"
+                onClick={(event) => event.stopPropagation()}
+                role="dialog"
+                aria-modal="true"
+                aria-label={runtimeIssuePrompt.title}
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex min-w-0 gap-3">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-yellow-300/25 bg-yellow-300/10 text-yellow-200">
+                      <AlertTriangle size={20} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-[10px] font-black uppercase tracking-[0.24em] text-yellow-200/70">Runtime Repair</div>
+                      <div className="mt-1 text-2xl font-black uppercase tracking-tight text-white">{runtimeIssuePrompt.title}</div>
+                      <div className="mt-2 text-sm leading-6 text-white/55">{runtimeIssuePrompt.message}</div>
+                    </div>
+                  </div>
+                  <button onClick={dismissRuntimeIssuePrompt} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/12 bg-white/[0.04] text-white/45 transition-all hover:border-red-500/40 hover:text-red-300" title="Dismiss">
+                    <X size={16} />
+                  </button>
+                </div>
+
+                <div className="mt-5 flex flex-wrap justify-end gap-2">
+                  <button
+                    onClick={() => {
+                      dismissRuntimeIssuePrompt();
+                      setIsDiagnosticsOpen(true);
+                    }}
+                    className="rounded-2xl border border-white/12 bg-white/[0.04] px-4 py-3 text-[11px] font-black uppercase tracking-[0.16em] text-white/62 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
+                  >
+                    Open Diagnostics
+                  </button>
+                  <button
+                    onClick={handleRunInstaller}
+                    className="rounded-2xl border border-white/12 bg-white/[0.04] px-4 py-3 text-[11px] font-black uppercase tracking-[0.16em] text-white/62 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
+                  >
+                    Open Installer
+                  </button>
+                  <button
+                    onClick={handleRunRuntimeRepair}
+                    disabled={isRuntimeRepairing}
+                    className="rounded-2xl border border-brand-accent/40 bg-brand-accent/15 px-4 py-3 text-[11px] font-black uppercase tracking-[0.16em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isRuntimeRepairing ? 'Repairing...' : (runtimeIssuePrompt.actionLabel || 'Repair Runtime')}
                   </button>
                 </div>
               </motion.div>
@@ -13558,10 +15600,30 @@ function App() {
                   </button>
                 )}
                 <button
-                  onClick={() => setSkipEvents([])}
+                  onClick={async () => {
+                    const confirmed = await requestDestructiveConfirmation({
+                      title: 'Clear diagnostic events?',
+                      message: 'Aether will clear the current skip and transport event log from this session.',
+                      detail: 'This only clears diagnostics shown here. Your music library is not changed.',
+                      confirmLabel: 'Clear Events',
+                      allowDontAskAgain: true,
+                      preferenceKey: 'diagnostics.clearEvents',
+                    });
+                    if (confirmed) setSkipEvents([]);
+                  }}
                   className="px-3 py-1.5 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 text-[10px] font-black uppercase tracking-[0.16em] hover:border-white/30 transition-all"
                 >
                   Clear Events
+                </button>
+                <button
+                  onClick={() => {
+                    resetConfirmationSkipPrefs();
+                    flashLastAdded('Confirmation prompts reset', 2200, 'success');
+                  }}
+                  className="px-3 py-1.5 rounded-xl border border-white/15 bg-white/[0.03] text-white/70 text-[10px] font-black uppercase tracking-[0.16em] hover:border-brand-accent/35 hover:text-brand-accent transition-all"
+                  title="Show skipped confirmation dialogs again"
+                >
+                  Reset Prompts
                 </button>
                 {canUseUpdater && updateInfo?.enabled && (
                   <button
@@ -13980,7 +16042,7 @@ function App() {
                       onSeek={handleSeek}
                       accent={trackProgressAccent}
                       glow={trackProgressGlow}
-                      middleContent={<PlayerModePill videoMode={videoMode} switchVideoMode={switchVideoMode} variant="dual" />}
+                      middleContent={<PlayerModePill videoMode={videoMode} switchVideoMode={switchVideoMode} variant="dual" isOfflineMode={isOfflineMode} />}
                     />
                   </div>
                 ) : (
@@ -14107,14 +16169,16 @@ function App() {
                             isAuraMode={isAuraMode}
                             isPlaying={isPlaying}
                             playButtonRef={playButtonRef}
+                            playPauseShortcutLabel={shortcutLabel('playPause')}
                             trackControlAccent={trackControlAccent}
                             trackControlGlow={trackControlGlow}
+                            showShortcutHints={showShortcutHints}
                           />
 
                           {/* VIDEO MODE TOGGLE PILL */}
                           {currentTrack && isStandalone && (
                             <div className="flex items-center justify-center mt-4">
-                              <PlayerModePill videoMode={videoMode} switchVideoMode={switchVideoMode} />
+                              <PlayerModePill videoMode={videoMode} switchVideoMode={switchVideoMode} isOfflineMode={isOfflineMode} />
                             </div>
                           )}
                         </div>
@@ -14254,7 +16318,7 @@ function App() {
 
           {/* RIGHT COLUMN */}
           {showSecondaryColumn && (
-            <div className={`performance-island flex flex-col gap-4 min-w-0 ${isVerticalStack ? '!w-full !max-w-full !flex-none pb-20' : 'w-[33.333%] h-full overflow-hidden flex-none'}`}>
+            <div className={`performance-island flex flex-col gap-4 min-w-0 ${isVerticalStack ? '!w-full !max-w-full !flex-none pb-20' : `w-[33.333%] h-full ${isAutoplayMenuOpen ? 'overflow-visible' : 'overflow-hidden'} flex-none`}`}>
               {/* QUEUE */}
               <div
                 className={`performance-island ${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col ${isAutoplayMenuOpen ? 'overflow-visible z-[340]' : 'overflow-hidden'} transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}
@@ -14301,10 +16365,12 @@ function App() {
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
+                          if (isOfflineMode) return;
                           setIsAutoplayMenuOpen(prev => !prev);
                         }}
-                        className={`p-1.5 rounded-lg transition-all flex items-center gap-2 ${isAutoplayEnabled ? 'bg-brand-accent/20 text-brand-accent border border-brand-accent/30 shadow-neon' : 'bg-white/5 text-white/30 border border-white/10 opacity-70'}`}
-                        title="Neural Autoplay Mode"
+                        disabled={isOfflineMode}
+                        className={`p-1.5 rounded-lg transition-all flex items-center gap-2 ${isAutoplayEnabled ? 'bg-brand-accent/20 text-brand-accent border border-brand-accent/30 shadow-neon' : 'bg-white/5 text-white/30 border border-white/10 opacity-70'} ${isOfflineMode ? 'cursor-not-allowed opacity-30' : ''}`}
+                        title={isOfflineMode ? 'Autoplay needs Online Mode' : 'Neural Autoplay Mode'}
                       >
                         <Zap size={10} className={isAutoplayEnabled ? 'animate-pulse' : ''} />
                         <span className="text-[8px] font-black uppercase tracking-tighter">{isAutoplayEnabled ? 'AUTO_ON' : 'AUTO_OFF'}</span>
@@ -14312,7 +16378,7 @@ function App() {
                       </button>
 
                       {isAutoplayMenuOpen && (
-                        <div className="absolute right-0 top-full mt-2 z-[320] w-48 rounded-xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-2 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
+                        <div className="absolute right-0 top-full mt-2 z-[460] w-48 rounded-xl border border-white/15 bg-[#0b0f14]/95 backdrop-blur-xl p-2 shadow-[0_10px_40px_rgba(0,0,0,0.45)]">
                           <button
                             onClick={() => {
                               setIsAutoplayEnabled(prev => !prev);
@@ -14376,48 +16442,81 @@ function App() {
                 </div>
               </div>
 
-              {/* DISCOVERY */}
-              <div
-                className={`performance-island ${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col overflow-hidden transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}
-                style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
-              >
-                <div className={`p-3 border-b border-white/5 flex items-center justify-between ${panelHeaderClass}`}>
-                  <div className="flex items-center gap-3">
-                    <Globe size={18} className="text-brand-accent" />
-                    <span className="label-caps mb-0 text-[10px]">Neural Discovery</span>
+              {isOfflineMode ? (
+                <div
+                  className={`performance-island glass-card flex flex-col overflow-hidden transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass} ${isVerticalStack ? 'min-h-[500px] flex-none' : 'h-full min-h-0'}`}
+                  style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
+                >
+                  <div className={`px-3 py-3 border-b border-white/5 flex items-center justify-between gap-2 ${panelHeaderClass}`}>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <HardDrive size={16} className="text-brand-accent shrink-0" />
+                      <div className="min-w-0">
+                        <span className="label-caps mb-0 text-[10px] tracking-widest truncate block">Available Downloads</span>
+                        <span className="block text-[8px] font-black uppercase tracking-[0.18em] text-white/28">{offlineVisibleTracks.length}/{offlineAvailableTracks.length} ready</span>
+                      </div>
+                    </div>
+                    {offlineLibrarySearchTerm && (
+                      <button onClick={() => setOfflineLibrarySearchTerm('')} className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-[8px] font-black uppercase tracking-[0.14em] text-white/45 hover:border-brand-accent/30 hover:text-brand-accent transition-colors">
+                        Clear
+                      </button>
+                    )}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setIsViewingFullDiscovery(true)}
-                      className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-brand-accent/20 hover:text-brand-accent"
-                      title="View Full Discovery"
-                    >
-                      <Maximize2 size={10} />
-                    </button>
-                    {(searchResults.length > 0 || hasCompletedSearch) && <button onClick={clearDiscoveryResults} className="p-2 px-4 glass-card text-[9px] font-black text-red-500 hover:bg-red-500/10 active:scale-95 transition-all border-red-500/20">FLUSH</button>}
-                  </div>
+                  <OfflineAvailablePanel
+                    tracks={offlineVisibleTracks}
+                    query={offlineLibrarySearchTerm}
+                    getProxyUrl={getProxyUrl}
+                    handleAdd={handleAdd}
+                    openTrackInspect={openTrackInspect}
+                    isTrackFavorite={isTrackFavorite}
+                    toggleFavoriteTrack={toggleFavoriteTrack}
+                    isDoodleMode={isDoodleMode}
+                    catDoodlePeek={catDoodlePeek}
+                  />
                 </div>
-                <DiscoveryGridSection
-                  discoveryItems={discoveryItems}
-                  isSearching={isSearching}
-                  searchResults={searchResults}
-                  hasCompletedSearch={hasCompletedSearch}
-                  isTrackFavorite={isTrackFavorite}
-                  openTrackInspect={openTrackInspect}
-                  isSearchActive={isSearchActive}
-                  handleAdd={handleAdd}
-                  toggleFavoriteTrack={toggleFavoriteTrack}
-                  openLibraryOverlay={openLibraryOverlay}
-                  isDoodleMode={isDoodleMode}
-                  catDoodlePeek={catDoodlePeek}
-                />
-              </div>
+              ) : (
+                <>
+                  {/* DISCOVERY */}
+                  <div
+                    className={`performance-island ${isVerticalStack ? 'h-[400px]' : 'h-[160px]'} flex-none glass-card flex flex-col overflow-hidden transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass}`}
+                    style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
+                  >
+                    <div className={`p-3 border-b border-white/5 flex items-center justify-between ${panelHeaderClass}`}>
+                      <div className="flex items-center gap-3">
+                        <Globe size={18} className="text-brand-accent" />
+                        <span className="label-caps mb-0 text-[10px]">Neural Discovery</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setIsViewingFullDiscovery(true)}
+                          className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-brand-accent/20 hover:text-brand-accent"
+                          title="View Full Discovery"
+                        >
+                          <Maximize2 size={10} />
+                        </button>
+                        {(searchResults.length > 0 || hasCompletedSearch) && <button onClick={clearDiscoveryResults} className="p-2 px-4 glass-card text-[9px] font-black text-red-500 hover:bg-red-500/10 active:scale-95 transition-all border-red-500/20">FLUSH</button>}
+                      </div>
+                    </div>
+                    <DiscoveryGridSection
+                      discoveryItems={discoveryItems}
+                      isSearching={isSearching}
+                      searchResults={searchResults}
+                      hasCompletedSearch={hasCompletedSearch}
+                      isTrackFavorite={isTrackFavorite}
+                      openTrackInspect={openTrackInspect}
+                      isSearchActive={isSearchActive}
+                      handleAdd={handleAdd}
+                      toggleFavoriteTrack={toggleFavoriteTrack}
+                      openLibraryOverlay={openLibraryOverlay}
+                      isDoodleMode={isDoodleMode}
+                      catDoodlePeek={catDoodlePeek}
+                    />
+                  </div>
 
-              {/* STUDIO LIBRARY */}
-              <div
-                className={`performance-island glass-card flex flex-col overflow-hidden studio-vault-container relative shadow-inner library-panel transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass} ${isVerticalStack ? 'min-h-[500px] flex-none' : 'h-full min-h-0'}`}
-                style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
-              >
+                  {/* STUDIO LIBRARY */}
+                  <div
+                    className={`performance-island glass-card flex flex-col overflow-hidden studio-vault-container relative shadow-inner library-panel transition-all duration-300 ${panelGlassClass} ${panelInteractiveClass} ${isVerticalStack ? 'min-h-[500px] flex-none' : 'h-full min-h-0'}`}
+                    style={isAuraMode ? { boxShadow: auraPanelShadow, borderColor: auraPanelBorder, transition: 'box-shadow 80ms linear, border-color 80ms linear' } : undefined}
+                  >
                 <div className={`px-2.5 py-2 border-b border-white/5 flex items-center justify-between gap-1.5 ${panelHeaderClass}`}>
                   <div className="flex items-center gap-2 min-w-0">
                     <HardDrive size={16} className="text-brand-accent shrink-0" />
@@ -14429,8 +16528,8 @@ function App() {
                     <button onClick={() => openLibraryOverlay(null)} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Open Vault Overlay"><ListMusic size={10} /></button>
                     {isStandalone && (
                       <>
-                        <button onClick={() => { closeHeaderSurfaces(); setMusicImportProvider(''); setSpotifyImportUrl(''); setSpotifyImportPlaylistName(''); setSpotifyImportProgress({ stage: 'idle', progress: 0, message: '' }); setSpotifyImportLogs([]); setIsSpotifyImportOpen(true); }} className="w-7 h-7 rounded-lg bg-white/5 text-white/45 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center no-drag" title="Import Music Playlist"><Music size={11} /></button>
-                        <button onClick={handleImportVault} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Import Vault (.aether)"><Upload size={10} /></button>
+                <button onClick={openMusicImport} className="w-7 h-7 rounded-lg bg-white/5 text-white/45 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center no-drag" title="Import Music Playlist"><Music size={11} /></button>
+                        <button onClick={handleImportVault} disabled={isVaultImporting} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center disabled:opacity-50" title="Import Vault (.aether)">{isVaultImporting ? <Loader2 size={10} className="animate-spin" /> : <Upload size={10} />}</button>
                       </>
                     )}
                   </div>
@@ -14563,6 +16662,8 @@ function App() {
                   </div>
                 </div>
               </div>
+                </>
+              )}
             </div>
           )}
         </main>
@@ -14822,10 +16923,15 @@ function App() {
             )}
 
             {lastAdded && (
-              <motion.div initial={{ opacity: 0, y: 100 }} animate={{ opacity: 1, y: -40 }} exit={{ opacity: 0, y: 100 }} className="fixed bottom-0 left-1/2 -translate-x-1/2 px-10 py-5 bg-brand-accent text-brand-dark font-black rounded-[2rem] shadow-neon-strong z-[700] flex items-center gap-6 whitespace-nowrap border-t-2 border-white/20">
-                <Zap size={24} fill="currentColor" />
+              <motion.div
+                initial={{ opacity: 0, y: 100 }}
+                animate={{ opacity: 1, y: -40 }}
+                exit={{ opacity: 0, y: 100 }}
+                className={`fixed bottom-0 left-1/2 z-[700] flex -translate-x-1/2 items-center gap-6 whitespace-nowrap rounded-[2rem] border-t-2 px-10 py-5 font-black shadow-neon-strong ${inferToastTone(lastAdded) === 'error' ? 'border-red-200/20 bg-red-400 text-black' : inferToastTone(lastAdded) === 'warning' ? 'border-yellow-100/20 bg-yellow-300 text-black' : 'border-white/20 bg-brand-accent text-brand-dark'}`}
+              >
+                {inferToastTone(lastAdded) === 'error' ? <AlertTriangle size={24} /> : inferToastTone(lastAdded) === 'warning' ? <AlertTriangle size={24} /> : <Zap size={24} fill="currentColor" />}
                 <div className="flex flex-col leading-none">
-                  <span className="text-[10px] uppercase tracking-[0.2em] opacity-80 mb-1 font-bold">Node Initialized</span>
+                  <span className="text-[10px] uppercase tracking-[0.2em] opacity-80 mb-1 font-bold">{inferToastTone(lastAdded) === 'error' ? 'Action Failed' : inferToastTone(lastAdded) === 'warning' ? 'Heads Up' : 'Action Complete'}</span>
                   <span className="text-base tracking-tight truncate uppercase">{lastAdded}</span>
                 </div>
               </motion.div>
@@ -14972,8 +17078,8 @@ function App() {
                 exit={{ y: 10, scale: 0.98, opacity: 0 }}
                 className="relative z-10 flex w-full max-w-lg max-h-[min(88vh,760px)] flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-[#0a0a0a]/95 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
               >
-                <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
-                  <div>
+                <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-white/5">
+                  <div className="min-w-0 flex-1">
                     <div className="text-[10px] font-black uppercase tracking-[0.28em] text-brand-accent">App Lock</div>
                     <div className="text-[11px] text-white/45 mt-1">Secure Aether with password and optional Touch ID. Idle auto-lock stays enabled.</div>
                   </div>
@@ -15159,7 +17265,7 @@ function App() {
         </AnimatePresence>
 
         <AnimatePresence>
-          {isSpotifyImportOpen && (
+          {!isOfflineMode && isSpotifyImportOpen && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -15186,6 +17292,12 @@ function App() {
                     <div className="text-[10px] font-black uppercase tracking-[0.28em]" style={{ color: 'var(--music-import-accent-text)' }}>Import a Playlist</div>
                     <div className="text-[11px] text-white/45 mt-1">Pick a source, paste a public playlist link, and Aether will match songs into your library.</div>
                   </div>
+                  <SecondaryNowPlayingStrip
+                    currentTrack={currentTrack}
+                    isPlaying={isPlaying}
+                    getProxyUrl={getProxyUrl}
+                    className="ml-auto hidden min-w-0 max-w-[210px] flex-1 sm:flex"
+                  />
                   <button
                     onClick={() => !isSpotifyImporting && setIsSpotifyImportOpen(false)}
                     className={sharedModalCloseButtonClass}
@@ -15292,7 +17404,7 @@ function App() {
                       className="no-drag px-5 py-2 rounded-xl font-black text-sm hover:scale-[1.01] active:scale-95 transition-all disabled:opacity-50 disabled:hover:scale-100"
                       style={{ background: 'var(--music-import-accent)', color: 'var(--music-import-cta-text)' }}
                     >
-                      {isSpotifyImporting ? 'Matching...' : musicImportProvider ? `Match ${musicImportTheme.label} Playlist` : 'Choose a Source'}
+                      {isSpotifyImporting ? 'Importing...' : musicImportProvider ? `Match ${musicImportTheme.label} Playlist` : 'Choose a Source'}
                     </button>
                   </div>
                 </div>
@@ -15362,7 +17474,7 @@ function App() {
           )}
         </AnimatePresence>
         <AnimatePresence>
-          {isSharedSceneOpen && sharedScene && (
+          {!isOfflineMode && isSharedSceneOpen && sharedScene && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -15603,6 +17715,12 @@ function App() {
                       </div>
                     </div>
                   </div>
+                  <SecondaryNowPlayingStrip
+                    currentTrack={currentTrack}
+                    isPlaying={isPlaying}
+                    getProxyUrl={getProxyUrl}
+                    className="ml-auto hidden w-60 md:flex"
+                  />
                   <button onClick={() => setInspectTarget(null)} className={sharedModalCloseButtonClass} title="Close">
                     <X size={16} />
                   </button>
@@ -15758,200 +17876,6 @@ function App() {
           )}
         </AnimatePresence>
 
-        <AnimatePresence>
-          {isGestureLabOpen && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[345] flex items-center justify-center bg-black/82 p-4 backdrop-blur-xl"
-            >
-              <div className="absolute inset-0" onClick={() => setIsGestureLabOpen(false)} />
-              <motion.div
-                initial={{ scale: 0.96, y: 18 }}
-                animate={{ scale: 1, y: 0 }}
-                exit={{ scale: 0.96, y: 18 }}
-                className="relative z-10 flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-[2rem] border border-brand-accent/20 bg-[#080c10]/96 shadow-[0_28px_100px_rgba(0,0,0,0.55)]"
-              >
-                <div className="flex items-start justify-between gap-4 border-b border-white/10 bg-black/22 p-5">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/10 text-brand-accent">
-                      <Hand size={18} />
-                    </div>
-                    <div>
-                      <div className="text-[10px] font-black uppercase tracking-[0.3em] text-brand-accent">Gesture + Face Lab</div>
-                      <div className="mt-1 text-[11px] uppercase tracking-[0.18em] text-white/40">Pointer, swipe, and camera face/hand controls</div>
-                    </div>
-                  </div>
-                  <button onClick={() => setIsGestureLabOpen(false)} className={sharedModalCloseButtonClass} title="Close">
-                    <X size={16} />
-                  </button>
-                </div>
-                <div className="overflow-y-auto p-5 custom-scrollbar">
-                  <button
-                    onClick={() => {
-                      setIsGestureControlEnabled((prev) => {
-                        const next = !prev;
-                        if (!next) setIsFaceControlEnabled(false);
-                        return next;
-                      });
-                    }}
-                    className={`mb-4 flex w-full items-center justify-between rounded-2xl border px-4 py-4 text-left transition-all ${isGestureControlEnabled ? 'border-brand-accent/35 bg-brand-accent/12 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/70 hover:border-brand-accent/35 hover:text-brand-accent'}`}
-                  >
-                    <span>
-                      <span className="block text-[11px] font-black uppercase tracking-[0.22em]">Gesture controls</span>
-                      <span className="mt-1 block text-[11px] font-semibold text-white/42">Pointer motion drives stage depth. Fast swipes control playback.</span>
-                    </span>
-                    <span className="rounded-full border border-current px-3 py-1 text-[9px] font-black uppercase tracking-[0.2em]">{isGestureControlEnabled ? 'On' : 'Off'}</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      const next = !isFaceControlEnabled;
-                      if (next) setIsGestureControlEnabled(true);
-                      setIsFaceControlEnabled(next);
-                    }}
-                    className={`mb-4 flex w-full items-center justify-between rounded-2xl border px-4 py-4 text-left transition-all ${isFaceControlEnabled ? 'border-brand-accent/35 bg-brand-accent/12 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/70 hover:border-brand-accent/35 hover:text-brand-accent'}`}
-                  >
-                    <span className="flex items-center gap-3">
-                      <Camera size={18} className="shrink-0" />
-                      <span>
-                        <span className="block text-[11px] font-black uppercase tracking-[0.22em]">Camera controls</span>
-                        <span className="mt-1 block text-[11px] font-semibold text-white/42">Camera tracks face position and hand swipes for app control.</span>
-                      </span>
-                    </span>
-                    <span className="rounded-full border border-current px-3 py-1 text-[9px] font-black uppercase tracking-[0.2em]">{isFaceControlEnabled ? 'On' : 'Off'}</span>
-                  </button>
-                  <div className="mb-4 rounded-2xl border border-white/8 bg-black/24 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-[9px] font-black uppercase tracking-[0.24em] text-white/30">Camera Status</div>
-                        <div className="mt-1 text-[11px] font-bold text-white/55">{faceControlStatus}</div>
-                      </div>
-                      <div className="text-right text-[10px] font-mono text-brand-accent/75">
-                        FACE {faceControlSignal.x.toFixed(2)}, {faceControlSignal.y.toFixed(2)}<br />
-                        HAND {cameraHandSignal.x.toFixed(2)}, {cameraHandSignal.y.toFixed(2)}
-                      </div>
-                    </div>
-                    <div className="mt-3 space-y-2">
-                      <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
-                        <div className="h-full rounded-full bg-brand-accent transition-all" style={{ width: `${Math.round(clamp01(faceControlSignal.confidence) * 100)}%` }} />
-                      </div>
-                      <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
-                        <div className="h-full rounded-full bg-brand-accent/65 transition-all" style={{ width: `${Math.round(clamp01(cameraHandSignal.motion) * 100)}%` }} />
-                      </div>
-                      <div className="text-[9px] font-black uppercase tracking-[0.18em] text-white/28">Hand {cameraHandSignal.last}</div>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                    {[
-                      [MousePointer2, 'Pointer depth', 'Move pointer/finger to tilt the Aura Stage layers.'],
-                      [ChevronLeft, 'Swipe left', 'Skip to the next track.'],
-                      [ChevronRight, 'Swipe right', 'Restart or go to the previous track.'],
-                      [Hand, '2-finger swipe L/R', 'Two fingers slide left or right to change tracks.'],
-                      [Volume2, '2-finger swipe U/D', 'Two fingers slide up or down to adjust volume.'],
-                      [Fingerprint, 'Pinch in', 'Two-finger pinch to pause playback.'],
-                      [Fingerprint, 'Spread out', 'Two-finger spread to resume playback.'],
-                      [MousePointer2, 'Double-tap', 'Quickly tap twice on empty space to toggle play/pause.'],
-                      [Hand, 'Camera wave L/R', 'Wave your hand left or right for track controls.'],
-                      [Volume2, 'Camera wave U/D', 'Wave your hand up or down for volume control.'],
-                      [Camera, 'Look left/right', 'Turn your head left/right to change tracks (hold to confirm).'],
-                      [Eye, 'Look up/down', 'Tilt your head up/down to adjust volume.'],
-                    ].map(([Icon, title, detail]) => (
-                      <div key={title} className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-                        <Icon size={18} className="text-brand-accent" />
-                        <div className="mt-3 text-[11px] font-black uppercase tracking-[0.2em] text-white/80">{title}</div>
-                        <div className="mt-1 text-[11px] leading-5 text-white/42">{detail}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </motion.div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <AnimatePresence>
-          {isFeedbackOpen && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[350] flex items-center justify-center bg-black/82 p-4 backdrop-blur-xl"
-            >
-              <div className="absolute inset-0" onClick={() => !isFeedbackSending && setIsFeedbackOpen(false)} />
-              <motion.div
-                initial={{ scale: 0.96, y: 18 }}
-                animate={{ scale: 1, y: 0 }}
-                exit={{ scale: 0.96, y: 18 }}
-                className="relative z-10 w-full max-w-2xl overflow-hidden rounded-[2rem] border border-brand-accent/20 bg-[#080c10]/96 shadow-[0_28px_100px_rgba(0,0,0,0.55)]"
-              >
-                <div className="flex items-start justify-between gap-4 border-b border-white/10 bg-black/22 p-5">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-brand-accent/25 bg-brand-accent/10 text-brand-accent">
-                      <MessageSquare size={18} />
-                    </div>
-                    <div>
-                      <div className="text-[10px] font-black uppercase tracking-[0.3em] text-brand-accent">Send Feedback</div>
-                      <div className="mt-1 text-[11px] uppercase tracking-[0.18em] text-white/40">Issues open on GitHub unless a feedback endpoint is configured.</div>
-                    </div>
-                  </div>
-                  <button onClick={() => setIsFeedbackOpen(false)} disabled={isFeedbackSending} className={sharedModalCloseButtonClass} title="Close">
-                    <X size={16} />
-                  </button>
-                </div>
-                <div className="space-y-4 p-5">
-                  <div className="grid grid-cols-3 gap-2">
-                    {['Problem', 'Improvement', 'Idea'].map((type) => (
-                      <button
-                        key={type}
-                        onClick={() => updateFeedbackDraft({ type })}
-                        className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all ${feedbackDraft.type === type ? 'border-brand-accent/40 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/[0.04] text-white/55 hover:border-brand-accent/35 hover:text-brand-accent'}`}
-                      >
-                        {type}
-                      </button>
-                    ))}
-                  </div>
-                  <input
-                    value={feedbackDraft.summary}
-                    onChange={(e) => updateFeedbackDraft({ summary: e.target.value })}
-                    placeholder="Short title"
-                    className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-white outline-none transition-all placeholder:text-white/24 focus:border-brand-accent/45"
-                  />
-                  <textarea
-                    value={feedbackDraft.details}
-                    onChange={(e) => updateFeedbackDraft({ details: e.target.value })}
-                    placeholder="What happened, or what should be better?"
-                    className="min-h-[150px] w-full resize-none rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm leading-6 text-white outline-none transition-all placeholder:text-white/24 focus:border-brand-accent/45"
-                  />
-                  <input
-                    value={feedbackDraft.contact}
-                    onChange={(e) => updateFeedbackDraft({ contact: e.target.value })}
-                    placeholder="Contact handle/email optional"
-                    className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white outline-none transition-all placeholder:text-white/24 focus:border-brand-accent/45"
-                  />
-                  {feedbackStatus && (
-                    <div className="rounded-2xl border border-white/8 bg-black/24 px-4 py-3 text-[11px] font-semibold leading-5 text-white/58">
-                      {feedbackStatus}
-                    </div>
-                  )}
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="text-[10px] uppercase tracking-[0.2em] text-white/30">
-                      Build {BUILD_VERSION} // {platform || 'web'}
-                    </div>
-                    <button
-                      onClick={submitFeedback}
-                      disabled={isFeedbackSending || !feedbackDraft.summary.trim() || !feedbackDraft.details.trim()}
-                      className="flex items-center gap-2 rounded-2xl bg-brand-accent px-5 py-3 text-[11px] font-black uppercase tracking-[0.2em] text-black transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-45 disabled:hover:scale-100"
-                    >
-                      {isFeedbackSending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-                      Send
-                    </button>
-                  </div>
-                </div>
-              </motion.div>
-            </motion.div>
-          )}
-        </AnimatePresence>
 
         <AnimatePresence>
           {isLibraryOverlayOpen && (
@@ -15959,8 +17883,10 @@ function App() {
               isOpen={isLibraryOverlayOpen}
               isStandalone={isStandalone}
               isVaultCleaning={isVaultCleaning}
+              isVaultImporting={isVaultImporting}
               libraryActionTarget={libraryActionTarget}
               currentTrack={currentTrack}
+              isPlaying={isPlaying}
               getProxyUrl={getProxyUrl}
               libraryOverlayCreateInputRef={libraryOverlayCreateInputRef}
               newPlaylistName={newPlaylistName}
@@ -16215,7 +18141,7 @@ function App() {
 
         {/* FULL DISCOVERY OVERLAY */}
         <AnimatePresence>
-          {isViewingFullDiscovery && (
+          {!isOfflineMode && isViewingFullDiscovery && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -16423,7 +18349,15 @@ function App() {
                           )}
                           {idx !== 0 && (
                             <button
-                              onClick={() => setQueue(queue.filter((_, i) => i !== idx))}
+                              onClick={async () => {
+                                const confirmed = await requestDestructiveConfirmation({
+                                  title: 'Remove track from queue?',
+                                  message: `Aether will remove "${track?.title || 'this track'}" from the queue.`,
+                                  detail: 'The track is not removed from vaults, favorites, or downloads.',
+                                  confirmLabel: 'Remove Track',
+                                });
+                                if (confirmed) setQueue(queue.filter((_, i) => i !== idx));
+                              }}
                               className="opacity-0 group-hover:opacity-100 p-2 hover:text-red-500 transition-all"
                               title="Remove"
                             >
@@ -16812,6 +18746,128 @@ function App() {
         </AnimatePresence>
 
       </div>
+
+      <ExperienceCenterShell
+        open={isExperienceCenterOpen}
+        onClose={() => setIsExperienceCenterOpen(false)}
+        initialPage={experienceCenterInitialPage}
+        visualizerMode={visualizerMode}
+        setVisualizerMode={setVisualizerMode}
+        performanceMode={performanceMode}
+        setPerformanceMode={setPerformanceMode}
+        auraPreset={auraPreset}
+        setAuraPreset={setAuraPreset}
+        isDepthMotionEnabled={isDepthMotionEnabled}
+        setIsDepthMotionEnabled={setIsDepthMotionEnabled}
+        isDoodleMode={isDoodleMode}
+        setIsDoodleMode={setIsDoodleMode}
+        doodleIntensityBadge={doodleIntensityBadge}
+        setIsAuraStageOpen={setIsAuraStageOpen}
+        isGestureControlEnabled={isGestureControlEnabled}
+        openGestureLab={openGestureLab}
+        openSignalLedger={openSignalLedger}
+        openShortcutSettings={openShortcutSettings}
+        openFeedbackPanel={openFeedbackPanel}
+        openAppLockSettings={openAppLockSettings}
+        lockStatus={lockStatus}
+        isStandalone={isStandalone}
+        discordPrivate={discordPrivate}
+        onToggleDiscordPrivate={() => {
+          const next = !discordPrivate;
+          setDiscordPrivate(next);
+          localStorage.setItem('aether.discordPrivate', JSON.stringify(next));
+          window.aether?.setDiscordPrivate?.(next);
+        }}
+        isOfflineMode={isOfflineMode}
+        onToggleOfflineMode={() => {
+          const next = !isOfflineMode;
+          setIsOfflineMode(next);
+          localStorage.setItem('aether.offlineMode', JSON.stringify(next));
+          if (next) {
+            setVideoMode(null);
+          }
+        }}
+        flashLastAdded={flashLastAdded}
+        getProxyUrl={getProxyUrl}
+        currentTrack={currentTrack}
+        isPlaying={isPlaying}
+        getActivePlaybackPositionMs={getActivePlaybackPositionMs}
+        platform={platform}
+        videoMode={videoMode}
+        queueLength={queue.length}
+        lyricsCount={lyrics.length}
+        appendRecentEvent={appendRecentEvent}
+        setIsGestureControlEnabled={setIsGestureControlEnabled}
+        isFaceControlEnabled={isFaceControlEnabled}
+        setIsFaceControlEnabled={setIsFaceControlEnabled}
+        faceControlStatus={faceControlStatus}
+        faceControlSignal={faceControlSignal}
+        cameraHandSignal={cameraHandSignal}
+        shortcuts={shortcuts}
+        shortcutDraft={shortcutDraft}
+        setShortcutDraft={setShortcutDraft}
+        shortcutSettingsError={shortcutSettingsError}
+        setShortcutSettingsError={setShortcutSettingsError}
+        globalMediaShortcutsEnabled={globalMediaShortcutsEnabled}
+        setGlobalMediaShortcutsEnabled={setGlobalMediaShortcutsEnabled}
+        saveShortcutSettings={saveShortcutSettings}
+        isShortcutSettingsSaving={isShortcutSettingsSaving}
+        resetShortcutSettingsToDefaults={resetShortcutSettingsToDefaults}
+        isMacPlatform={isMacPlatform}
+        openTipsOverlay={openTipsOverlay}
+        lockIdleMinutes={lockIdleMinutes}
+        setLockIdleMinutes={setLockIdleMinutes}
+        refreshLockStatus={refreshLockStatus}
+        setIsAppLocked={setIsAppLocked}
+        requestDestructiveConfirmation={requestDestructiveConfirmation}
+        showShortcutHints={showShortcutHints}
+        setShowShortcutHints={setShowShortcutHints}
+      />
+
+      <AetherConfirmDialog
+        request={destructiveConfirmRequest}
+        onCancel={() => closeDestructiveConfirmation(false)}
+        onConfirm={(dontAskAgain) => closeDestructiveConfirmation(true, dontAskAgain)}
+      />
+
+      <CommandPalette
+        open={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        commands={commandPaletteCommands}
+        shortcutLabel={commandPaletteShortcutLabel}
+        showShortcutHints={showShortcutHints}
+      />
+
+      <PartyMode
+        open={isPartyModeOpen}
+        onClose={() => setIsPartyModeOpen(false)}
+        hostTrack={currentTrack}
+        hostLiveLyric={mixtapeLiveLyric}
+        hostLyrics={lyrics}
+        hostLyricOffsetMs={lyricOffsetMs}
+        onLyricOffsetChange={setLyricOffsetMs}
+        hostPositionMs={getActivePlaybackPositionMs?.() || 0}
+        hostIsPlaying={isPlaying}
+        hostIsBuffering={isAudioBuffering}
+        hostQueue={queue}
+        hostPlaylists={playlists}
+        onHostUpdateQueue={setQueue}
+        onHostControl={handleControl}
+        onHostPlayTrack={(track) => {
+          const normalized = normalizeQueueTrack(track) || track;
+          setQueue(prev => {
+            const currentQueue = Array.isArray(prev) ? prev : [];
+            if (currentQueue.length === 0) {
+              setIsManualStop(false);
+              setIsPlaying(true);
+            }
+            return [...currentQueue, normalized];
+          });
+        }}
+        onPartyStateChange={(state) => {
+          setPartyInfo(state ? { partySize: state.members?.length || 1, partyMax: 10, partyId: state.partyId || 'aether_party' } : null);
+        }}
+      />
     </MotionConfig>
   );
 }
