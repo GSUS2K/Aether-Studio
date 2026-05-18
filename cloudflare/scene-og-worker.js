@@ -1,6 +1,7 @@
 export default {
   async fetch(request) {
     const url = new URL(request.url);
+
     const encoded = url.searchParams.get('scene');
 
     // No scene payload -> pass through to origin/site.

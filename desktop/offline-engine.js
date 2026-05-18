@@ -5,6 +5,7 @@ const os = require('os');
 
 const MIN_VALID_AUDIO_BYTES = 64 * 1024;
 const SEARCH_TIMEOUT_MS = 15000;
+const OFFLINE_MEDIA_EXTENSIONS = new Set(['.m4a', '.mp3', '.aac', '.flac', '.wav', '.ogg', '.opus', '.mp4', '.m4v', '.mov', '.webm', '.mkv']);
 
 const { EventEmitter } = require('events');
 const engineEvents = new EventEmitter();
@@ -259,7 +260,7 @@ class OfflineEngine {
     async getDownloadedTracks() {
         const files = fs.readdirSync(this.downloadDir);
         const tracks = files
-            .filter(f => f.endsWith('.m4a'))
+            .filter(f => OFFLINE_MEDIA_EXTENSIONS.has(path.extname(f).toLowerCase()))
             .filter((f) => {
                 try {
                     const p = path.join(this.downloadDir, f);
@@ -268,7 +269,7 @@ class OfflineEngine {
                     return false;
                 }
             })
-            .map(f => f.replace('.m4a', ''));
+            .map(f => path.basename(f, path.extname(f)));
         console.log(`[OfflineEngine] Found ${tracks.length} downloaded tracks:`, tracks);
         return tracks;
     }
@@ -276,9 +277,9 @@ class OfflineEngine {
     async getDownloadedTrackDetails() {
         const files = fs.readdirSync(this.downloadDir);
         const tracks = files
-            .filter((f) => f.endsWith('.m4a'))
+            .filter((f) => OFFLINE_MEDIA_EXTENSIONS.has(path.extname(f).toLowerCase()))
             .map((f) => {
-                const id = f.replace('.m4a', '');
+                const id = path.basename(f, path.extname(f));
                 const fullPath = path.join(this.downloadDir, f);
                 try {
                     const stat = fs.statSync(fullPath);

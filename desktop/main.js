@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, globalShortcut, Menu, dialog, systemPreferences, screen, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, globalShortcut, Menu, dialog, systemPreferences, screen, clipboard, session, nativeImage } = require('electron');
 app.setName('Aether');
 app.name = 'Aether';
 const ffmpeg = require('ffmpeg-static');
@@ -1152,6 +1152,7 @@ let partyHttpServer = null;
 let partyIo = null;
 let partyTunnel = null;
 let partyRooms = new Map();
+let partyLocalPort = null;
 
 async function stopPartyServer() {
     if (partyTunnel) {
@@ -1166,6 +1167,7 @@ async function stopPartyServer() {
         partyHttpServer.close();
         partyHttpServer = null;
     }
+    partyLocalPort = null;
     partyRooms.clear();
     console.log('[Party] Server stopped.');
 }
@@ -1183,6 +1185,15 @@ async function startPartyServer() {
         pingTimeout: 30000,
         pingInterval: 10000,
     });
+
+    const VERBOSE_PARTY_LOG = !!process.env.AETHER_VERBOSE_PARTY || false;
+    const partyLog = (...args) => {
+        if (!VERBOSE_PARTY_LOG) return;
+        try {
+            console.log('[Party][DEBUG]', ...args);
+            try { logDebug('[Party][DEBUG] ' + args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ')); } catch (e) {}
+        } catch (e) {}
+    };
 
     const KEY_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     const MAX_PARTY_SIZE = 10;
@@ -1231,6 +1242,7 @@ async function startPartyServer() {
         }, IDLE_TIMEOUT_MS);
     }
     function handleLeave(socket, partyId, userId) {
+        partyLog && partyLog('handleLeave', { socketId: socket?.id, partyId, userId });
         const room = partyRooms.get(partyId);
         if (!room) return;
         const member = room.members.find(m => m.id === userId);
@@ -1238,6 +1250,7 @@ async function startPartyServer() {
         const wasHost = room.hostId === userId;
         room.members = room.members.filter(m => m.id !== userId);
         socket.leave(partyId);
+        partyLog && partyLog('after leave', { partyId, removedUser: userId, remainingCount: room.members.length });
         if (room.members.length === 0) { closeRoom(partyId); return; }
         if (wasHost) {
             partyIo.to(partyId).emit('party:host-leaving', { leftDisplayName: member.displayName, members: publicMembers(room) });
@@ -1251,8 +1264,14 @@ async function startPartyServer() {
     }
 
     partyIo.on('connection', (socket) => {
+        partyLog && partyLog('connection', { socketId: socket.id, addr: socket.handshake && socket.handshake.address });
+        console.log && console.log('[Party] socket connected', socket.id);
         socket.on('party:create', ({ userId, displayName, isPrivate, avatar } = {}) => {
-            if (!userId || !displayName) return socket.emit('party:error', { code: 'BAD_REQUEST', message: 'Missing args.' });
+            partyLog && partyLog('party:create:received', { userId, displayName, isPrivate, avatar, socketId: socket.id });
+            if (!userId || !displayName) {
+                partyLog && partyLog('party:create:bad_request', { userId, displayName });
+                return socket.emit('party:error', { code: 'BAD_REQUEST', message: 'Missing args.' });
+            }
             const partyId = uuidv4().replace(/-/g, '').slice(0, 8).toUpperCase();
             const key = isPrivate ? generateKey() : null;
             const room = {
@@ -1266,21 +1285,33 @@ async function startPartyServer() {
             socket.join(partyId);
             socket.data = { partyId, userId, displayName };
             scheduleIdleCheck(room);
+            partyLog && partyLog('party:created', { partyId, key, members: room.members.length });
             socket.emit('party:created', { partyId, key, state: publicState(room) });
         });
         socket.on('party:join', ({ partyId, userId, displayName, key, avatar } = {}) => {
+            partyLog && partyLog('party:join:received', { partyId, userId, displayName, key, avatar, socketId: socket.id });
             let room = partyRooms.get(partyId);
             if (!room && partyRooms.size === 1) {
                 // If they pasted a URL as the ID, the partyId will be wrong, but we can safely route them
                 // to the only active room on this temporary host server.
                 room = partyRooms.values().next().value;
             }
-            if (!room) return socket.emit('party:error', { code: 'NOT_FOUND', message: 'Party not found.' });
-            if (room.members.length >= MAX_PARTY_SIZE) return socket.emit('party:error', { code: 'FULL', message: 'Party full.' });
-            if (room.isPrivate && room.key !== String(key || '').toUpperCase()) return socket.emit('party:error', { code: 'WRONG_KEY', message: 'Wrong key.' });
+            if (!room) {
+                partyLog && partyLog('party:join:not_found', { partyId });
+                return socket.emit('party:error', { code: 'NOT_FOUND', message: 'Party not found.' });
+            }
+            if (room.members.length >= MAX_PARTY_SIZE) {
+                partyLog && partyLog('party:join:full', { partyId, size: room.members.length });
+                return socket.emit('party:error', { code: 'FULL', message: 'Party full.' });
+            }
+            if (room.isPrivate && room.key !== String(key || '').toUpperCase()) {
+                partyLog && partyLog('party:join:wrong_key', { partyId, providedKey: key });
+                return socket.emit('party:error', { code: 'WRONG_KEY', message: 'Wrong key.' });
+            }
             if (room.members.find(m => m.id === userId)) {
                 room.members.find(m => m.id === userId).socketId = socket.id;
                 socket.join(partyId); socket.data = { partyId, userId, displayName };
+                partyLog && partyLog('party:join:reconnected', { partyId, userId, socketId: socket.id });
                 return socket.emit('party:joined', { state: publicState(room) });
             }
             room.members.push({ id: userId, socketId: socket.id, displayName, avatar: avatar || null });
@@ -1288,6 +1319,7 @@ async function startPartyServer() {
             socket.join(partyId); socket.data = { partyId, userId, displayName };
             const msg = sysMsg(`${displayName} joined the party 👋`);
             room.chat.push(msg);
+            partyLog && partyLog('party:join:success', { partyId, userId, members: room.members.length });
             socket.emit('party:joined', { state: publicState(room) });
             partyIo.to(partyId).emit('party:member-update', { members: publicMembers(room) });
             partyIo.to(partyId).emit('party:message', msg);
@@ -1303,14 +1335,16 @@ async function startPartyServer() {
             partyIo.to(partyId).emit('party:sync', { action, track: room.currentTrack, positionMs: room.positionMs, isPlaying: room.isPlaying, timestamp: room.syncTimestamp });
         });
         socket.on('party:chat', ({ partyId, userId, displayName, message, localId } = {}) => {
+            partyLog && partyLog('party:chat:received', { partyId, userId, displayName, localId, socketId: socket.id, rawMessage: message });
             const room = partyRooms.get(partyId);
-            if (!room) return;
+            if (!room) { partyLog && partyLog('party:chat:no_room', { partyId }); return; }
             const text = String(message || '').trim().slice(0, 500);
             if (!text) return;
             touchActivity(room);
             const msg = { id: uuidv4(), localId, type: 'chat', userId, displayName, message: text, ts: Date.now() };
             room.chat.push(msg);
             if (room.chat.length > 300) room.chat.splice(0, room.chat.length - 300);
+            partyLog && partyLog('party:chat:emitting', { partyId, msgId: msg.id, localId });
             partyIo.to(partyId).emit('party:message', msg);
         });
         socket.on('party:request', ({ partyId, userId, displayName, type, value } = {}) => {
@@ -1367,19 +1401,25 @@ async function startPartyServer() {
             touchActivity(room);
         });
         socket.on('party:leave', ({ partyId, userId } = {}) => {
+            partyLog && partyLog('party:leave', { partyId, userId, socketId: socket.id });
             handleLeave(socket, partyId || socket.data?.partyId, userId || socket.data?.userId);
         });
         socket.on('disconnect', () => {
+            partyLog && partyLog('disconnect', { socketId: socket.id, data: socket.data });
             const { partyId, userId } = socket.data || {};
             if (partyId && userId) handleLeave(socket, partyId, userId);
         });
     });
 
-    return new Promise((resolve, reject) => {
-        partyHttpServer.listen(4444, '127.0.0.1', async () => {
+    return new Promise((resolve) => {
+        partyHttpServer.listen(0, '127.0.0.1', async () => {
             try {
+                const address = partyHttpServer.address();
+                const localPort = typeof address === 'object' && address ? address.port : null;
+                if (!localPort) throw new Error('Could not reserve a local Party port.');
+                partyLocalPort = localPort;
                 const tunnelPrefix = crypto.randomBytes(4).toString('hex');
-                partyTunnel = await localtunnel({ port: 4444, local_host: '127.0.0.1', subdomain: `aether-party-${tunnelPrefix}` });
+                partyTunnel = await localtunnel({ port: localPort, local_host: '127.0.0.1', subdomain: `aether-party-${tunnelPrefix}` });
                 console.log(`[Party] Tunnel open at ${partyTunnel.url}`);
                 
                 partyTunnel.on('close', () => {
@@ -1389,16 +1429,30 @@ async function startPartyServer() {
                     console.error('[Party] Tunnel error', err);
                 });
                 
-                resolve({ success: true, url: partyTunnel.url });
+                resolve({ success: true, url: partyTunnel.url, localPort });
             } catch (err) {
                 console.error('[Party] Tunnel failed', err);
                 stopPartyServer();
-                resolve({ success: false, error: err.message });
+                resolve({
+                    success: false,
+                    code: 'PARTY_TUNNEL_FAILED',
+                    error: err?.message || 'Aether could not create a public Party link. Check your network and try again.',
+                    recovery: 'Your music player still works. Try again, switch networks, or use a non-restricted connection.',
+                });
             }
         });
         partyHttpServer.on('error', (err) => {
             console.error('[Party] Server listen error', err);
-            resolve({ success: false, error: err.message });
+            resolve({
+                success: false,
+                code: err?.code || 'PARTY_SERVER_FAILED',
+                error: err?.code === 'EADDRINUSE'
+                    ? 'Aether could not reserve a local Party port because another app is using it.'
+                    : (err?.message || 'Aether could not start the local Party server.'),
+                recovery: err?.code === 'EADDRINUSE'
+                    ? 'Close the app using the port or restart Aether. The main music player can keep running.'
+                    : 'Restart Aether and try Party again. If it repeats, copy Diagnostics for support.',
+            });
         });
     });
 }
@@ -1455,6 +1509,73 @@ const walkFiles = (dirPath) => {
         }
     }
     return out;
+};
+
+const LOCAL_IMPORT_MEDIA_EXTENSIONS = new Set(['.mp3', '.m4a', '.aac', '.flac', '.wav', '.ogg', '.opus', '.mp4', '.m4v', '.mov', '.webm', '.mkv']);
+const LOCAL_IMPORT_PLAYLIST_EXTENSIONS = new Set(['.m3u', '.m3u8', '.pls']);
+const LOCAL_IMPORT_LYRIC_EXTENSIONS = new Set(['.lrc', '.txt']);
+const LOCAL_IMPORT_MAX_FILES = 2000;
+const parseLocalTrackName = (filePath) => {
+    const base = path.basename(filePath, path.extname(filePath)).replace(/[_]+/g, ' ').trim();
+    const match = base.match(/^\s*(.+?)\s+-\s+(.+?)\s*$/);
+    if (match) return { author: match[1].trim() || 'Local Files', title: match[2].trim() || base };
+    return { author: path.basename(path.dirname(filePath)) || 'Local Files', title: base || path.basename(filePath) };
+};
+const parseLocalLrc = (text) => String(text || '')
+    .split(/\r?\n/)
+    .map((line) => {
+        const match = line.match(/\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\](.*)$/);
+        if (!match) return null;
+        const minutes = Number(match[1]) || 0;
+        const seconds = Number(match[2]) || 0;
+        const rawMs = match[3] || '0';
+        const ms = Number(rawMs.padEnd(3, '0').slice(0, 3)) || 0;
+        const lyricText = String(match[4] || '').trim();
+        if (!lyricText) return null;
+        return { time: (minutes * 60 * 1000) + (seconds * 1000) + ms, text: lyricText };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.time - b.time);
+const readLocalPlaylistEntries = async (playlistPath) => {
+    const raw = await fs.promises.readFile(playlistPath, 'utf8');
+    const dir = path.dirname(playlistPath);
+    const ext = path.extname(playlistPath).toLowerCase();
+    const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const entries = [];
+    if (ext === '.pls') {
+        for (const line of lines) {
+            const match = line.match(/^File\d+=(.+)$/i);
+            if (match?.[1]) entries.push(match[1].trim());
+        }
+    } else {
+        entries.push(...lines.filter((line) => !line.startsWith('#')));
+    }
+    return entries
+        .filter((entry) => !/^[a-z]+:\/\//i.test(entry))
+        .map((entry) => path.resolve(dir, entry))
+        .filter((entry) => {
+            try {
+                return fs.existsSync(entry) && fs.statSync(entry).isFile() && LOCAL_IMPORT_MEDIA_EXTENSIONS.has(path.extname(entry).toLowerCase());
+            } catch {
+                return false;
+            }
+        });
+};
+const getLocalImportLyricsFor = async (mediaPath, looseLyrics = new Map()) => {
+    const base = path.basename(mediaPath, path.extname(mediaPath)).toLowerCase();
+    const dir = path.dirname(mediaPath);
+    const candidates = ['.lrc', '.txt'].map((ext) => path.join(dir, `${path.basename(mediaPath, path.extname(mediaPath))}${ext}`));
+    for (const candidate of candidates) {
+        try {
+            if (!fs.existsSync(candidate)) continue;
+            const lrc = await fs.promises.readFile(candidate, 'utf8');
+            const lines = parseLocalLrc(lrc);
+            if (lines.length > 0) return { lrc, lines, sourcePath: candidate };
+        } catch {}
+    }
+    const loose = looseLyrics.get(base);
+    if (loose) return loose;
+    return null;
 };
 
 const sumFileSizes = (filePaths = []) => {
@@ -1764,9 +1885,9 @@ app.name = 'Aether';
 if (process.platform === 'darwin') {
     app.setAboutPanelOptions({
         applicationName: 'Aether',
-        applicationVersion: '6.6.2',
-        copyright: 'Aether Sound Studio // GSUS_2K',
-        credits: 'Neural Engine by Aether'
+        applicationVersion: 'Alpha',
+        copyright: 'Aether Studio // GSUS_2K',
+        credits: 'discord.gg/bMUvBkqhuV'
     });
     try {
         const iconPath = path.join(__dirname, '../icon.png');
@@ -2693,6 +2814,16 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+    // --- AUTOMATIC LOCALTUNNEL BYPASS (V8.0.0) ---
+    session.defaultSession.webRequest.onBeforeSendHeaders(
+        { urls: ['*://*.loca.lt/*'] },
+        (details, callback) => {
+            details.requestHeaders['Bypass-Tunnel-Reminder'] = 'true';
+            details.requestHeaders['User-Agent'] = 'localtunnel';
+            callback({ cancel: false, requestHeaders: details.requestHeaders });
+        }
+    );
+
     await initRPC();
     createWindow();
     initAutoUpdater();
@@ -2811,6 +2942,12 @@ app.whenReady().then(async () => {
         clipboard.writeText(String(text || ''));
         return { success: true };
     });
+    ipcMain.handle('aether:clipboard-write-image', (event, dataUrl) => {
+        const image = nativeImage.createFromDataURL(String(dataUrl || ''));
+        if (image.isEmpty()) return { success: false, error: 'Could not read profile image.' };
+        clipboard.writeImage(image);
+        return { success: true };
+    });
     ipcMain.handle('aether:clipboard-read-text', () => {
         try {
             return { success: true, text: clipboard.readText() };
@@ -2836,7 +2973,8 @@ app.whenReady().then(async () => {
     ipcMain.handle('aether:party-status', () => {
         return {
             active: !!partyTunnel,
-            url: partyTunnel ? partyTunnel.url : null
+            url: partyTunnel ? partyTunnel.url : null,
+            localPort: partyLocalPort,
         };
     });
     ipcMain.handle('aether:get-engine-status', async () => {
@@ -3580,6 +3718,151 @@ app.whenReady().then(async () => {
             }
             return { success: false, cancel: true };
         } catch (e) { return { success: false, error: e.message }; }
+    });
+
+    ipcMain.handle('aether:import-local-media', async () => {
+        try {
+            if (!mainWindow) return { success: false, error: 'No main window' };
+            const result = await dialog.showOpenDialog(mainWindow, {
+                title: 'Import Local Music, Videos, Playlists, and Lyrics',
+                properties: ['openFile', 'openDirectory', 'multiSelections'],
+                filters: [
+                    { name: 'Aether importable media', extensions: ['mp3', 'm4a', 'aac', 'flac', 'wav', 'ogg', 'opus', 'mp4', 'm4v', 'mov', 'webm', 'mkv', 'm3u', 'm3u8', 'pls', 'lrc', 'txt'] },
+                    { name: 'All Files', extensions: ['*'] },
+                ],
+            });
+            if (result.canceled || !result.filePaths?.length) return { success: false, cancel: true };
+
+            const picked = result.filePaths;
+            const allFiles = [];
+            for (const selectedPath of picked) {
+                try {
+                    const stat = fs.statSync(selectedPath);
+                    if (stat.isDirectory()) allFiles.push(...walkFiles(selectedPath));
+                    else if (stat.isFile()) allFiles.push(selectedPath);
+                } catch {}
+            }
+
+            const limitedFiles = allFiles.slice(0, LOCAL_IMPORT_MAX_FILES);
+            const mediaPaths = [];
+            const playlistPaths = [];
+            const looseLyrics = new Map();
+            for (const filePath of limitedFiles) {
+                const ext = path.extname(filePath).toLowerCase();
+                if (LOCAL_IMPORT_MEDIA_EXTENSIONS.has(ext)) {
+                    mediaPaths.push(filePath);
+                } else if (LOCAL_IMPORT_PLAYLIST_EXTENSIONS.has(ext)) {
+                    playlistPaths.push(filePath);
+                } else if (LOCAL_IMPORT_LYRIC_EXTENSIONS.has(ext)) {
+                    try {
+                        const lrc = await fs.promises.readFile(filePath, 'utf8');
+                        const lines = parseLocalLrc(lrc);
+                        if (lines.length > 0) {
+                            looseLyrics.set(path.basename(filePath, ext).toLowerCase(), { lrc, lines, sourcePath: filePath });
+                        }
+                    } catch {}
+                }
+            }
+
+            const playlistTrackPaths = new Map();
+            for (const playlistPath of playlistPaths) {
+                try {
+                    const entries = await readLocalPlaylistEntries(playlistPath);
+                    playlistTrackPaths.set(playlistPath, entries);
+                    mediaPaths.push(...entries);
+                } catch (error) {
+                    logDebug('local playlist import parse failed', { playlistPath, error: error?.message || String(error) });
+                }
+            }
+
+            const uniqueMediaPaths = Array.from(new Set(mediaPaths)).filter((filePath) => {
+                try {
+                    return fs.existsSync(filePath) && fs.statSync(filePath).isFile();
+                } catch {
+                    return false;
+                }
+            }).slice(0, LOCAL_IMPORT_MAX_FILES);
+
+            await fs.promises.mkdir(offlineEngine.downloadDir, { recursive: true });
+            const trackByPath = new Map();
+            const lyricsByTrackKey = {};
+            let copiedBytes = 0;
+
+            for (const filePath of uniqueMediaPaths) {
+                const ext = path.extname(filePath).toLowerCase();
+                const stat = fs.statSync(filePath);
+                if ((stat.size || 0) <= 0) continue;
+                const digest = crypto.createHash('sha1').update(`${filePath}:${stat.size}:${stat.mtimeMs}`).digest('hex').slice(0, 16);
+                const id = `local_${digest}`;
+                const fileName = `${id}${ext}`;
+                const targetPath = path.join(offlineEngine.downloadDir, fileName);
+                if (!fs.existsSync(targetPath)) {
+                    await fs.promises.copyFile(filePath, targetPath);
+                    copiedBytes += stat.size || 0;
+                }
+                const parsedName = parseLocalTrackName(filePath);
+                const mediaKind = ['.mp4', '.m4v', '.mov', '.webm', '.mkv'].includes(ext) ? 'video' : 'audio';
+                const track = {
+                    id,
+                    title: parsedName.title,
+                    author: parsedName.author,
+                    duration: 0,
+                    totalDurationMs: 0,
+                    thumbnail: '',
+                    url: `http://localhost:${actualPort}/offline/${encodeURIComponent(fileName)}`,
+                    actualUrl: `http://localhost:${actualPort}/offline/${encodeURIComponent(fileName)}`,
+                    localFileName: fileName,
+                    localImport: true,
+                    mediaKind,
+                };
+                trackByPath.set(filePath, track);
+                const lyrics = await getLocalImportLyricsFor(filePath, looseLyrics);
+                if (lyrics?.lines?.length) {
+                    lyricsByTrackKey[`id:${id}`] = {
+                        trackKey: `id:${id}`,
+                        title: track.title,
+                        author: track.author,
+                        duration: null,
+                        createdAt: Date.now(),
+                        updatedAt: Date.now(),
+                        lines: lyrics.lines,
+                        lrc: lyrics.lrc,
+                        sourcePath: lyrics.sourcePath,
+                    };
+                }
+            }
+
+            const importedTracks = uniqueMediaPaths.map((filePath) => trackByPath.get(filePath)).filter(Boolean);
+            const playlists = playlistPaths.map((playlistPath) => {
+                const tracks = (playlistTrackPaths.get(playlistPath) || []).map((filePath) => trackByPath.get(filePath)).filter(Boolean);
+                return {
+                    name: path.basename(playlistPath, path.extname(playlistPath)) || 'Local Playlist',
+                    tracks,
+                };
+            }).filter((entry) => entry.tracks.length > 0);
+
+            if (importedTracks.length > 0) {
+                const downloaded = await offlineEngine.getDownloadedTracks();
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send('aether:library-update', downloaded);
+                }
+            }
+
+            return {
+                success: true,
+                tracks: importedTracks,
+                playlists,
+                lyricsByTrackKey,
+                scannedFiles: allFiles.length,
+                importedTracks: importedTracks.length,
+                importedPlaylists: playlists.length,
+                importedLyrics: Object.keys(lyricsByTrackKey).length,
+                copiedBytes,
+                truncated: allFiles.length > LOCAL_IMPORT_MAX_FILES,
+            };
+        } catch (e) {
+            return { success: false, error: e?.message || 'Local media import failed.' };
+        }
     });
 
     ipcMain.handle('aether:import-spotify-playlist', async (event, { url }) => {

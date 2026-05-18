@@ -1,0 +1,24 @@
+name = "aether-profile-api"
+main = "profile-worker.js"
+compatibility_date = "2026-04-04"
+
+workers_dev = true
+
+# These path routes let the app keep using https://aetherstudio.me as the API base.
+# If you prefer workers.dev instead, deploy with workers_dev and build the app with
+# VITE_AETHER_PROFILE_API_URL=https://aether-profile-api.<your-subdomain>.workers.dev
+[[routes]]
+pattern = "aetherstudio.me/v1/profile*"
+zone_name = "aetherstudio.me"
+
+[[routes]]
+pattern = "aetherstudio.me/v1/profiles*"
+zone_name = "aetherstudio.me"
+
+[[kv_namespaces]]
+binding = "AETHER_PROFILES"
+id = "4154959e420d4e1293ef3236fd8a18ad"
+preview_id = "ef668551b5024ec0a8a5126dccf07090"
+
+[observability]
+enabled = true

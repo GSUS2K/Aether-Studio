@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('aether', {
   },
   clipboard: {
     writeText: (text) => ipcRenderer.invoke('aether:clipboard-write-text', text),
+    writeImage: (dataUrl) => ipcRenderer.invoke('aether:clipboard-write-image', dataUrl),
     readText: () => ipcRenderer.invoke('aether:clipboard-read-text'),
   },
 
@@ -83,6 +84,7 @@ contextBridge.exposeInMainWorld('aether', {
   optimizeStorage: (payload) => ipcRenderer.invoke('aether:optimize-storage', payload),
   exportVault: (name, data) => ipcRenderer.invoke('aether:export-vault', { name, data }),
   importVault: () => ipcRenderer.invoke('aether:import-vault'),
+  importLocalMedia: () => ipcRenderer.invoke('aether:import-local-media'),
   importCookies: () => ipcRenderer.invoke('aether:import-cookies'),
   importSpotifyPlaylist: (url) => ipcRenderer.invoke('aether:import-spotify-playlist', { url }),
   importAppleMusicPlaylist: (url) => ipcRenderer.invoke('aether:import-apple-music-playlist', { url }),

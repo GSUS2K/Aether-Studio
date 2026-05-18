@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Play, Pause, SkipForward, Rewind, X, Send, Crown, Users, Music2, MessageSquare, Copy, Check, SkipBack, Wifi, AlertTriangle, ChevronRight, Search, UserPlus, Loader2, Lock, Volume2, VolumeX, Mic, MicOff, ListMusic, Radio, ThumbsUp, ThumbsDown, Music, Hash, Plus, Shuffle, UserMinus, Trash2 } from 'lucide-react';
 import { getSocket, connectSocket, disconnectSocket } from './partySocket';
@@ -8,10 +8,115 @@ import './PartyMode.css';
 const initials = (name) => String(name || '?').trim().slice(0, 2).toUpperCase();
 const fmt = (ms) => { const s = Math.floor((ms||0)/1000); return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`; };
 const stored = (k, fb) => { try { return JSON.parse(localStorage.getItem(k)) ?? fb; } catch { return fb; } };
+const PARTY_SEARCH_HISTORY_STORAGE_KEY = 'aether.searchHistory.v1';
+const PARTY_SEARCH_HISTORY_LIMIT = 12;
+const normalizePartySearchHistoryItem = (value) => String(value || '').trim().replace(/\s+/g, ' ');
+const readPartySearchHistoryStore = () => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PARTY_SEARCH_HISTORY_STORAGE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+const writePartySearchHistoryStore = (store) => {
+  try { localStorage.setItem(PARTY_SEARCH_HISTORY_STORAGE_KEY, JSON.stringify(store || {})); } catch { /* ignore */ }
+};
+const readPartySearchHistory = (scope) => {
+  const store = readPartySearchHistoryStore();
+  return (Array.isArray(store[scope]) ? store[scope] : [])
+    .map(normalizePartySearchHistoryItem)
+    .filter(Boolean)
+    .slice(0, PARTY_SEARCH_HISTORY_LIMIT);
+};
+const pushPartySearchHistory = (scope, query) => {
+  const normalized = normalizePartySearchHistoryItem(query);
+  if (!normalized) return readPartySearchHistory(scope);
+  const store = readPartySearchHistoryStore();
+  const current = Array.isArray(store[scope]) ? store[scope] : [];
+  const next = [
+    normalized,
+    ...current
+      .map(normalizePartySearchHistoryItem)
+      .filter((item) => item && item.toLowerCase() !== normalized.toLowerCase()),
+  ].slice(0, PARTY_SEARCH_HISTORY_LIMIT);
+  writePartySearchHistoryStore({ ...store, [scope]: next });
+  return next;
+};
+const removePartySearchHistory = (scope, query) => {
+  const normalized = normalizePartySearchHistoryItem(query);
+  const store = readPartySearchHistoryStore();
+  const next = (Array.isArray(store[scope]) ? store[scope] : [])
+    .map(normalizePartySearchHistoryItem)
+    .filter((item) => item && item.toLowerCase() !== normalized.toLowerCase())
+    .slice(0, PARTY_SEARCH_HISTORY_LIMIT);
+  writePartySearchHistoryStore({ ...store, [scope]: next });
+  return next;
+};
+const clearPartySearchHistory = (scope) => {
+  const store = readPartySearchHistoryStore();
+  writePartySearchHistoryStore({ ...store, [scope]: [] });
+  return [];
+};
+const sanitizePartyProfile = (profile = {}) => ({
+  displayName: String(profile?.displayName || '').trim().slice(0, 32),
+  handle: String(profile?.handle || '').trim().slice(0, 24),
+  bio: String(profile?.bio || '').trim().slice(0, 140),
+  avatarColor: /^#[0-9a-f]{6}$/i.test(String(profile?.avatarColor || '')) ? profile.avatarColor : '#16f7c6',
+  avatarDataUrl: /^data:image\/(png|jpeg|jpg|webp);base64,/i.test(String(profile?.avatarDataUrl || '')) ? String(profile.avatarDataUrl).slice(0, 180000) : '',
+  visibility: profile?.visibility === 'public' ? 'public' : 'private',
+  shareStats: profile?.shareStats !== false,
+});
+const buildPartyAvatar = (profile, fallbackName) => {
+  const clean = sanitizePartyProfile(profile);
+  const label = clean.displayName || fallbackName || 'Aether';
+  return {
+    initials: String(label).trim().slice(0, 2).toUpperCase(),
+    color: clean.avatarColor,
+    handle: clean.handle,
+    image: clean.avatarDataUrl || '',
+  };
+};
 
-export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hostLyrics, hostLyricOffsetMs, onLyricOffsetChange, hostPositionMs, hostIsPlaying, hostIsBuffering, hostQueue, hostPlaylists, onHostUpdateQueue, onHostControl, onHostPlayTrack, onPartyStateChange }) {
+function PartySearchHistoryDropdown({ visible, history, query, label, onPick, onRemove, onClear }) {
+  const normalizedQuery = normalizePartySearchHistoryItem(query).toLowerCase();
+  const matches = useMemo(() => {
+    if (!normalizedQuery) return history || [];
+    return (history || []).filter((item) => item.toLowerCase().includes(normalizedQuery));
+  }, [history, normalizedQuery]);
+
+  if (!visible || matches.length === 0) return null;
+
+  return (
+    <div className="party-search-history" onMouseDown={(event) => event.preventDefault()}>
+      <div className="party-search-history-head">
+        <span>{label}</span>
+        <button type="button" onClick={onClear}>Clear</button>
+      </div>
+      {matches.map((item) => (
+        <div className="party-search-history-row" key={item}>
+          <button type="button" className="party-search-history-pick" onClick={() => onPick(item)}>
+            <Clock size={12} />
+            <span>{item}</span>
+          </button>
+          <button
+            type="button"
+            className="party-search-history-remove"
+            onClick={() => onRemove(item)}
+            title={`Remove "${item}" from search history`}
+            aria-label={`Remove ${item} from search history`}
+          >
+            <X size={11} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hostLyrics, hostLyricOffsetMs, onLyricOffsetChange, hostPositionMs, hostIsPlaying, hostIsBuffering, hostQueue, hostPlaylists, profile, onProfileChange, onHostUpdateQueue, onHostControl, onHostPlayTrack, onPartyStateChange }) {
   const [tab, setTab] = useState('create');
-  const [displayName, setDisplayName] = useState(() => stored('aether.party.name', ''));
+  const [displayName, setDisplayName] = useState(() => sanitizePartyProfile(profile).displayName || stored('aether.party.name', ''));
   const [isPrivate, setIsPrivate] = useState(false);
   const [joinId, setJoinId] = useState('');
   const [joinKey, setJoinKey] = useState('');
@@ -35,6 +140,10 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
   const [memberSearch, setMemberSearch] = useState('');
   const [memberSearchResults, setMemberSearchResults] = useState([]);
   const [memberSearching, setMemberSearching] = useState(false);
+  const [hostSearchHistory, setHostSearchHistory] = useState(() => readPartySearchHistory('party-host'));
+  const [memberSearchHistory, setMemberSearchHistory] = useState(() => readPartySearchHistory('party-member'));
+  const [hostSearchFocused, setHostSearchFocused] = useState(false);
+  const [memberSearchFocused, setMemberSearchFocused] = useState(false);
   const [sentReaction, setSentReaction] = useState(null);
   const memberSearchTimerRef = useRef(null);
   const [showLyricSync, setShowLyricSync] = useState(false);
@@ -46,10 +155,38 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
 
   const [socketUrl, setSocketUrl] = useState(null);
   const [hostLeftTab, setHostLeftTab] = useState('search'); // 'search' | 'queue' | 'playlists'
+  const partyProfile = sanitizePartyProfile(profile);
+  const partyAvatar = buildPartyAvatar(partyProfile, displayName);
+
+  useEffect(() => {
+    const profileName = sanitizePartyProfile(profile).displayName;
+    if (profileName && (!displayName || displayName === 'Aether Listener')) setDisplayName(profileName);
+  }, [profile?.displayName]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const addHostSearchHistory = useCallback((query) => {
+    const next = pushPartySearchHistory('party-host', query);
+    setHostSearchHistory(next);
+  }, []);
+  const addMemberSearchHistory = useCallback((query) => {
+    const next = pushPartySearchHistory('party-member', query);
+    setMemberSearchHistory(next);
+  }, []);
+  const removeHostSearchHistory = useCallback((query) => {
+    setHostSearchHistory(removePartySearchHistory('party-host', query));
+  }, []);
+  const removeMemberSearchHistory = useCallback((query) => {
+    setMemberSearchHistory(removePartySearchHistory('party-member', query));
+  }, []);
+  const clearHostSearchHistory = useCallback(() => {
+    setHostSearchHistory(clearPartySearchHistory('party-host'));
+  }, []);
+  const clearMemberSearchHistory = useCallback(() => {
+    setMemberSearchHistory(clearPartySearchHistory('party-member'));
+  }, []);
 
   useEffect(() => { localStorage.setItem('aether.party.uid', myId); }, [myId]);
   useEffect(() => { if (displayName) localStorage.setItem('aether.party.name', displayName); }, [displayName]);
-  useEffect(() => { onPartyStateChange?.(partyState); }, [partyState, onPartyStateChange]);
+  useEffect(() => { onPartyStateChange?.(partyState); }, [partyState]);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [partyState?.chat]);
 
   // Escape key to close
@@ -118,7 +255,7 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
   // Host sync: push playback state + live lyric every 500ms
   useEffect(() => {
     if (!partyState || role !== 'host') return;
-    const s = getSocket();
+    const s = getSocket(socketUrl || undefined);
     let lastEmitted = null;
     const push = (action = 'sync') => {
       const payload = {
@@ -140,7 +277,7 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
     push('sync');
     syncIntervalRef.current = setInterval(() => push('sync'), 500);
     return () => clearInterval(syncIntervalRef.current);
-  }, [partyState?.partyId, role, hostTrack, hostIsPlaying, hostPositionMs, hostLiveLyric, myId]);
+  }, [partyState?.partyId, role, hostTrack, hostIsPlaying, hostPositionMs, hostLiveLyric, myId, socketUrl]);
 
   // Apply synced state to local player for members
   useEffect(() => {
@@ -186,7 +323,10 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
     
     try {
       const res = await window.aether.startPartyServer(displayName.trim());
-      if (!res.success) throw new Error(res.error || 'Failed to start tunnel');
+      if (!res.success) {
+        const message = [res.error || 'Failed to start party.', res.recovery].filter(Boolean).join(' ');
+        throw new Error(message);
+      }
       
       // Encode the URL to a short base58 string to use as the public-facing code
       const shortCode = bs58.encode(new TextEncoder().encode(res.url));
@@ -199,7 +339,7 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
       attachSocketListeners(s);
       
       const doCreate = () => {
-        s.emit('party:create', { userId: myId, displayName: displayName.trim(), isPrivate, avatar: null });
+        s.emit('party:create', { userId: myId, displayName: displayName.trim(), isPrivate, avatar: partyAvatar });
         setPartyState(prev => prev ? { ...prev, partyCode: shortCode } : { partyCode: shortCode });
       };
       
@@ -237,8 +377,9 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
         }
     } catch (e) {
         try {
+            if (!window.aether?.partyResolveCode) throw new Error('No party code resolver in this build.');
             const resUrl = await window.aether.partyResolveCode(targetId);
-            urlToConnect = resUrl;
+            if (resUrl) urlToConnect = resUrl;
         } catch(err) {
             console.warn("Failed to resolve base58 code locally, maybe it is a raw ID.", err);
         }
@@ -249,7 +390,7 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
     attachSocketListeners(s);
     
     const doJoin = () => {
-      s.emit('party:join', { partyId: targetId, key: joinKey.trim(), userId: myId, displayName: displayName.trim(), avatar: null });
+      s.emit('party:join', { partyId: targetId, key: joinKey.trim(), userId: myId, displayName: displayName.trim(), avatar: partyAvatar });
       setPartyState(prev => prev ? { ...prev, partyCode: targetId } : { partyCode: targetId });
     };
     
@@ -441,10 +582,36 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
               </div>
 
               <div className="px-6 py-6 flex flex-col gap-4">
-                <div>
-                  <span className="party-label">Your Name</span>
-                  <input className="party-input" placeholder="Enter display name…" value={displayName}
-                    onChange={e => setDisplayName(e.target.value)} maxLength={28} />
+                <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+                  <div className="mb-3 flex items-center gap-3">
+                    <div
+                      className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/15 text-sm font-black text-black shadow-[0_0_18px_rgba(22,247,198,0.12)]"
+                      style={{ background: partyAvatar.color }}
+                    >
+                      {partyAvatar.image ? <img src={partyAvatar.image} alt="" className="h-full w-full rounded-2xl object-cover" /> : partyAvatar.initials}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="party-label mb-1">Aether Profile</div>
+                      <div className="truncate text-sm font-black text-white">{displayName || 'Aether Listener'}</div>
+                      <div className="truncate text-[10px] font-bold uppercase tracking-widest text-white/34">{partyProfile.handle ? `@${partyProfile.handle}` : 'Private local profile'}</div>
+                    </div>
+                    <span className={`rounded-full border px-2 py-1 text-[8px] font-black uppercase tracking-widest ${partyProfile.visibility === 'public' ? 'border-[var(--party-border-accent)] bg-[var(--party-mint-dim)] text-[var(--party-mint)]' : 'border-white/10 bg-white/5 text-white/38'}`}>
+                      {partyProfile.visibility}
+                    </span>
+                  </div>
+                  <span className="party-label">Party Display Name</span>
+                  <input
+                    className="party-input"
+                    placeholder="Enter display name…"
+                    value={displayName}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setDisplayName(value);
+                      onProfileChange?.((prev) => ({ ...(prev || {}), displayName: value }));
+                    }}
+                    maxLength={28}
+                  />
+                  <p className="mt-2 text-[11px] leading-5 text-white/32">Party uses this profile for your avatar and chat name. Full public discovery will need an Aether account/relay later; this stays local unless you share it.</p>
                 </div>
 
                 {tab === 'create' && (
@@ -557,21 +724,48 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
 
                      {hostLeftTab === 'search' && (
                        <>
-                         <div className="p-4 border-b border-white/5 flex items-center gap-2 shrink-0">
+                         <div className="party-search-wrap p-4 border-b border-white/5 flex items-center gap-2 shrink-0">
                            <Search size={14} className="text-white/50" />
                            <input
                               className="flex-1 bg-transparent border-none outline-none text-sm font-semibold text-white placeholder-white/30"
                               placeholder="Search music to play..."
                               value={searchQuery}
+                              onFocus={() => setHostSearchFocused(true)}
+                              onBlur={() => window.setTimeout(() => setHostSearchFocused(false), 120)}
                               onChange={e => { setSearchQuery(e.target.value); doSearch(e.target.value); }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && searchQuery.trim()) {
+                                  e.preventDefault();
+                                  addHostSearchHistory(searchQuery);
+                                  doSearch(searchQuery);
+                                }
+                                if (e.key === 'Escape') {
+                                  setSearchQuery('');
+                                  setSearchResults([]);
+                                }
+                              }}
                             />
                             {searching && <Loader2 size={14} className="animate-spin text-[var(--party-mint)]" />}
+                            <PartySearchHistoryDropdown
+                              visible={hostSearchFocused}
+                              history={hostSearchHistory}
+                              query={searchQuery}
+                              label="Party searches"
+                              onPick={(item) => {
+                                setSearchQuery(item);
+                                addHostSearchHistory(item);
+                                doSearch(item);
+                                setHostSearchFocused(false);
+                              }}
+                              onRemove={removeHostSearchHistory}
+                              onClear={clearHostSearchHistory}
+                            />
                          </div>
                          {searchResults.length > 0 && (
                            <div className="overflow-y-auto p-2 flex flex-col gap-1 custom-scrollbar bg-black/20 flex-1">
                               {searchResults.map((t, i) => (
                                 <button key={i} className="flex items-center gap-3 text-left rounded-xl p-2 hover:bg-white/10 transition-colors group shrink-0"
-                                  onClick={() => { onHostPlayTrack?.(t); setSearchQuery(''); setSearchResults([]); }}>
+                                  onClick={() => { addHostSearchHistory(searchQuery || t.title); onHostPlayTrack?.(t); setSearchQuery(''); setSearchResults([]); }}>
                                   <img src={t.thumbnail} alt="" className="w-10 h-10 rounded-lg object-cover shadow-md" onError={e=>e.target.style.display='none'}/>
                                   <div className="flex-1 min-w-0">
                                     <div className="text-[13px] font-bold text-white/90 truncate group-hover:text-white">{t.title}</div>
@@ -652,8 +846,12 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
                    <div className="overflow-y-auto p-2 flex flex-col gap-1 custom-scrollbar flex-1">
                       {(partyState.members || []).map(m => (
                         <div key={m.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 transition-colors group shrink-0">
-                          <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black shadow-inner ${m.isHost ? 'bg-[var(--party-mint-dim)] text-[var(--party-mint)] border border-[var(--party-border-accent)]' : 'bg-white/10 text-white border border-white/5'}`}>
-                            {m.isHost ? <Crown size={12} /> : initials(m.displayName)}
+                          <div
+                            className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black shadow-inner ${m.isHost ? 'text-black border border-[var(--party-border-accent)]' : 'text-black border border-white/10'}`}
+                            style={{ background: m.avatar?.color || (m.isHost ? 'var(--party-mint)' : 'rgba(255,255,255,0.3)') }}
+                            title={m.avatar?.handle ? `@${m.avatar.handle}` : m.displayName}
+                          >
+                            {m.avatar?.image ? <img src={m.avatar.image} alt="" className="h-full w-full rounded-full object-cover" /> : (m.isHost ? <Crown size={12} /> : (m.avatar?.initials || initials(m.displayName)))}
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className={`text-sm font-bold truncate ${m.isHost ? 'text-white' : 'text-white/80'}`}>{m.displayName}</div>
@@ -917,16 +1115,43 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
                        {/* Request Song Panel */}
                        {memberAction === 'song' && (
                          <div className="p-3 flex flex-col gap-2">
-                           <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-3 py-2">
+                           <div className="party-search-wrap flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-3 py-2">
                              <Search size={12} className="text-white/30 shrink-0" />
                              <input
                                className="flex-1 bg-transparent outline-none text-sm text-white placeholder-white/30"
                                placeholder="Search a song to request..."
                                value={memberSearch}
+                               onFocus={() => setMemberSearchFocused(true)}
+                               onBlur={() => window.setTimeout(() => setMemberSearchFocused(false), 120)}
                                onChange={e => { setMemberSearch(e.target.value); doMemberSearch(e.target.value); }}
+                               onKeyDown={(e) => {
+                                 if (e.key === 'Enter' && memberSearch.trim()) {
+                                   e.preventDefault();
+                                   addMemberSearchHistory(memberSearch);
+                                   doMemberSearch(memberSearch);
+                                 }
+                                 if (e.key === 'Escape') {
+                                   setMemberSearch('');
+                                   setMemberSearchResults([]);
+                                 }
+                               }}
                                autoFocus
                              />
                              {memberSearching && <Loader2 size={12} className="animate-spin text-[var(--party-mint)] shrink-0" />}
+                             <PartySearchHistoryDropdown
+                               visible={memberSearchFocused}
+                               history={memberSearchHistory}
+                               query={memberSearch}
+                               label="Request searches"
+                               onPick={(item) => {
+                                 setMemberSearch(item);
+                                 addMemberSearchHistory(item);
+                                 doMemberSearch(item);
+                                 setMemberSearchFocused(false);
+                               }}
+                               onRemove={removeMemberSearchHistory}
+                               onClear={clearMemberSearchHistory}
+                             />
                            </div>
                            {memberSearchResults.length > 0 && (
                              <div className="flex flex-col gap-1 max-h-36 overflow-y-auto custom-scrollbar">
@@ -935,6 +1160,7 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
                                    key={i}
                                    className="flex items-center gap-2 text-left rounded-lg px-2 py-1.5 hover:bg-white/10 transition-colors group"
                                    onClick={() => {
+                                     addMemberSearchHistory(memberSearch || t.title);
                                      sendRequest('song', { title: t.title, track: t });
                                      setMemberSearch('');
                                      setMemberSearchResults([]);

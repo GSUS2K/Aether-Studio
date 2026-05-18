@@ -324,12 +324,29 @@ const LOCK_PREFS_STORAGE_KEY = 'aether.lockPrefs.v1';
 const SHORTCUTS_STORAGE_KEY = 'aether.shortcuts.v1';
 const GLOBAL_SHORTCUTS_ENABLED_STORAGE_KEY = 'aether.globalMediaShortcuts.enabled';
 const FEEDBACK_STORAGE_KEY = 'aether.feedbackOutbox.v1';
+const SEARCH_HISTORY_STORAGE_KEY = 'aether.searchHistory.v1';
+const SEARCH_HISTORY_LIMIT = 12;
+const AETHER_PROFILE_STORAGE_KEY = 'aether.profile.v1';
+const AETHER_PROFILE_API_BASE = (import.meta.env.VITE_AETHER_PROFILE_API_URL || 'https://aetherstudio.me').replace(/\/+$/, '');
 const FEEDBACK_ISSUE_URL = 'https://github.com/GSUS2K/Aether-Studio/issues/new';
 const DEFAULT_FEEDBACK_DRAFT = Object.freeze({
   type: 'Problem',
   summary: '',
   details: '',
   contact: '',
+});
+const DEFAULT_AETHER_PROFILE = Object.freeze({
+  displayName: 'Aether Listener',
+  handle: '',
+  bio: '',
+  avatarColor: '#16f7c6',
+  avatarDataUrl: '',
+  visibility: 'private',
+  publishedVisibility: 'private',
+  shareStats: true,
+  profileId: '',
+  profileSecret: '',
+  lastPublishedAt: 0,
 });
 const DEFAULT_SHORTCUTS = Object.freeze({
   playPause: 'Mod+Alt+Space',
@@ -360,6 +377,351 @@ const AUTOPLAY_MOOD_MODES = Object.freeze([
   { id: 'safe', label: 'Safe' },
   { id: 'explore', label: 'Explore' },
 ]);
+
+const sanitizeAetherProfile = (profile = {}) => {
+  const next = {
+    ...DEFAULT_AETHER_PROFILE,
+    ...(profile && typeof profile === 'object' ? profile : {}),
+  };
+  const visibility = next.visibility === 'public' || next.visibility === 'unlisted' ? next.visibility : 'private';
+  const hasLegacyPublishedState = !next.publishedVisibility && Number(next.lastPublishedAt) > 0 && visibility !== 'private';
+  return {
+    displayName: String(next.displayName || DEFAULT_AETHER_PROFILE.displayName).trim().slice(0, 32) || DEFAULT_AETHER_PROFILE.displayName,
+    handle: String(next.handle || '').toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 24),
+    bio: String(next.bio || '').trim().slice(0, 140),
+    avatarColor: /^#[0-9a-f]{6}$/i.test(String(next.avatarColor || '')) ? next.avatarColor : DEFAULT_AETHER_PROFILE.avatarColor,
+    avatarDataUrl: /^data:image\/(png|jpeg|jpg|webp);base64,/i.test(String(next.avatarDataUrl || '')) && String(next.avatarDataUrl || '').length < 180000 ? String(next.avatarDataUrl) : '',
+    visibility,
+    publishedVisibility: next.publishedVisibility === 'public' || next.publishedVisibility === 'unlisted' ? next.publishedVisibility : (hasLegacyPublishedState ? visibility : 'private'),
+    shareStats: next.shareStats !== false,
+    profileId: String(next.profileId || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80),
+    profileSecret: String(next.profileSecret || '').slice(0, 160),
+    lastPublishedAt: Number.isFinite(Number(next.lastPublishedAt)) ? Number(next.lastPublishedAt) : 0,
+  };
+};
+
+const readAetherProfile = () => {
+  if (typeof localStorage === 'undefined') return { ...DEFAULT_AETHER_PROFILE };
+  try {
+    return sanitizeAetherProfile(JSON.parse(localStorage.getItem(AETHER_PROFILE_STORAGE_KEY) || '{}'));
+  } catch {
+    return { ...DEFAULT_AETHER_PROFILE };
+  }
+};
+
+const createProfileToken = () => {
+  try {
+    if (crypto?.randomUUID) return crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
+  }
+};
+
+const ensureAetherProfileCredentials = (profile) => {
+  const clean = sanitizeAetherProfile(profile);
+  return {
+    ...clean,
+    profileId: clean.profileId || `ap_${createProfileToken().replace(/-/g, '').slice(0, 24)}`,
+    profileSecret: clean.profileSecret || `as_${createProfileToken()}_${createProfileToken()}`,
+  };
+};
+
+const getProfileLink = (profile) => {
+  const handle = sanitizeAetherProfile(profile).handle;
+  return handle ? `${AETHER_PROFILE_API_BASE}/v1/profile/handle/${handle}` : '';
+};
+
+const createPublicProfileLink = (handle) => {
+  const cleanHandle = String(handle || '').toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 24);
+  return cleanHandle ? `${AETHER_PROFILE_API_BASE}/v1/profile/handle/${cleanHandle}` : '';
+};
+
+const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onerror = () => reject(new Error('Could not prepare profile image.'));
+  reader.onload = () => resolve(String(reader.result || ''));
+  reader.readAsDataURL(blob);
+});
+
+const downloadBlob = (blob, fileName) => {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.rel = 'noopener';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+};
+
+const loadCanvasImage = (src) => new Promise((resolve, reject) => {
+  if (!src) {
+    resolve(null);
+    return;
+  }
+  const image = new Image();
+  image.onload = () => resolve(image);
+  image.onerror = () => reject(new Error('Could not render profile image.'));
+  image.src = src;
+});
+
+const createProfileShareCardBlob = async (profile, stats) => {
+  const clean = sanitizeAetherProfile(profile);
+  const canvas = document.createElement('canvas');
+  canvas.width = 1200;
+  canvas.height = 675;
+  const ctx = canvas.getContext('2d');
+  const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+  gradient.addColorStop(0, '#030706');
+  gradient.addColorStop(0.58, '#071715');
+  gradient.addColorStop(1, '#030405');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = 'rgba(22,247,198,0.07)';
+  roundRect(ctx, 62, 62, 1076, 551, 42);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(22,247,198,0.34)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  const avatarX = 112;
+  const avatarY = 110;
+  const avatarSize = 164;
+  ctx.save();
+  roundRect(ctx, avatarX, avatarY, avatarSize, avatarSize, 36);
+  ctx.clip();
+  if (clean.avatarDataUrl) {
+    try {
+      const image = await loadCanvasImage(clean.avatarDataUrl);
+      if (image) ctx.drawImage(image, avatarX, avatarY, avatarSize, avatarSize);
+    } catch {
+      ctx.fillStyle = clean.avatarColor;
+      ctx.fillRect(avatarX, avatarY, avatarSize, avatarSize);
+    }
+  } else {
+    ctx.fillStyle = clean.avatarColor;
+    ctx.fillRect(avatarX, avatarY, avatarSize, avatarSize);
+    ctx.fillStyle = '#020504';
+    ctx.font = '900 54px Inter, Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(clean.displayName || 'A').slice(0, 2).toUpperCase(), avatarX + avatarSize / 2, avatarY + avatarSize / 2);
+  }
+  ctx.restore();
+
+  ctx.fillStyle = '#16f7c6';
+  ctx.font = '900 20px Inter, Arial, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText('AETHER PROFILE', 318, 132);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '900 70px Inter, Arial, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  drawFittedText(ctx, clean.displayName || 'Aether Listener', 318, 204, 720, 70, 38);
+  ctx.fillStyle = '#16f7c6';
+  ctx.font = '800 32px Inter, Arial, sans-serif';
+  ctx.fillText(clean.handle ? `@${clean.handle}` : 'Aether listener', 320, 252);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.64)';
+  ctx.font = '500 27px Inter, Arial, sans-serif';
+  wrapCanvasText(ctx, clean.bio || 'Listening on Aether.', 112, 340, 976, 38, 2);
+
+  if (clean.shareStats) {
+    [
+      ['VAULTS', stats.vaults],
+      ['TRACKS', stats.tracks],
+      ['FAVORITES', stats.favorites],
+      ['ARTISTS', stats.artists],
+      ['LISTENS', stats.listens],
+      ['MINUTES', stats.minutes],
+    ].forEach(([label, value], index) => {
+      const x = 112 + (index % 3) * 330;
+      const y = 410 + Math.floor(index / 3) * 84;
+      ctx.fillStyle = 'rgba(0,0,0,0.28)';
+      roundRect(ctx, x, y, 288, 64, 20);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '900 29px Inter, Arial, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(String(Number(value || 0).toLocaleString()), x + 144, y + 31);
+      ctx.fillStyle = 'rgba(255,255,255,0.45)';
+      ctx.font = '900 13px Inter, Arial, sans-serif';
+      ctx.fillText(label, x + 144, y + 52);
+    });
+    if (stats.topArtist || stats.topTrack) {
+      ctx.textAlign = 'left';
+      ctx.fillStyle = 'rgba(0,0,0,0.24)';
+      roundRect(ctx, 112, 578, 976, 44, 16);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.62)';
+      ctx.font = '700 18px Inter, Arial, sans-serif';
+      const highlight = [
+        stats.topArtist ? `Top artist: ${stats.topArtist}` : '',
+        stats.topTrack ? `Top track: ${stats.topTrack}` : '',
+      ].filter(Boolean).join('  /  ');
+      drawFittedText(ctx, highlight, 136, 606, 928, 18, 14);
+    }
+  }
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = 'rgba(22,247,198,0.82)';
+  ctx.font = '900 18px Inter, Arial, sans-serif';
+  ctx.fillText('AETHER', 112, 648);
+  ctx.fillStyle = 'rgba(255,255,255,0.42)';
+  ctx.font = '500 18px Inter, Arial, sans-serif';
+  drawFittedText(ctx, getProfileLink(clean) || 'Private on this device', 220, 648, 868, 18, 14);
+
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error('Could not create profile card image.'));
+    }, 'image/png');
+  });
+};
+
+function drawFittedText(ctx, text, x, y, maxWidth, startSize, minSize = 12) {
+  const family = 'Inter, Arial, sans-serif';
+  let size = startSize;
+  const weight = String(ctx.font || '').includes('900') ? '900' : String(ctx.font || '').includes('800') ? '800' : String(ctx.font || '').includes('700') ? '700' : '500';
+  let value = String(text || '');
+  while (size > minSize) {
+    ctx.font = `${weight} ${size}px ${family}`;
+    if (ctx.measureText(value).width <= maxWidth) break;
+    size -= 2;
+  }
+  while (ctx.measureText(value).width > maxWidth && value.length > 4) {
+    value = `${value.slice(0, -4)}...`;
+  }
+  ctx.fillText(value, x, y);
+}
+
+function roundRect(ctx, x, y, width, height, radius) {
+  const r = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + width, y, x + width, y + height, r);
+  ctx.arcTo(x + width, y + height, x, y + height, r);
+  ctx.arcTo(x, y + height, x, y, r);
+  ctx.arcTo(x, y, x + width, y, r);
+  ctx.closePath();
+}
+
+function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight, maxLines = 2) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
+  let line = '';
+  let lineCount = 0;
+  words.forEach((word) => {
+    const next = line ? `${line} ${word}` : word;
+    if (ctx.measureText(next).width > maxWidth && line) {
+      if (lineCount < maxLines) ctx.fillText(line, x, y + lineCount * lineHeight);
+      line = word;
+      lineCount += 1;
+    } else {
+      line = next;
+    }
+  });
+  if (line && lineCount < maxLines) ctx.fillText(line, x, y + lineCount * lineHeight);
+}
+
+const resizeImageFileToDataUrl = (file, maxSize = 320, quality = 0.84) => new Promise((resolve, reject) => {
+  if (!file || !/^image\//i.test(file.type || '')) {
+    reject(new Error('Choose an image file.'));
+    return;
+  }
+  if (file.size > 8 * 1024 * 1024) {
+    reject(new Error('Avatar image is too large. Choose an image under 8 MB.'));
+    return;
+  }
+  const reader = new FileReader();
+  reader.onerror = () => reject(new Error('Could not read avatar image.'));
+  reader.onload = () => {
+    const image = new Image();
+    image.onerror = () => reject(new Error('Could not decode avatar image.'));
+    image.onload = () => {
+      const scale = Math.min(1, maxSize / Math.max(image.width || maxSize, image.height || maxSize));
+      const width = Math.max(1, Math.round((image.width || maxSize) * scale));
+      const height = Math.max(1, Math.round((image.height || maxSize) * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(image, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    image.src = String(reader.result || '');
+  };
+  reader.readAsDataURL(file);
+});
+
+const normalizeSearchHistoryItem = (value) => String(value || '').trim().replace(/\s+/g, ' ');
+
+const readSearchHistoryStore = () => {
+  if (typeof localStorage === 'undefined') return {};
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SEARCH_HISTORY_STORAGE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    console.warn('[Aether/Search] Failed to read search history', error);
+    return {};
+  }
+};
+
+const writeSearchHistoryStore = (store) => {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(SEARCH_HISTORY_STORAGE_KEY, JSON.stringify(store || {}));
+  } catch (error) {
+    console.warn('[Aether/Search] Failed to save search history', error);
+  }
+};
+
+const readSearchHistory = (scope) => {
+  const store = readSearchHistoryStore();
+  const list = Array.isArray(store?.[scope]) ? store[scope] : [];
+  return list.map(normalizeSearchHistoryItem).filter(Boolean).slice(0, SEARCH_HISTORY_LIMIT);
+};
+
+const pushSearchHistoryItem = (scope, query) => {
+  const normalized = normalizeSearchHistoryItem(query);
+  if (!scope || !normalized) return readSearchHistory(scope);
+  const store = readSearchHistoryStore();
+  const current = Array.isArray(store[scope]) ? store[scope] : [];
+  const next = [
+    normalized,
+    ...current
+      .map(normalizeSearchHistoryItem)
+      .filter((item) => item && item.toLowerCase() !== normalized.toLowerCase()),
+  ].slice(0, SEARCH_HISTORY_LIMIT);
+  writeSearchHistoryStore({ ...store, [scope]: next });
+  return next;
+};
+
+const removeSearchHistoryItem = (scope, query) => {
+  const normalized = normalizeSearchHistoryItem(query);
+  const store = readSearchHistoryStore();
+  const current = Array.isArray(store[scope]) ? store[scope] : [];
+  const next = current
+    .map(normalizeSearchHistoryItem)
+    .filter((item) => item && item.toLowerCase() !== normalized.toLowerCase())
+    .slice(0, SEARCH_HISTORY_LIMIT);
+  writeSearchHistoryStore({ ...store, [scope]: next });
+  return next;
+};
+
+const clearSearchHistoryScope = (scope) => {
+  const store = readSearchHistoryStore();
+  writeSearchHistoryStore({ ...store, [scope]: [] });
+  return [];
+};
 
 const ToastPortal = ({ children }) => {
   if (typeof document === 'undefined') return children;
@@ -2130,8 +2492,26 @@ const ExperienceCenterShell = memo(function ExperienceCenterShell({
   requestDestructiveConfirmation,
   showShortcutHints,
   setShowShortcutHints,
+  aetherProfile,
+  setAetherProfile,
+  profileStats,
+  onCopyProfileCard,
+  onSaveProfileCard,
+  onCopyProfileLink,
+  avatarFileInputRef,
+  onAvatarFileSelected,
+  onPublishProfile,
+  onUnpublishProfile,
+  isProfilePublishing,
 }) {
   const [page, setPage] = useState('home');
+  const [profileSearchQuery, setProfileSearchQuery] = useState('');
+  const [profileSearchResults, setProfileSearchResults] = useState([]);
+  const [selectedPublicProfile, setSelectedPublicProfile] = useState(null);
+  const [isProfileSearching, setIsProfileSearching] = useState(false);
+  const [profileUnlockPassword, setProfileUnlockPassword] = useState('');
+  const [isProfileUnlocking, setIsProfileUnlocking] = useState(false);
+  const [isProfileEditUnlocked, setIsProfileEditUnlocked] = useState(() => !lockStatus?.enabled);
   const pageHistoryRef = useRef([]);
 
   useEffect(() => {
@@ -2143,6 +2523,12 @@ const ExperienceCenterShell = memo(function ExperienceCenterShell({
       startTransition(() => setPage('home'));
     }
   }, [initialPage, open]);
+
+  useEffect(() => {
+    if (!open || page !== 'profile') return;
+    setIsProfileEditUnlocked(!lockStatus?.enabled);
+    setProfileUnlockPassword('');
+  }, [lockStatus?.enabled, open, page]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -2177,6 +2563,26 @@ const ExperienceCenterShell = memo(function ExperienceCenterShell({
     });
   }, []);
   const closeShell = useCallback(() => onClose?.(), [onClose]);
+  const searchPublicProfiles = useCallback(async () => {
+    const query = profileSearchQuery.trim();
+    if (query.length < 2) {
+      setProfileSearchResults([]);
+      return;
+    }
+    setIsProfileSearching(true);
+    try {
+      const response = await fetch(`${AETHER_PROFILE_API_BASE}/v1/profiles/search?q=${encodeURIComponent(query)}`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data?.error || 'Profile search failed.');
+      setProfileSearchResults(Array.isArray(data.profiles) ? data.profiles : []);
+      setSelectedPublicProfile(null);
+    } catch (error) {
+      flashLastAdded?.(error?.message || 'Profile search failed', 2600, 'error');
+      setProfileSearchResults([]);
+    } finally {
+      setIsProfileSearching(false);
+    }
+  }, [flashLastAdded, profileSearchQuery]);
 
   const toolPages = useMemo(() => ({
     'signal-ledger': {
@@ -2184,6 +2590,12 @@ const ExperienceCenterShell = memo(function ExperienceCenterShell({
       title: 'Signal Ledger',
       detail: 'Listening history, trends, replay stats, and protected clear controls.',
       category: 'Listening Intelligence',
+    },
+    profile: {
+      icon: User,
+      title: 'Profile',
+      detail: 'Avatar, public card, shareable listening stats, and Party identity.',
+      category: 'Identity',
     },
     'gesture-face-lab': {
       icon: Hand,
@@ -2214,6 +2626,37 @@ const ExperienceCenterShell = memo(function ExperienceCenterShell({
 
   const visibleTools = useMemo(() => Object.entries(toolPages).filter(([, item]) => !item.hidden), [toolPages]);
   const activeTool = toolPages[page];
+  const isProfileActuallyPublished = aetherProfile.publishedVisibility !== 'private' && aetherProfile.lastPublishedAt > 0;
+  const profileShareLink = aetherProfile.handle && isProfileActuallyPublished ? getProfileLink(aetherProfile) : '';
+  const profilePublishLabel = isProfilePublishing
+    ? 'Syncing...'
+    : aetherProfile.visibility === 'private'
+      ? (isProfileActuallyPublished ? 'Unpublish' : 'Private Saved')
+      : (isProfileActuallyPublished ? 'Publish Changes' : 'Publish');
+  const profileFieldsDisabled = !!lockStatus?.enabled && !isProfileEditUnlocked;
+  const profilePublishDisabled = profileFieldsDisabled || isProfilePublishing || (aetherProfile.visibility === 'private' && !isProfileActuallyPublished);
+  const profileAvatarInputId = 'aether-profile-avatar-input';
+  const unlockProfileEditing = useCallback(async (method = 'password') => {
+    if (!lockStatus?.enabled) {
+      setIsProfileEditUnlocked(true);
+      return;
+    }
+    setIsProfileUnlocking(true);
+    try {
+      const result = method === 'biometric'
+        ? await window.aether?.verifyAppLockBiometric?.()
+        : await window.aether?.verifyAppLockPassword?.(profileUnlockPassword);
+      if (result?.success) {
+        setIsProfileEditUnlocked(true);
+        setProfileUnlockPassword('');
+        flashLastAdded?.('Profile editing unlocked', 1600, 'success');
+      } else {
+        flashLastAdded?.(result?.error || 'Could not unlock profile editing', 2400, 'error');
+      }
+    } finally {
+      setIsProfileUnlocking(false);
+    }
+  }, [flashLastAdded, lockStatus?.enabled, profileUnlockPassword]);
 
   const pageMeta = {
     home: { eyebrow: 'Control Surface', title: 'Experience Center', detail: 'Modes, visuals, privacy, and tools in one control hub.' },
@@ -2413,6 +2856,456 @@ const ExperienceCenterShell = memo(function ExperienceCenterShell({
                   </motion.div>
                 )}
 
+                {page === 'profile' && (
+                  <motion.div key="experience-profile" initial={{ opacity: 0, x: 18 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -18 }} transition={{ duration: 0.16 }}>
+                    {selectedPublicProfile ? (
+                      <div className="grid gap-4">
+                        <button
+                          onClick={() => setSelectedPublicProfile(null)}
+                          className="inline-flex w-fit items-center gap-2 rounded-xl border border-white/10 bg-white/[0.035] px-3 py-2 text-[10px] font-black uppercase tracking-[0.14em] text-white/58 transition-colors hover:border-brand-accent/30 hover:text-brand-accent"
+                        >
+                          <ChevronLeft size={13} />
+                          Back to Public Profiles
+                        </button>
+                        <section className="overflow-hidden rounded-[1.75rem] border border-brand-accent/20 bg-[radial-gradient(circle_at_top_left,rgba(22,247,198,0.16),transparent_34%),rgba(22,247,198,0.045)] p-6">
+                          <div className="flex flex-col gap-5 md:flex-row md:items-start">
+                            <div className="flex h-28 w-28 shrink-0 items-center justify-center overflow-hidden rounded-[2rem] border border-white/14 text-4xl font-black text-black shadow-[0_20px_50px_rgba(0,0,0,0.35)]" style={{ background: selectedPublicProfile.avatarColor || '#16f7c6' }}>
+                              {selectedPublicProfile.avatarDataUrl ? <img src={selectedPublicProfile.avatarDataUrl} alt="" className="h-full w-full object-cover" /> : String(selectedPublicProfile.displayName || 'A').slice(0, 2).toUpperCase()}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Public Profile</div>
+                              <div className="mt-2 text-4xl font-black uppercase tracking-tight text-white">{selectedPublicProfile.displayName || 'Aether Listener'}</div>
+                              <div className="mt-1 text-[11px] font-black uppercase tracking-[0.18em] text-brand-accent/80">{selectedPublicProfile.handle ? `@${selectedPublicProfile.handle}` : 'public profile'}</div>
+                              <p className="mt-4 max-w-3xl text-base leading-7 text-white/58">{selectedPublicProfile.bio || 'No bio shared yet.'}</p>
+                            </div>
+                            {selectedPublicProfile.handle && (
+                              <button
+                                onClick={async () => {
+                                  const link = createPublicProfileLink(selectedPublicProfile.handle);
+                                  if (window.aether?.clipboard?.writeText) await window.aether.clipboard.writeText(link);
+                                  else await navigator.clipboard.writeText(link);
+                                  flashLastAdded?.('Profile link copied', 1600, 'success');
+                                }}
+                                className="inline-flex shrink-0 items-center justify-center gap-2 rounded-2xl border border-brand-accent/30 bg-brand-accent/12 px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black"
+                              >
+                                <Link2 size={13} />
+                                Copy Link
+                              </button>
+                            )}
+                          </div>
+                          {selectedPublicProfile.stats ? (
+                            <>
+                              <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                                {[
+                                  ['Vaults', selectedPublicProfile.stats.vaults],
+                                  ['Tracks', selectedPublicProfile.stats.tracks],
+                                  ['Favorites', selectedPublicProfile.stats.favorites],
+                                  ['Artists', selectedPublicProfile.stats.artists],
+                                  ['Listens', selectedPublicProfile.stats.listens],
+                                  ['Sessions', selectedPublicProfile.stats.sessions],
+                                  ['Minutes', selectedPublicProfile.stats.minutes],
+                                ].map(([label, value]) => (
+                                  <div key={label} className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                                    <div className="text-2xl font-black text-white">{Number(value || 0).toLocaleString()}</div>
+                                    <div className="mt-1 text-[9px] font-black uppercase tracking-[0.16em] text-white/35">{label}</div>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                                  <div className="text-[9px] font-black uppercase tracking-[0.2em] text-brand-accent">Top Artist</div>
+                                  <div className="mt-2 truncate text-lg font-black uppercase tracking-tight text-white">{selectedPublicProfile.stats.topArtist || 'Not shared yet'}</div>
+                                </div>
+                                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                                  <div className="text-[9px] font-black uppercase tracking-[0.2em] text-brand-accent">Top Track</div>
+                                  <div className="mt-2 truncate text-lg font-black uppercase tracking-tight text-white">{selectedPublicProfile.stats.topTrack || 'Not shared yet'}</div>
+                                </div>
+                              </div>
+                            </>
+                          ) : (
+                            <div className="mt-6 rounded-2xl border border-white/10 bg-black/20 p-5 text-sm text-white/48">This listener has hidden their listening stats.</div>
+                          )}
+                        </section>
+                      </div>
+                    ) : (
+                    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+                      <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                            <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Identity</div>
+                            <div className="mt-2 text-2xl font-black uppercase tracking-tight text-white">Aether Profile</div>
+                            <div className="mt-1 text-sm leading-6 text-white/42">Used for Party identity, share images, and public profile discovery. Private profiles stay only on this device.</div>
+                        {lockStatus?.enabled ? (
+                          <div className={`mt-5 rounded-[1.25rem] border p-4 ${isProfileEditUnlocked ? 'border-brand-accent/20 bg-brand-accent/[0.055]' : 'border-yellow-300/20 bg-yellow-300/[0.055]'}`}>
+                            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-white/48">{isProfileEditUnlocked ? 'Editing Unlocked' : 'Profile Editing Locked'}</div>
+                            <div className="mt-1 text-sm leading-6 text-white/50">{isProfileEditUnlocked ? 'Profile changes are available until you close this page.' : 'Use your App Lock password or Touch ID before changing profile identity or publishing state.'}</div>
+                            {!isProfileEditUnlocked && (
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                <input
+                                  type="password"
+                                  value={profileUnlockPassword}
+                                  onChange={(event) => setProfileUnlockPassword(event.target.value)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter') unlockProfileEditing('password');
+                                  }}
+                                  className="min-w-[220px] flex-1 rounded-2xl border border-white/10 bg-black/24 px-4 py-3 text-sm font-bold text-white outline-none transition-all focus:border-brand-accent/50"
+                                  placeholder="App Lock password"
+                                />
+                                <button
+                                  onClick={() => unlockProfileEditing('password')}
+                                  disabled={isProfileUnlocking || !profileUnlockPassword}
+                                  className="rounded-2xl border border-brand-accent/30 bg-brand-accent/12 px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black disabled:opacity-45"
+                                >
+                                  {isProfileUnlocking ? 'Checking...' : 'Unlock'}
+                                </button>
+                                {lockStatus?.touchIdEnabled && window.aether?.verifyAppLockBiometric && (
+                                  <button
+                                    onClick={() => unlockProfileEditing('biometric')}
+                                    disabled={isProfileUnlocking}
+                                    className="rounded-2xl border border-white/10 bg-white/[0.035] px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-white/58 transition-all hover:border-brand-accent/30 hover:text-brand-accent disabled:opacity-45"
+                                  >
+                                    Touch ID
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-[1.25rem] border border-white/10 bg-white/[0.03] p-4">
+                            <div>
+                              <div className="text-[10px] font-black uppercase tracking-[0.2em] text-white/42">Edit Protection Off</div>
+                              <div className="mt-1 text-sm leading-6 text-white/44">Enable App Lock if you want password or Touch ID before profile changes.</div>
+                            </div>
+                            <button
+                              onClick={() => (isStandalone ? navigate('app-lock') : flashLastAdded?.('App Lock is available in the desktop build', 2200, 'warning'))}
+                              className="rounded-2xl border border-brand-accent/25 bg-brand-accent/10 px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black"
+                            >
+                              Set App Lock
+                            </button>
+                          </div>
+                        )}
+                        <input id={profileAvatarInputId} ref={avatarFileInputRef} type="file" accept="image/*" className="sr-only" onChange={onAvatarFileSelected} disabled={profileFieldsDisabled} />
+                        <div className="mt-5 rounded-[1.35rem] border border-white/10 bg-black/18 p-4">
+                          <div className="grid gap-4 sm:grid-cols-[88px_minmax(0,1fr)]">
+                          <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-3xl border border-white/14 text-2xl font-black text-black" style={{ background: aetherProfile.avatarColor }}>
+                            {aetherProfile.avatarDataUrl ? (
+                              <img src={aetherProfile.avatarDataUrl} alt="" className="h-full w-full object-cover" />
+                            ) : (
+                              String(aetherProfile.displayName || 'A').trim().slice(0, 2).toUpperCase()
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-white/35">Avatar</div>
+                            <div className="mt-1 text-sm leading-6 text-white/52">Upload any picture. Aether resizes it locally before saving, so your profile stays fast.</div>
+                          </div>
+                          </div>
+                          <div className="mt-4 flex flex-wrap gap-2">
+                            <label
+                              htmlFor={profileAvatarInputId}
+                              aria-disabled={profileFieldsDisabled}
+                              className={`cursor-pointer rounded-2xl border border-brand-accent/30 bg-brand-accent/12 px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black ${profileFieldsDisabled ? 'pointer-events-none opacity-45' : ''}`}
+                            >
+                              Upload Picture
+                            </label>
+                            {aetherProfile.avatarDataUrl && (
+                              <button
+                                onClick={() => setAetherProfile((prev) => ({ ...prev, avatarDataUrl: '' }))}
+                                disabled={profileFieldsDisabled}
+                                className="rounded-2xl border border-white/10 bg-white/[0.035] px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-white/52 transition-all hover:border-red-400/35 hover:text-red-300"
+                              >
+                                Remove
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <div className="mt-5 grid gap-4 md:grid-cols-2">
+                          <label className="block">
+                            <span className="mb-2 block text-[9px] font-black uppercase tracking-[0.2em] text-white/35">Display Name</span>
+                            <input
+                              value={aetherProfile.displayName}
+                              onChange={(event) => setAetherProfile((prev) => sanitizeAetherProfile({ ...prev, displayName: event.target.value }))}
+                              disabled={profileFieldsDisabled}
+                              className="w-full rounded-2xl border border-white/10 bg-black/24 px-4 py-3 text-sm font-bold text-white outline-none transition-all focus:border-brand-accent/50"
+                              placeholder="Your listening name"
+                              maxLength={32}
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="mb-2 block text-[9px] font-black uppercase tracking-[0.2em] text-white/35">Handle</span>
+                            <div className="flex items-center rounded-2xl border border-white/10 bg-black/24 px-4 py-3 focus-within:border-brand-accent/50">
+                              <span className="text-white/30">@</span>
+                              <input
+                                value={aetherProfile.handle}
+                                onChange={(event) => setAetherProfile((prev) => sanitizeAetherProfile({ ...prev, handle: event.target.value }))}
+                                disabled={profileFieldsDisabled}
+                                className="min-w-0 flex-1 bg-transparent text-sm font-bold text-white outline-none"
+                                placeholder="handle"
+                                maxLength={24}
+                              />
+                            </div>
+                          </label>
+                          <label className="block md:col-span-2">
+                            <span className="mb-2 block text-[9px] font-black uppercase tracking-[0.2em] text-white/35">Bio</span>
+                            <textarea
+                              value={aetherProfile.bio}
+                              onChange={(event) => setAetherProfile((prev) => sanitizeAetherProfile({ ...prev, bio: event.target.value }))}
+                              disabled={profileFieldsDisabled}
+                              className="min-h-24 w-full resize-none rounded-2xl border border-white/10 bg-black/24 px-4 py-3 text-sm font-semibold leading-6 text-white outline-none transition-all focus:border-brand-accent/50"
+                              placeholder="A small note for your share card"
+                              maxLength={140}
+                            />
+                          </label>
+                        </div>
+                        <div className="mt-5 grid gap-3 md:grid-cols-3">
+                          {['#16f7c6', '#ff6fb1', '#8aa7ff', '#ffd166', '#a78bfa', '#67e8f9'].map((color) => (
+                            <button
+                              key={color}
+                              onClick={() => setAetherProfile((prev) => sanitizeAetherProfile({ ...prev, avatarColor: color }))}
+                              disabled={profileFieldsDisabled}
+                              className={`h-11 rounded-2xl border transition-all ${aetherProfile.avatarColor === color ? 'border-white/60 shadow-[0_0_20px_rgba(255,255,255,0.14)]' : 'border-white/10 hover:border-white/28'}`}
+                              style={{ background: `linear-gradient(135deg, ${color}, rgba(255,255,255,0.08))` }}
+                              title={`Use ${color}`}
+                            />
+                          ))}
+                        </div>
+                        <div className="mt-5 grid gap-3 md:grid-cols-3">
+                          {[
+                            ['private', 'Private'],
+                            ['unlisted', 'Unlisted'],
+                            ['public', 'Public'],
+                          ].map(([id, label]) => (
+                            <button
+                              key={id}
+                              onClick={() => setAetherProfile((prev) => sanitizeAetherProfile({ ...prev, visibility: id }))}
+                              disabled={profileFieldsDisabled}
+                              className={`rounded-2xl border px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] transition-all ${aetherProfile.visibility === id ? 'border-brand-accent/45 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/[0.035] text-white/62 hover:border-brand-accent/30 hover:text-brand-accent'}`}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                          <button
+                            onClick={() => setAetherProfile((prev) => sanitizeAetherProfile({ ...prev, shareStats: !prev.shareStats }))}
+                            disabled={profileFieldsDisabled}
+                            className={`rounded-2xl border px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] transition-all ${aetherProfile.shareStats ? 'border-brand-accent/45 bg-brand-accent/14 text-brand-accent' : 'border-white/10 bg-white/[0.035] text-white/62 hover:border-brand-accent/30 hover:text-brand-accent'}`}
+                          >
+                            Stats {aetherProfile.shareStats ? 'Included' : 'Hidden'}
+                          </button>
+                          <button
+                            onClick={() => flashLastAdded?.('Profile saved on this device', 1600, 'success')}
+                            disabled={profileFieldsDisabled}
+                            className="rounded-2xl border border-white/10 bg-white/[0.035] px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-white/58 transition-all hover:border-brand-accent/30 hover:text-brand-accent disabled:opacity-45"
+                          >
+                            Save Local
+                          </button>
+                          <button
+                            onClick={aetherProfile.visibility === 'private' ? onUnpublishProfile : onPublishProfile}
+                            disabled={profilePublishDisabled}
+                            className="rounded-2xl border border-brand-accent/35 bg-brand-accent/14 px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black disabled:opacity-45"
+                          >
+                            {profilePublishLabel}
+                          </button>
+                        </div>
+                        <div className="mt-3 text-[11px] leading-5 text-white/32">
+                          Changes save locally as you type. Press Publish to update the public profile. Switch to Private and press Unpublish to remove it from sharing.
+                        </div>
+                      </section>
+                      <section className="rounded-[1.5rem] border border-brand-accent/20 bg-brand-accent/[0.055] p-5">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-3xl border border-white/18 text-2xl font-black text-black" style={{ background: aetherProfile.avatarColor }}>
+                            {aetherProfile.avatarDataUrl ? (
+                              <img src={aetherProfile.avatarDataUrl} alt="" className="h-full w-full object-cover" />
+                            ) : (
+                              String(aetherProfile.displayName || 'A').trim().slice(0, 2).toUpperCase()
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="truncate text-xl font-black uppercase tracking-tight text-white">{aetherProfile.displayName}</div>
+                            <div className="truncate text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent/80">{aetherProfile.handle ? `@${aetherProfile.handle}` : 'No handle yet'}</div>
+                          </div>
+                        </div>
+                        <p className="mt-4 text-sm leading-6 text-white/58">{aetherProfile.bio || 'No bio yet.'}</p>
+                        {aetherProfile.shareStats && (
+                          <div className="mt-5 grid grid-cols-2 gap-2">
+                            {[
+                              ['Vaults', profileStats.vaults],
+                              ['Tracks', profileStats.tracks],
+                              ['Favorites', profileStats.favorites],
+                              ['Artists', profileStats.artists],
+                              ['Listens', profileStats.listens],
+                              ['Minutes', profileStats.minutes],
+                            ].map(([label, value]) => (
+                              <div key={label} className="rounded-2xl border border-white/10 bg-black/18 p-3 text-center">
+                                <div className="text-lg font-black text-white">{Number(value || 0).toLocaleString()}</div>
+                                <div className="text-[8px] font-black uppercase tracking-[0.16em] text-white/35">{label}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <div className="mt-5 overflow-hidden rounded-[1.25rem] border border-white/10 bg-[linear-gradient(135deg,rgba(22,247,198,0.12),rgba(255,255,255,0.035))] p-4">
+                          <div className="text-[8px] font-black uppercase tracking-[0.22em] text-brand-accent/80">Share Preview</div>
+                          <div className="mt-3 flex items-center gap-3">
+                            <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-2xl text-sm font-black text-black" style={{ background: aetherProfile.avatarColor }}>
+                              {aetherProfile.avatarDataUrl ? <img src={aetherProfile.avatarDataUrl} alt="" className="h-full w-full object-cover" /> : String(aetherProfile.displayName || 'A').slice(0, 2).toUpperCase()}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-black uppercase tracking-tight text-white">{aetherProfile.displayName}</div>
+                              <div className="truncate text-[9px] font-black uppercase tracking-[0.16em] text-brand-accent/75">{aetherProfile.handle ? `@${aetherProfile.handle}` : 'No handle yet'}</div>
+                            </div>
+                          </div>
+                          <div className="mt-3 text-[11px] leading-5 text-white/48">{aetherProfile.bio || 'No bio yet.'}</div>
+                          {aetherProfile.shareStats && (
+                            <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                              {[
+                                ['Vaults', profileStats.vaults],
+                                ['Tracks', profileStats.tracks],
+                                ['Likes', profileStats.favorites],
+                              ].map(([label, value]) => (
+                                <div key={label} className="rounded-xl border border-white/10 bg-black/18 px-2 py-2">
+                                  <div className="text-sm font-black text-white">{Number(value || 0).toLocaleString()}</div>
+                                  <div className="text-[7px] font-black uppercase tracking-[0.14em] text-white/32">{label}</div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          onClick={onCopyProfileCard}
+                          className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-brand-accent/35 bg-brand-accent/14 px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black"
+                        >
+                          <Copy size={13} />
+                          Copy Share Image
+                        </button>
+                        <button
+                          onClick={onSaveProfileCard}
+                          className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-white/10 bg-black/18 px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-white/58 transition-all hover:border-brand-accent/30 hover:text-brand-accent"
+                        >
+                          <Download size={13} />
+                          Save PNG
+                        </button>
+                        {profileShareLink && (
+                          <button
+                            onClick={onCopyProfileLink}
+                            className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-white/10 bg-black/18 px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-white/58 transition-all hover:border-brand-accent/30 hover:text-brand-accent"
+                          >
+                            <Link2 size={13} />
+                            Copy Profile Link
+                          </button>
+                        )}
+                        {profileShareLink && (
+                          <button
+                            onClick={onCopyProfileLink}
+                            className="mt-3 block w-full break-all rounded-2xl border border-white/10 bg-black/18 p-3 text-left text-[10px] font-mono leading-5 text-white/42 transition-colors hover:border-brand-accent/30 hover:text-brand-accent"
+                            title="Copy profile link"
+                          >
+                            {profileShareLink}
+                          </button>
+                        )}
+                      </section>
+                      <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5 xl:col-span-2">
+                        {selectedPublicProfile ? (
+                          <div>
+                            <button
+                              onClick={() => setSelectedPublicProfile(null)}
+                              className="mb-4 inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.035] px-3 py-2 text-[10px] font-black uppercase tracking-[0.14em] text-white/58 transition-colors hover:border-brand-accent/30 hover:text-brand-accent"
+                            >
+                              <ChevronLeft size={13} />
+                              Back to Results
+                            </button>
+                            <div className="rounded-[1.35rem] border border-brand-accent/18 bg-brand-accent/[0.055] p-5">
+                              <div className="flex flex-wrap items-start gap-4">
+                                <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-3xl text-2xl font-black text-black" style={{ background: selectedPublicProfile.avatarColor || '#16f7c6' }}>
+                                  {selectedPublicProfile.avatarDataUrl ? <img src={selectedPublicProfile.avatarDataUrl} alt="" className="h-full w-full object-cover" /> : String(selectedPublicProfile.displayName || 'A').slice(0, 2).toUpperCase()}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-2xl font-black uppercase tracking-tight text-white">{selectedPublicProfile.displayName}</div>
+                                  <div className="text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent/80">{selectedPublicProfile.handle ? `@${selectedPublicProfile.handle}` : 'public profile'}</div>
+                                  <p className="mt-3 max-w-2xl text-sm leading-6 text-white/56">{selectedPublicProfile.bio || 'No bio shared yet.'}</p>
+                                </div>
+                              </div>
+                              {selectedPublicProfile.stats && (
+                                <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                                  {[
+                                    ['Vaults', selectedPublicProfile.stats.vaults],
+                                    ['Tracks', selectedPublicProfile.stats.tracks],
+                                    ['Favorites', selectedPublicProfile.stats.favorites],
+                                  ].map(([label, value]) => (
+                                    <div key={label} className="rounded-2xl border border-white/10 bg-black/18 p-4 text-center">
+                                      <div className="text-2xl font-black text-white">{value}</div>
+                                      <div className="text-[9px] font-black uppercase tracking-[0.16em] text-white/35">{label}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              {selectedPublicProfile.handle && (
+                                <button
+                                  onClick={async () => {
+                                    const link = `${AETHER_PROFILE_API_BASE}/v1/profile/handle/${selectedPublicProfile.handle}`;
+                                    if (window.aether?.clipboard?.writeText) await window.aether.clipboard.writeText(link);
+                                    else await navigator.clipboard.writeText(link);
+                                    flashLastAdded?.('Profile link copied', 1600, 'success');
+                                  }}
+                                  className="mt-5 inline-flex items-center gap-2 rounded-2xl border border-brand-accent/30 bg-brand-accent/12 px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black"
+                                >
+                                  <Link2 size={13} />
+                                  Copy Profile Link
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="flex flex-wrap items-end gap-3">
+                              <div className="min-w-[220px] flex-1">
+                                <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent">Public Profiles</div>
+                                <div className="mt-1 text-sm text-white/42">Search profiles that other users marked Public. Click a result to open the profile page here.</div>
+                              </div>
+                              <div className="flex min-w-[260px] flex-1 items-center gap-2 rounded-2xl border border-white/10 bg-black/24 px-4 py-3 focus-within:border-brand-accent/50">
+                                <Search size={14} className="shrink-0 text-white/32" />
+                                <input
+                                  value={profileSearchQuery}
+                                  onChange={(event) => setProfileSearchQuery(event.target.value)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter') {
+                                      event.preventDefault();
+                                      searchPublicProfiles();
+                                    }
+                                  }}
+                                  className="min-w-0 flex-1 bg-transparent text-sm font-bold text-white outline-none"
+                                  placeholder="Search handles or names"
+                                />
+                                <button
+                                  onClick={searchPublicProfiles}
+                                  disabled={isProfileSearching}
+                                  className="rounded-xl border border-brand-accent/25 bg-brand-accent/10 px-3 py-2 text-[9px] font-black uppercase tracking-[0.14em] text-brand-accent disabled:opacity-45"
+                                >
+                                  {isProfileSearching ? 'Searching...' : 'Search'}
+                                </button>
+                              </div>
+                            </div>
+                            {profileSearchResults.length > 0 && (
+                              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                {profileSearchResults.map((profile) => (
+                                  <button key={profile.id || profile.handle} onClick={() => setSelectedPublicProfile(profile)} className="flex items-center gap-3 rounded-2xl border border-white/10 bg-black/18 p-3 text-left transition-all hover:border-brand-accent/30 hover:bg-brand-accent/[0.05]">
+                                    <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-2xl text-sm font-black text-black" style={{ background: profile.avatarColor || '#16f7c6' }}>
+                                      {profile.avatarDataUrl ? <img src={profile.avatarDataUrl} alt="" className="h-full w-full object-cover" /> : String(profile.displayName || 'A').slice(0, 2).toUpperCase()}
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                      <div className="truncate text-sm font-black text-white">{profile.displayName}</div>
+                                      <div className="truncate text-[10px] font-bold uppercase tracking-[0.14em] text-brand-accent/70">{profile.handle ? `@${profile.handle}` : 'public profile'}</div>
+                                      <div className="mt-1 truncate text-[10px] text-white/34">
+                                        {profile.stats ? `${profile.stats.vaults} vaults - ${profile.stats.tracks} tracks - ${profile.stats.favorites} favorites` : 'Listening stats hidden'}
+                                      </div>
+                                    </div>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </section>
+                    </div>
+                    )}
+                  </motion.div>
+                )}
+
                 {page === 'gesture-face-lab' && (
                   <motion.div key="experience-gesture-face-lab" initial={{ opacity: 0, x: 18 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -18 }} transition={{ duration: 0.16 }}>
                     <ExperienceGestureFaceLabPage isGestureControlEnabled={isGestureControlEnabled} setIsGestureControlEnabled={setIsGestureControlEnabled} isFaceControlEnabled={isFaceControlEnabled} setIsFaceControlEnabled={setIsFaceControlEnabled} faceControlStatus={faceControlStatus} faceControlSignal={faceControlSignal} cameraHandSignal={cameraHandSignal} setLastAdded={flashLastAdded} />
@@ -2452,24 +3345,24 @@ const SecondaryNowPlayingStrip = memo(function SecondaryNowPlayingStrip({
   const imageSrc = thumbnail && getProxyUrl ? getProxyUrl(thumbnail) : thumbnail;
 
   return (
-    <div className={`min-w-0 items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-2 shadow-[0_12px_36px_rgba(0,0,0,0.22)] ${className}`}>
-      <div className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-black/30 text-brand-accent">
+    <div className={`min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-2 shadow-[0_12px_36px_rgba(0,0,0,0.22)] ${className}`}>
+      <div className="relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-black/30 text-brand-accent">
         {imageSrc ? (
           <img src={imageSrc} alt="" className="h-full w-full object-cover" loading="lazy" />
         ) : (
-          <Music size={15} />
+          <Music size={14} />
         )}
         <span className={`absolute bottom-1 right-1 h-2 w-2 rounded-full border border-black/70 ${isPlaying ? 'animate-pulse bg-brand-accent' : 'bg-white/35'}`} />
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="shrink-0 text-[8px] font-black uppercase tracking-[0.22em] text-brand-accent/70">{isPlaying ? 'Playing' : title ? 'Paused' : 'Now'}</span>
+          <span className="shrink-0 text-[7px] font-black uppercase tracking-[0.18em] text-brand-accent/70">{isPlaying ? 'Playing' : title ? 'Paused' : 'Now'}</span>
           <span className="h-px flex-1 bg-white/8" />
         </div>
-        <div className="mt-0.5 truncate text-[12px] font-black uppercase tracking-tight text-white/82">
+        <div className="mt-0.5 truncate text-[11px] font-black uppercase tracking-tight text-white/82">
           {title || 'Nothing playing'}
         </div>
-        <div className="truncate text-[9px] font-bold uppercase tracking-[0.18em] text-white/38">
+        <div className="truncate text-[8px] font-bold uppercase tracking-[0.14em] text-white/38">
           {artist || (title ? 'Unknown artist' : 'Queue a track to see it here')}
         </div>
       </div>
@@ -2855,6 +3748,69 @@ const ShortcutHint = memo(function ShortcutHint({ label, className = '', title =
   );
 });
 
+const SearchHistoryDropdown = memo(function SearchHistoryDropdown({
+  visible,
+  history,
+  query,
+  label = 'Recent searches',
+  onPick,
+  onRemove,
+  onClear,
+}) {
+  const normalizedQuery = normalizeSearchHistoryItem(query).toLowerCase();
+  const matches = useMemo(() => {
+    const list = Array.isArray(history) ? history : [];
+    if (!normalizedQuery) return list;
+    return list.filter((item) => item.toLowerCase().includes(normalizedQuery));
+  }, [history, normalizedQuery]);
+
+  if (!visible || matches.length === 0) return null;
+
+  return (
+    <div
+      className="absolute left-0 right-0 top-[calc(100%+0.55rem)] z-[90] overflow-hidden rounded-2xl border border-brand-accent/18 bg-[#050908]/95 shadow-[0_18px_55px_rgba(0,0,0,0.55)] backdrop-blur-xl"
+      onMouseDown={(event) => event.preventDefault()}
+    >
+      <div className="flex items-center justify-between border-b border-white/8 px-4 py-2.5">
+        <span className="text-[9px] font-black uppercase tracking-[0.2em] text-white/38">{label}</span>
+        <button
+          type="button"
+          onClick={onClear}
+          className="rounded-full border border-white/8 px-2.5 py-1 text-[8px] font-black uppercase tracking-[0.16em] text-white/38 transition-all hover:border-red-400/35 hover:bg-red-500/10 hover:text-red-300"
+        >
+          Clear
+        </button>
+      </div>
+      <div className="max-h-64 overflow-y-auto p-1.5 custom-scrollbar">
+        {matches.map((item) => (
+          <div
+            key={item}
+            className="group flex items-center gap-2 rounded-xl px-2.5 py-2 text-left transition-all hover:bg-brand-accent/[0.08]"
+          >
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-center gap-2 text-left"
+              onClick={() => onPick(item)}
+            >
+              <Clock size={13} className="shrink-0 text-brand-accent/65" />
+              <span className="truncate text-[12px] font-bold text-white/78 group-hover:text-white">{item}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onRemove(item)}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/8 bg-white/[0.03] text-white/28 opacity-70 transition-all hover:border-red-400/35 hover:bg-red-500/10 hover:text-red-300 group-hover:opacity-100"
+              title={`Remove "${item}" from search history`}
+              aria-label={`Remove ${item} from search history`}
+            >
+              <X size={12} />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+});
+
 const HeaderSearchBox = memo(function HeaderSearchBox({
   searchQuery,
   isSearching,
@@ -2867,8 +3823,14 @@ const HeaderSearchBox = memo(function HeaderSearchBox({
   inputRef,
   commandPaletteShortcutLabel = '',
   showShortcutHints = true,
+  searchHistory = [],
+  historyLabel = 'Recent searches',
+  onHistoryPick,
+  onHistoryRemove,
+  onHistoryClear,
 }) {
   const [draft, setDraft] = useState(searchQuery || '');
+  const [isFocused, setIsFocused] = useState(false);
 
   useEffect(() => {
     startTransition(() => setDraft(searchQuery || ''));
@@ -2889,6 +3851,14 @@ const HeaderSearchBox = memo(function HeaderSearchBox({
     onClear();
   }, [onClear]);
 
+  const pickHistoryItem = useCallback((value) => {
+    const normalized = normalizeSearchHistoryItem(value);
+    if (!normalized) return;
+    setDraft(normalized);
+    setIsFocused(false);
+    (onHistoryPick || onSearch)(normalized);
+  }, [onHistoryPick, onSearch]);
+
   return (
     <form onSubmit={submitSearch} className="relative w-full group no-drag" data-no-maximize="true">
       <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-brand-text-dim group-focus-within:text-brand-accent z-10 transition-colors" size={18} />
@@ -2900,6 +3870,8 @@ const HeaderSearchBox = memo(function HeaderSearchBox({
         value={draft}
         disabled={disabled}
         onChange={(event) => setDraft(event.target.value)}
+        onFocus={() => setIsFocused(true)}
+        onBlur={() => window.setTimeout(() => setIsFocused(false), 120)}
         onKeyDown={(event) => {
           if (event.key === 'Escape' && hasLocalSearchState) {
             event.preventDefault();
@@ -2938,6 +3910,15 @@ const HeaderSearchBox = memo(function HeaderSearchBox({
           </button>
         )}
       </div>
+      <SearchHistoryDropdown
+        visible={!disabled && isFocused}
+        history={searchHistory}
+        query={draft}
+        label={historyLabel}
+        onPick={pickHistoryItem}
+        onRemove={onHistoryRemove}
+        onClear={onHistoryClear}
+      />
     </form>
   );
 });
@@ -5406,6 +6387,17 @@ function App() {
   }, [refreshLockRecoveryStatus]);
 
   const [auth, setAuth] = useState(null);
+  const [aetherProfile, setAetherProfileState] = useState(readAetherProfile);
+  const [isProfilePublishing, setIsProfilePublishing] = useState(false);
+  const avatarFileInputRef = useRef(null);
+  const setAetherProfile = useCallback((valueOrUpdater) => {
+    setAetherProfileState((prev) => {
+      const rawNext = typeof valueOrUpdater === 'function' ? valueOrUpdater(prev) : valueOrUpdater;
+      const next = sanitizeAetherProfile(rawNext);
+      try { localStorage.setItem(AETHER_PROFILE_STORAGE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
   const discordSdkRef = useRef(null);
   const [queue, setQueue] = useState([]);
   const [downloadedTracks, setDownloadedTracks] = useState([]);
@@ -5624,6 +6616,7 @@ function App() {
   const [spotifyImportPlaylistName, setSpotifyImportPlaylistName] = useState('');
   const [spotifyImportProgress, setSpotifyImportProgress] = useState({ stage: 'idle', progress: 0, message: '' });
   const [isSpotifyImporting, setIsSpotifyImporting] = useState(false);
+  const [isLocalMediaImporting, setIsLocalMediaImporting] = useState(false);
   const [spotifyImportLogs, setSpotifyImportLogs] = useState([]);
   const [isVaultImporting, setIsVaultImporting] = useState(false);
   const [isShortcutSettingsSaving, setIsShortcutSettingsSaving] = useState(false);
@@ -5670,6 +6663,28 @@ function App() {
     }
   });
   const [offlineLibrarySearchTerm, setOfflineLibrarySearchTerm] = useState('');
+  const [searchHistoryByScope, setSearchHistoryByScope] = useState(() => ({
+    online: readSearchHistory('online'),
+    offline: readSearchHistory('offline'),
+  }));
+  const commitSearchHistory = useCallback((scope, query) => {
+    const next = pushSearchHistoryItem(scope, query);
+    setSearchHistoryByScope((prev) => ({ ...prev, [scope]: next }));
+    return next;
+  }, []);
+  const discardSearchHistoryItem = useCallback((scope, query) => {
+    const next = removeSearchHistoryItem(scope, query);
+    setSearchHistoryByScope((prev) => ({ ...prev, [scope]: next }));
+  }, []);
+  const clearSearchHistoryForScope = useCallback((scope) => {
+    const next = clearSearchHistoryScope(scope);
+    setSearchHistoryByScope((prev) => ({ ...prev, [scope]: next }));
+  }, []);
+  const handleOfflineLibrarySearch = useCallback((query) => {
+    const normalized = normalizeSearchHistoryItem(query);
+    setOfflineLibrarySearchTerm(normalized);
+    if (normalized) commitSearchHistory('offline', normalized);
+  }, [commitSearchHistory]);
   const [isAutoplayEnabled, setIsAutoplayEnabled] = useState(false);
   const [autoplayMoodMode, setAutoplayMoodMode] = useState('flow');
   const [isAutoplayMenuOpen, setIsAutoplayMenuOpen] = useState(false);
@@ -11375,7 +12390,7 @@ function App() {
       setIsLockModalOpen(false);
       return true;
     }
-    if (isSpotifyImportOpen && !isSpotifyImporting) {
+    if (isSpotifyImportOpen && !(isSpotifyImporting || isLocalMediaImporting)) {
       setIsSpotifyImportOpen(false);
       return true;
     }
@@ -11422,6 +12437,7 @@ function App() {
     isLockBusy,
     isLockModalOpen,
     isLooksPanelOpen,
+    isLocalMediaImporting,
     isLyricsExpanded,
     isManualLyricsEditorOpen,
     isManualLyricsRawEditorOpen,
@@ -11568,6 +12584,172 @@ function App() {
   }, []);
 
   const favoriteTracksList = useMemo(() => Object.values(favoriteTracks || {}).filter(Boolean), [favoriteTracks]);
+  const profileStats = useMemo(() => {
+    const uniqueTracks = new Set();
+    const artistNames = new Set();
+    Object.values(playlists || {}).forEach((tracks) => {
+      (Array.isArray(tracks) ? tracks : []).forEach((track) => {
+        const key = normalizeTrackIdentity(track) || track?.id || track?.youtubeId || track?.title;
+        if (key) uniqueTracks.add(key);
+        const artist = String(track?.author || track?.artist || '').trim();
+        if (artist) artistNames.add(artist.toLowerCase());
+      });
+    });
+    favoriteTracksList.forEach((track) => {
+      const key = normalizeTrackIdentity(track) || track?.id || track?.youtubeId || track?.title;
+      if (key) uniqueTracks.add(key);
+      const artist = String(track?.author || track?.artist || '').trim();
+      if (artist) artistNames.add(artist.toLowerCase());
+    });
+    let ledger = createPlaybackLedgerData();
+    try {
+      ledger = normalizePlaybackLedgerData(JSON.parse(localStorage.getItem(PLAYBACK_LEDGER_STORAGE_KEY) || '{}'));
+    } catch {
+      ledger = createPlaybackLedgerData();
+    }
+    const topArtist = Object.entries(ledger.artists || {})
+      .sort(([, left], [, right]) => (right?.count || 0) - (left?.count || 0))[0]?.[0] || '';
+    const topTrack = Object.values(ledger.tracks || {})
+      .sort((left, right) => (right?.count || 0) - (left?.count || 0))[0]?.title || '';
+    return {
+      vaults: Object.keys(playlists || {}).length,
+      tracks: uniqueTracks.size,
+      favorites: favoriteTracksList.length,
+      artists: artistNames.size || Object.keys(ledger.artists || {}).length,
+      listens: ledger.totalPlays || 0,
+      minutes: Math.round((ledger.totalMs || 0) / 60000),
+      sessions: ledger.totalSessions || 0,
+      topArtist,
+      topTrack,
+    };
+  }, [favoriteTracksList, normalizeTrackIdentity, playlists]);
+  const copyProfileShareCard = useCallback(async () => {
+    try {
+      const blob = await createProfileShareCardBlob(aetherProfile, profileStats);
+      if (window.aether?.clipboard?.writeImage) {
+        const dataUrl = await blobToDataUrl(blob);
+        const result = await window.aether.clipboard.writeImage(dataUrl);
+        if (result?.success !== false) {
+          flashLastAdded('Profile image copied', 1800, 'success');
+          return;
+        }
+      }
+      if (navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+        try {
+          await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+          flashLastAdded('Profile image copied', 1800, 'success');
+          return;
+        } catch (imageError) {
+          console.warn('[Aether/Profile] Image clipboard unavailable, saving share image instead.', imageError);
+        }
+      }
+      downloadBlob(blob, `aether-profile-${aetherProfile.handle || 'share'}.png`);
+      flashLastAdded('Image clipboard blocked - PNG saved', 2400, 'warning');
+    } catch (error) {
+      console.error('[Aether/Profile] Failed to copy profile card', error);
+      flashLastAdded('Could not copy profile card', 2200, 'error');
+    }
+  }, [aetherProfile, flashLastAdded, profileStats]);
+  const saveProfileShareCard = useCallback(async () => {
+    try {
+      const blob = await createProfileShareCardBlob(aetherProfile, profileStats);
+      downloadBlob(blob, `aether-profile-${aetherProfile.handle || 'share'}.png`);
+      flashLastAdded('Profile PNG saved', 1800, 'success');
+    } catch (error) {
+      console.error('[Aether/Profile] Failed to save profile card', error);
+      flashLastAdded('Could not save profile PNG', 2200, 'error');
+    }
+  }, [aetherProfile, flashLastAdded, profileStats]);
+  const copyProfileLink = useCallback(async () => {
+    const link = getProfileLink(aetherProfile);
+    if (!link || aetherProfile.publishedVisibility === 'private') {
+      flashLastAdded('Publish profile before copying a link', 2400, 'warning');
+      return;
+    }
+    try {
+      if (window.aether?.clipboard?.writeText) await window.aether.clipboard.writeText(link);
+      else await navigator.clipboard.writeText(link);
+      flashLastAdded('Profile link copied', 1600, 'success');
+    } catch (error) {
+      console.error('[Aether/Profile] Failed to copy profile link', error);
+      flashLastAdded('Could not copy profile link', 2200, 'error');
+    }
+  }, [aetherProfile, flashLastAdded]);
+  const handleAvatarFileSelected = useCallback(async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      const avatarDataUrl = await resizeImageFileToDataUrl(file);
+      setAetherProfile((prev) => ({ ...prev, avatarDataUrl }));
+      flashLastAdded('Avatar updated', 1800, 'success');
+    } catch (error) {
+      flashLastAdded(error?.message || 'Could not use that avatar', 2600, 'error');
+    }
+  }, [flashLastAdded, setAetherProfile]);
+  const publishAetherProfile = useCallback(async () => {
+    if (isProfilePublishing) return;
+    const withCredentials = ensureAetherProfileCredentials(aetherProfile);
+    if (!withCredentials.handle) {
+      flashLastAdded('Add a handle before publishing', 2400, 'warning');
+      setAetherProfile(withCredentials);
+      return;
+    }
+    if (withCredentials.visibility === 'private') {
+      flashLastAdded('Switch profile to Public or Unlisted first', 2600, 'warning');
+      setAetherProfile(withCredentials);
+      return;
+    }
+    setIsProfilePublishing(true);
+    try {
+      const payload = {
+        displayName: withCredentials.displayName,
+        handle: withCredentials.handle,
+        bio: withCredentials.bio,
+        avatarColor: withCredentials.avatarColor,
+        avatarDataUrl: withCredentials.avatarDataUrl,
+        visibility: withCredentials.visibility,
+        shareStats: withCredentials.shareStats,
+        stats: profileStats,
+      };
+      const response = await fetch(`${AETHER_PROFILE_API_BASE}/v1/profile/${encodeURIComponent(withCredentials.profileId)}`, {
+        method: 'PUT',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${withCredentials.profileSecret}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.ok) throw new Error(data?.error || 'Could not publish profile.');
+      setAetherProfile({ ...withCredentials, publishedVisibility: withCredentials.visibility, lastPublishedAt: Date.now() });
+      flashLastAdded('Profile published', 2200, 'success');
+    } catch (error) {
+      flashLastAdded(error?.message || 'Profile publish failed', 3200, 'error');
+    } finally {
+      setIsProfilePublishing(false);
+    }
+  }, [aetherProfile, flashLastAdded, isProfilePublishing, profileStats, setAetherProfile]);
+  const unpublishAetherProfile = useCallback(async () => {
+    const withCredentials = ensureAetherProfileCredentials(aetherProfile);
+    setIsProfilePublishing(true);
+    try {
+      if (withCredentials.profileId && withCredentials.profileSecret) {
+        const response = await fetch(`${AETHER_PROFILE_API_BASE}/v1/profile/${encodeURIComponent(withCredentials.profileId)}`, {
+          method: 'DELETE',
+          headers: { authorization: `Bearer ${withCredentials.profileSecret}` },
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data?.ok === false) throw new Error(data?.error || 'Could not unpublish profile.');
+      }
+      setAetherProfile({ ...withCredentials, visibility: 'private', publishedVisibility: 'private', lastPublishedAt: 0 });
+      flashLastAdded('Profile unpublished', 2200, 'success');
+    } catch (error) {
+      flashLastAdded(error?.message || 'Profile unpublish failed', 3200, 'error');
+    } finally {
+      setIsProfilePublishing(false);
+    }
+  }, [aetherProfile, flashLastAdded, setAetherProfile]);
   const isViewingFavorites = viewingPlaylist === FAVORITES_PLAYLIST_ID;
   const focusedVaultName = isViewingFavorites ? FAVORITES_PLAYLIST_NAME : viewingPlaylist;
   const focusedVaultTracks = isViewingFavorites ? favoriteTracksList : (viewingPlaylist ? (playlists[viewingPlaylist] || []) : []);
@@ -12056,9 +13238,10 @@ function App() {
     const normalizedQuery = submittedQuery.trim();
     if (!normalizedQuery) return;
     if (isOfflineMode) {
-      setOfflineLibrarySearchTerm(normalizedQuery);
+      handleOfflineLibrarySearch(normalizedQuery);
       return;
     }
+    commitSearchHistory('online', normalizedQuery);
     setSearchQuery(normalizedQuery);
     setIsSearching(true);
     setHasCompletedSearch(true);
@@ -12585,6 +13768,104 @@ function App() {
       flashLastAdded('Playlist import failed', 2800, 'error');
     } finally {
       setIsSpotifyImporting(false);
+    }
+  };
+
+  const handleImportLocalMedia = async () => {
+    if (isLocalMediaImporting || isSpotifyImporting) return;
+    if (!isStandalone || !window.aether?.importLocalMedia) {
+      flashLastAdded('Local import unavailable', 2200, 'warning');
+      return;
+    }
+    setIsLocalMediaImporting(true);
+    setMusicImportProvider('local');
+    setSpotifyImportLogs([]);
+    appendSpotifyImportLog('start provider=local');
+    setSpotifyImportProgress({ stage: 'starting', progress: 8, message: 'Choose local songs, videos, playlists, or lyric files...' });
+    try {
+      const res = await window.aether.importLocalMedia();
+      if (res?.cancel) {
+        setSpotifyImportProgress({ stage: 'idle', progress: 0, message: 'Local import cancelled.' });
+        flashLastAdded('Local import cancelled', 1800, 'warning');
+        return;
+      }
+      appendSpotifyImportLog(`result success=${!!res?.success} tracks=${res?.importedTracks ?? 0} playlists=${res?.importedPlaylists ?? 0} lyrics=${res?.importedLyrics ?? 0}`);
+      if (!res?.success) {
+        setSpotifyImportProgress({ stage: 'error', progress: 0, message: res?.error || 'Local import failed.' });
+        flashLastAdded('Local import failed', 2600, 'error');
+        return;
+      }
+
+      const importedTracks = (Array.isArray(res.tracks) ? res.tracks : []).map(normalizeQueueTrack).filter(Boolean);
+      const importedPlaylists = Array.isArray(res.playlists) ? res.playlists : [];
+      if (importedTracks.length === 0 && importedPlaylists.length === 0) {
+        setSpotifyImportProgress({ stage: 'complete', progress: 100, message: 'No playable local media files were found.' });
+        flashLastAdded('No playable local files found', 2600, 'warning');
+        return;
+      }
+
+      const nextPlaylists = { ...playlists };
+      const nextOrder = [...playlistOrder];
+      const addPlaylist = (name, tracks) => {
+        const normalizedTracks = (tracks || []).map(normalizeQueueTrack).filter(Boolean);
+        if (normalizedTracks.length === 0) return '';
+        const uniqueName = buildUniquePlaylistName(name || 'Local Import', nextPlaylists);
+        nextPlaylists[uniqueName] = normalizedTracks;
+        nextOrder.push(uniqueName);
+        return uniqueName;
+      };
+
+      let firstPlaylistName = '';
+      if (importedPlaylists.length > 0) {
+        importedPlaylists.forEach((entry) => {
+          const created = addPlaylist(entry.name || 'Local Playlist', entry.tracks || []);
+          if (!firstPlaylistName && created) firstPlaylistName = created;
+        });
+      }
+      if (importedTracks.length > 0) {
+        const defaultName = spotifyImportPlaylistName.trim() || 'Local Imports';
+        const created = addPlaylist(defaultName, importedTracks);
+        if (!firstPlaylistName && created) firstPlaylistName = created;
+      }
+
+      if (Object.keys(nextPlaylists).length !== Object.keys(playlists).length) {
+        setPlaylists(nextPlaylists);
+        window.aether?.store?.set?.('playlists', nextPlaylists);
+        persistPlaylistOrder(Array.from(new Set(nextOrder)));
+      }
+      if (firstPlaylistName) setViewingPlaylist(firstPlaylistName);
+
+      const lyricsByTrackKey = res.lyricsByTrackKey && typeof res.lyricsByTrackKey === 'object' ? res.lyricsByTrackKey : {};
+      const lyricCount = Object.keys(lyricsByTrackKey).length;
+      if (lyricCount > 0) {
+        const nextManualLyricsStore = {
+          ...(manualLyricsStoreRef.current || {}),
+          ...lyricsByTrackKey,
+        };
+        manualLyricsStoreRef.current = nextManualLyricsStore;
+        setManualLyricsStore(nextManualLyricsStore);
+        await persistManualLyricsStore(nextManualLyricsStore);
+      }
+
+      const downloaded = await window.aether?.getOfflineTracks?.();
+      if (Array.isArray(downloaded)) setDownloadedTracks(downloaded);
+      await refreshOfflineDownloads();
+      await refreshStorageStats();
+      await refreshStorageEstimate();
+
+      const summary = `Imported ${importedTracks.length} local file${importedTracks.length === 1 ? '' : 's'}${lyricCount ? ` + ${lyricCount} lyric set${lyricCount === 1 ? '' : 's'}` : ''}`;
+      setSpotifyImportProgress({ stage: 'complete', progress: 100, message: summary });
+      flashLastAdded(summary, 3200, 'success');
+      setIsSpotifyImportOpen(false);
+      setSpotifyImportPlaylistName('');
+      setMusicImportProvider('');
+    } catch (err) {
+      const message = err?.message || 'Local import failed.';
+      appendSpotifyImportLog(`exception ${message}`);
+      setSpotifyImportProgress({ stage: 'error', progress: 0, message });
+      flashLastAdded('Local import failed', 2600, 'error');
+    } finally {
+      setIsLocalMediaImporting(false);
     }
   };
 
@@ -14305,6 +15586,18 @@ function App() {
         sourceLine: 'Public open.spotify.com playlist links',
         placeholder: 'https://open.spotify.com/playlist/...',
       }
+      : musicImportProvider === 'local'
+        ? {
+          accent: 'rgb(125, 255, 218)',
+          accentSoft: 'rgba(0, 255, 191, 0.11)',
+          accentBorder: 'rgba(0, 255, 191, 0.36)',
+          accentText: 'rgb(125, 255, 218)',
+          accentShadow: 'rgba(0, 255, 191, 0.16)',
+          ctaText: '#00140f',
+          label: 'Local Files',
+          sourceLine: 'Songs, videos, playlists, and matching .lrc lyrics from this computer',
+          placeholder: 'Use Pick Local Files below',
+        }
       : {
         accent: 'rgb(0, 255, 191)',
         accentSoft: 'rgba(0, 255, 191, 0.1)',
@@ -15306,10 +16599,15 @@ function App() {
                   isAuraMode={isAuraMode}
                   disabled={!isOfflineMode && videoMode === 'dual'}
                   placeholder={isOfflineMode ? 'Search downloaded tracks' : 'Search tracks, artists, or paste a YouTube link'}
-                  onSearch={isOfflineMode ? setOfflineLibrarySearchTerm : handleSearch}
+                  onSearch={isOfflineMode ? handleOfflineLibrarySearch : handleSearch}
                   inputRef={headerSearchInputRef}
                   commandPaletteShortcutLabel={commandPaletteShortcutLabel}
                   showShortcutHints={showShortcutHints}
+                  searchHistory={searchHistoryByScope[isOfflineMode ? 'offline' : 'online'] || []}
+                  historyLabel={isOfflineMode ? 'Downloaded searches' : 'Recent searches'}
+                  onHistoryPick={isOfflineMode ? handleOfflineLibrarySearch : handleSearch}
+                  onHistoryRemove={(item) => discardSearchHistoryItem(isOfflineMode ? 'offline' : 'online', item)}
+                  onHistoryClear={() => clearSearchHistoryForScope(isOfflineMode ? 'offline' : 'online')}
                   onClear={() => {
                     if (isOfflineMode) {
                       setOfflineLibrarySearchTerm('');
@@ -17272,7 +18570,7 @@ function App() {
               exit={{ opacity: 0 }}
               className="fixed inset-0 z-[240] flex items-center justify-center p-4"
             >
-              <div className="absolute inset-0 bg-black/70 backdrop-blur-md" onClick={() => !isSpotifyImporting && setIsSpotifyImportOpen(false)} />
+              <div className="absolute inset-0 bg-black/70 backdrop-blur-md" onClick={() => !(isSpotifyImporting || isLocalMediaImporting) && setIsSpotifyImportOpen(false)} />
               <motion.div
                 initial={{ y: 16, scale: 0.97, opacity: 0 }}
                 animate={{ y: 0, scale: 1, opacity: 1 }}
@@ -17287,8 +18585,8 @@ function App() {
                   '--music-import-cta-text': musicImportTheme.ctaText,
                 }}
               >
-                <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
-                  <div>
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-5 py-4 border-b border-white/5 md:grid-cols-[minmax(0,1fr)_minmax(180px,240px)_auto]">
+                  <div className="min-w-0">
                     <div className="text-[10px] font-black uppercase tracking-[0.28em]" style={{ color: 'var(--music-import-accent-text)' }}>Import a Playlist</div>
                     <div className="text-[11px] text-white/45 mt-1">Pick a source, paste a public playlist link, and Aether will match songs into your library.</div>
                   </div>
@@ -17296,10 +18594,10 @@ function App() {
                     currentTrack={currentTrack}
                     isPlaying={isPlaying}
                     getProxyUrl={getProxyUrl}
-                    className="ml-auto hidden min-w-0 max-w-[210px] flex-1 sm:flex"
+                    className="hidden w-full md:flex"
                   />
                   <button
-                    onClick={() => !isSpotifyImporting && setIsSpotifyImportOpen(false)}
+                    onClick={() => !(isSpotifyImporting || isLocalMediaImporting) && setIsSpotifyImportOpen(false)}
                     className={sharedModalCloseButtonClass}
                     title="Close"
                   >
@@ -17308,27 +18606,32 @@ function App() {
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-5 space-y-4">
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                     {[
                       ['spotify', 'Spotify', 'Public open.spotify.com playlist'],
                       ['apple', 'Apple Music', 'Public music.apple.com playlist'],
+                      ['local', 'Local Files', 'Audio, video, playlists, and .lrc lyrics'],
                     ].map(([provider, label, detail]) => (
                       <button
                         key={provider}
                         type="button"
-                        disabled={isSpotifyImporting}
+                        disabled={isSpotifyImporting || isLocalMediaImporting}
                         onClick={() => {
                           setMusicImportProvider(provider);
                           setSpotifyImportUrl('');
                           setSpotifyImportPlaylistName('');
-                          setSpotifyImportProgress({ stage: 'idle', progress: 0, message: `${label} selected. Paste a public playlist URL.` });
+                          setSpotifyImportProgress({
+                            stage: 'idle',
+                            progress: 0,
+                            message: provider === 'local' ? 'Local import selected. Pick files or folders when ready.' : `${label} selected. Paste a public playlist URL.`,
+                          });
                           setSpotifyImportLogs([]);
                         }}
                         className={`no-drag rounded-2xl border px-4 py-4 text-left transition-all ${musicImportProvider === provider ? 'text-white shadow-[0_0_22px_var(--music-import-accent-shadow)]' : 'border-white/10 bg-white/[0.035] text-white/60 hover:text-white'}`}
                         style={musicImportProvider === provider ? { borderColor: 'var(--music-import-accent-border)', background: 'var(--music-import-accent-soft)' } : undefined}
                       >
                         <div className="flex items-center gap-2 text-[12px] font-black uppercase tracking-[0.18em]">
-                          <Music size={14} />
+                          {provider === 'local' ? <HardDrive size={14} /> : <Music size={14} />}
                           <span>{label}</span>
                         </div>
                         <div className="mt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/35">{detail}</div>
@@ -17336,25 +18639,58 @@ function App() {
                     ))}
                   </div>
 
-                  <div>
-                    <label className="block text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">{musicImportProvider ? `${musicImportTheme.label} Playlist Link` : 'Playlist Link'}</label>
-                    <input
-                      value={spotifyImportUrl}
-                      onChange={(e) => setSpotifyImportUrl(e.target.value)}
-                      disabled={isSpotifyImporting || !musicImportProvider}
-                      placeholder={musicImportTheme.placeholder}
-                      className="no-drag w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none transition-all disabled:opacity-60"
-                      style={{ '--tw-ring-color': 'var(--music-import-accent)', caretColor: 'var(--music-import-accent)' }}
-                    />
-                  </div>
+                  {musicImportProvider === 'local' ? (
+                    <div className="rounded-2xl border border-brand-accent/20 bg-brand-accent/[0.055] px-4 py-4">
+                      <div className="text-[9px] font-black uppercase tracking-[0.24em] text-brand-accent/80">Local Library Import</div>
+                      <div className="mt-2 text-sm font-semibold leading-6 text-white/62">
+                        Pick songs, videos, folders, .m3u/.pls playlists, and matching .lrc lyric files. Aether copies playable media into its local library and creates vaults automatically.
+                      </div>
+                      <div className="mt-4 grid gap-2 text-[11px] leading-5 text-white/50 sm:grid-cols-3">
+                        <div className="rounded-xl border border-white/10 bg-black/22 p-3">
+                          <div className="mb-1 text-[8px] font-black uppercase tracking-[0.18em] text-brand-accent/75">Best names</div>
+                          <div><span className="text-white/70">Artist - Song.mp3</span></div>
+                          <div><span className="text-white/70">Artist - Video.mp4</span></div>
+                        </div>
+                        <div className="rounded-xl border border-white/10 bg-black/22 p-3">
+                          <div className="mb-1 text-[8px] font-black uppercase tracking-[0.18em] text-brand-accent/75">Lyrics match</div>
+                          <div>Same folder, same filename:</div>
+                          <div><span className="text-white/70">Artist - Song.lrc</span></div>
+                        </div>
+                        <div className="rounded-xl border border-white/10 bg-black/22 p-3">
+                          <div className="mb-1 text-[8px] font-black uppercase tracking-[0.18em] text-brand-accent/75">Playlists</div>
+                          <div>Import <span className="text-white/70">.m3u</span>, <span className="text-white/70">.m3u8</span>, or <span className="text-white/70">.pls</span>. The playlist filename becomes the vault name.</div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleImportLocalMedia}
+                        disabled={isSpotifyImporting || isLocalMediaImporting}
+                        className="mt-4 rounded-xl bg-brand-accent px-4 py-2 text-sm font-black uppercase tracking-[0.16em] text-black transition-all hover:scale-[1.01] active:scale-95 disabled:opacity-50 disabled:hover:scale-100"
+                      >
+                        {isLocalMediaImporting ? 'Importing Local Files...' : 'Pick Local Files'}
+                      </button>
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="block text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">{musicImportProvider ? `${musicImportTheme.label} Playlist Link` : 'Playlist Link'}</label>
+                      <input
+                        value={spotifyImportUrl}
+                        onChange={(e) => setSpotifyImportUrl(e.target.value)}
+                        disabled={isSpotifyImporting || isLocalMediaImporting || !musicImportProvider}
+                        placeholder={musicImportTheme.placeholder}
+                        className="no-drag w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none transition-all disabled:opacity-60"
+                        style={{ '--tw-ring-color': 'var(--music-import-accent)', caretColor: 'var(--music-import-accent)' }}
+                      />
+                    </div>
+                  )}
 
                   <div>
                     <label className="block text-[9px] font-black uppercase tracking-[0.22em] text-white/35 mb-2">Save As</label>
                     <input
                       value={spotifyImportPlaylistName}
                       onChange={(e) => setSpotifyImportPlaylistName(e.target.value)}
-                      disabled={isSpotifyImporting || !musicImportProvider}
-                      placeholder={musicImportProvider ? `${musicImportTheme.label} playlist name (optional)` : 'Choose a source first'}
+                      disabled={isSpotifyImporting || isLocalMediaImporting || !musicImportProvider}
+                      placeholder={musicImportProvider === 'local' ? 'Local import vault name (optional)' : musicImportProvider ? `${musicImportTheme.label} playlist name (optional)` : 'Choose a source first'}
                       className="no-drag w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white outline-none transition-all disabled:opacity-60"
                       style={{ caretColor: 'var(--music-import-accent)' }}
                     />
@@ -17373,7 +18709,7 @@ function App() {
                       />
                     </div>
                     <div className="mt-3 text-[11px] text-white/60 min-h-[1.5em]">
-                      {spotifyImportProgress.message || (isSpotifyImporting ? 'Preparing import…' : 'Ready to import.')}
+                      {spotifyImportProgress.message || ((isSpotifyImporting || isLocalMediaImporting) ? 'Preparing import…' : 'Ready to import.')}
                     </div>
                   </div>
 
@@ -17393,18 +18729,18 @@ function App() {
 
                   <div className="flex items-center justify-end gap-3 pt-1">
                     <button
-                      onClick={() => { if (!isSpotifyImporting) setIsSpotifyImportOpen(false); }}
+                      onClick={() => { if (!(isSpotifyImporting || isLocalMediaImporting)) setIsSpotifyImportOpen(false); }}
                       className="no-drag px-4 py-2 rounded-xl border border-white/10 bg-white/5 text-white/60 hover:text-white hover:border-white/20 transition-all text-sm"
                     >
                       Cancel
                     </button>
                     <button
-                      onClick={handleImportSpotifyPlaylist}
-                      disabled={isSpotifyImporting || !musicImportProvider || !spotifyImportUrl.trim()}
+                      onClick={musicImportProvider === 'local' ? handleImportLocalMedia : handleImportSpotifyPlaylist}
+                      disabled={isSpotifyImporting || isLocalMediaImporting || !musicImportProvider || (musicImportProvider !== 'local' && !spotifyImportUrl.trim())}
                       className="no-drag px-5 py-2 rounded-xl font-black text-sm hover:scale-[1.01] active:scale-95 transition-all disabled:opacity-50 disabled:hover:scale-100"
                       style={{ background: 'var(--music-import-accent)', color: 'var(--music-import-cta-text)' }}
                     >
-                      {isSpotifyImporting ? 'Importing...' : musicImportProvider ? `Match ${musicImportTheme.label} Playlist` : 'Choose a Source'}
+                      {isSpotifyImporting || isLocalMediaImporting ? 'Importing...' : musicImportProvider === 'local' ? 'Pick Local Files' : musicImportProvider ? `Match ${musicImportTheme.label} Playlist` : 'Choose a Source'}
                     </button>
                   </div>
                 </div>
@@ -18822,6 +20158,17 @@ function App() {
         requestDestructiveConfirmation={requestDestructiveConfirmation}
         showShortcutHints={showShortcutHints}
         setShowShortcutHints={setShowShortcutHints}
+        aetherProfile={aetherProfile}
+        setAetherProfile={setAetherProfile}
+        profileStats={profileStats}
+        onCopyProfileCard={copyProfileShareCard}
+        onSaveProfileCard={saveProfileShareCard}
+        onCopyProfileLink={copyProfileLink}
+        avatarFileInputRef={avatarFileInputRef}
+        onAvatarFileSelected={handleAvatarFileSelected}
+        onPublishProfile={publishAetherProfile}
+        onUnpublishProfile={unpublishAetherProfile}
+        isProfilePublishing={isProfilePublishing}
       />
 
       <AetherConfirmDialog
@@ -18851,6 +20198,8 @@ function App() {
         hostIsBuffering={isAudioBuffering}
         hostQueue={queue}
         hostPlaylists={playlists}
+        profile={aetherProfile}
+        onProfileChange={setAetherProfile}
         onHostUpdateQueue={setQueue}
         onHostControl={handleControl}
         onHostPlayTrack={(track) => {
