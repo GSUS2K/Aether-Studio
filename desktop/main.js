@@ -1,6 +1,24 @@
 const { app, BrowserWindow, ipcMain, globalShortcut, Menu, dialog, systemPreferences, screen, clipboard, session, nativeImage } = require('electron');
 app.setName('Aether');
 app.name = 'Aether';
+const singleInstanceLock = app.requestSingleInstanceLock();
+if (!singleInstanceLock) {
+    app.quit();
+} else {
+    app.on('second-instance', (event, argv) => {
+        const deepLink = (argv || []).find((arg) => /^aether:\/\//i.test(String(arg || '')));
+        if (deepLink) forwardDeepLink(deepLink);
+        else if (mainWindow && !mainWindow.isDestroyed()) {
+            if (mainWindow.isMinimized()) mainWindow.restore();
+            mainWindow.show();
+            mainWindow.focus();
+        }
+    });
+}
+app.on('open-url', (event, url) => {
+    event.preventDefault();
+    forwardDeepLink(url);
+});
 const ffmpeg = require('ffmpeg-static');
 const Store = require('electron-store');
 const store = new Store();
@@ -1146,6 +1164,33 @@ console.log(`[Aether] ytdlpPath: ${ytdlpPath}, ffmpegPath: ${ffmpegPath}`);
 const offlineEngine = new OfflineEngine(app.getPath('userData'));
 const downloadBackoffByTrack = new Map();
 let mainWindow;
+let pendingDeepLinkUrl = null;
+
+function forwardDeepLink(rawUrl) {
+    const value = String(rawUrl || '').trim();
+    if (!value || !/^aether:\/\//i.test(value)) return false;
+    pendingDeepLinkUrl = value;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+        mainWindow.webContents.send('aether:deep-link', { url: value });
+        pendingDeepLinkUrl = null;
+    }
+    return true;
+}
+
+function registerDeepLinkProtocol() {
+    try {
+        if (process.defaultApp && process.argv.length >= 2) {
+            app.setAsDefaultProtocolClient('aether', process.execPath, [path.resolve(process.argv[1])]);
+        } else {
+            app.setAsDefaultProtocolClient('aether');
+        }
+    } catch (e) {
+        console.warn('[Aether/DeepLink] Failed to register protocol', e?.message || String(e));
+    }
+}
 
 // ─── Party Server State ──────────────────────────────────────────────────────
 let partyHttpServer = null;
@@ -2699,6 +2744,13 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../frontend/dist/index.html'));
   }
 
+  mainWindow.webContents.once('did-finish-load', () => {
+    if (pendingDeepLinkUrl) {
+        mainWindow.webContents.send('aether:deep-link', { url: pendingDeepLinkUrl });
+        pendingDeepLinkUrl = null;
+    }
+  });
+
   // --- CUSTOM APP MENU (V6.6.2) ---
   if (process.platform === 'darwin') {
     const template = [
@@ -2827,6 +2879,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+    registerDeepLinkProtocol();
     // --- AUTOMATIC LOCALTUNNEL BYPASS (V8.0.0) ---
     session.defaultSession.webRequest.onBeforeSendHeaders(
         { urls: ['*://*.loca.lt/*'] },

@@ -37,6 +37,11 @@ contextBridge.exposeInMainWorld('aether', {
     ipcRenderer.on('aether:user-error', handler);
     return () => ipcRenderer.removeListener('aether:user-error', handler);
   },
+  onDeepLink: (callback) => {
+    const handler = (event, payload) => callback(payload);
+    ipcRenderer.on('aether:deep-link', handler);
+    return () => ipcRenderer.removeListener('aether:deep-link', handler);
+  },
   getLockStatus: () => ipcRenderer.invoke('aether:lock-status'),
   setAppLock: (password, useTouchId) => ipcRenderer.invoke('aether:lock-set-password', { password, useTouchId }),
   verifyAppLockPassword: (password) => ipcRenderer.invoke('aether:lock-verify-password', { password }),

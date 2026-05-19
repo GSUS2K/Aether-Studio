@@ -6858,6 +6858,7 @@ function App() {
     }
   }, [queue]);
   const [sharedScene, setSharedScene] = useState(null);
+  const [sharedSceneEncoded, setSharedSceneEncoded] = useState('');
   const [isSharedSceneOpen, setIsSharedSceneOpen] = useState(false);
   const [vaultPulse, setVaultPulse] = useState({ bass: 0, mids: 0, highs: 0, energy: 0, spin: 0, stamp: 'AETHER-PULSE' });
   const vaultPulseRef = useRef(vaultPulse);
@@ -8692,6 +8693,7 @@ function App() {
     }
     const sceneUrl = `${AETHER_SHARE_ORIGIN}/?scene=${encoded}`;
     setSharedScene(normalizeScenePayload(payload));
+    setSharedSceneEncoded(encoded);
     setIsSharedSceneOpen(true);
 
     try {
@@ -9483,6 +9485,18 @@ function App() {
     }
   }, [isStandalone]);
 
+  const openSharedScenePayload = useCallback((encoded) => {
+    if (!encoded) return false;
+    const decoded = decodeScenePayload(encoded);
+    if (!decoded) return false;
+    const normalized = normalizeScenePayload(decoded);
+    if (!normalized) return false;
+    setSharedScene(normalized);
+    setSharedSceneEncoded(encoded);
+    setIsSharedSceneOpen(true);
+    return true;
+  }, []);
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
@@ -9490,17 +9504,29 @@ function App() {
       const fromQuery = url.searchParams.get('scene');
       const fromHash = (url.hash || '').startsWith('#scene=') ? url.hash.slice(7) : null;
       const encoded = fromQuery || fromHash;
-      if (!encoded) return;
-      const decoded = decodeScenePayload(encoded);
-      if (!decoded) return;
-      const normalized = normalizeScenePayload(decoded);
-      if (!normalized) return;
-      setSharedScene(normalized);
-      setIsSharedSceneOpen(true);
+      openSharedScenePayload(encoded);
     } catch (e) {
       console.warn('[Aether/Share] Scene parse failed', e);
     }
-  }, []);
+  }, [openSharedScenePayload]);
+
+  useEffect(() => {
+    if (!isStandalone || !window.aether?.onDeepLink) return undefined;
+    const unsubscribe = window.aether.onDeepLink((payload) => {
+      try {
+        const rawUrl = typeof payload === 'string' ? payload : payload?.url;
+        const url = new URL(rawUrl);
+        const encoded = url.searchParams.get('scene') || (url.hash || '').replace(/^#scene=/, '');
+        if (encoded && openSharedScenePayload(encoded)) {
+          flashLastAdded('Shared scene opened', 1800, 'success');
+        }
+      } catch (e) {
+        console.warn('[Aether/Share] Deep link parse failed', e);
+        flashLastAdded('Shared scene link could not open', 2200, 'error');
+      }
+    });
+    return typeof unsubscribe === 'function' ? unsubscribe : undefined;
+  }, [flashLastAdded, isStandalone, openSharedScenePayload]);
 
   useEffect(() => {
     const loadLyricPresets = async () => {
@@ -16861,6 +16887,48 @@ function App() {
     isDepthMotionEnabled ? 'aether-depth-mode' : '',
     (isGestureControlEnabled || isFaceControlEnabled) ? 'gesture-lab-active' : '',
   ].filter(Boolean).join(' ');
+  const sharedSceneTrack = sharedScene ? {
+    id: `shared-scene-${sharedScene.youtubeId || sharedScene.title || Date.now()}`,
+    title: sharedScene.title || 'Aether Scene',
+    author: sharedScene.author || 'Unknown Artist',
+    thumbnail: sharedScene.thumbnail || (sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : ''),
+    youtubeId: sharedScene.youtubeId || '',
+    actualUrl: sharedScene.youtubeId ? `https://www.youtube.com/watch?v=${sharedScene.youtubeId}` : '',
+    url: sharedScene.youtubeId ? `https://www.youtube.com/watch?v=${sharedScene.youtubeId}` : '',
+    totalDurationMs: Math.max(0, Number(sharedScene.total || 0)),
+    duration: Math.max(0, Number(sharedScene.total || 0)),
+    source: 'shared-scene',
+  } : null;
+  const sharedSceneCanPlay = Boolean(sharedSceneTrack?.youtubeId);
+  const sharedSceneUrl = sharedSceneEncoded ? `${AETHER_SHARE_ORIGIN}/?scene=${encodeURIComponent(sharedSceneEncoded)}` : AETHER_SHARE_ORIGIN;
+  const sharedSceneDesktopLink = sharedSceneEncoded ? `aether://scene?scene=${encodeURIComponent(sharedSceneEncoded)}` : 'aether://';
+  const playSharedSceneInBrowser = () => {
+    if (!sharedSceneTrack || !sharedSceneCanPlay) {
+      flashLastAdded('This scene has preview only', 2200, 'warning');
+      return;
+    }
+    const normalized = normalizeQueueTrack(sharedSceneTrack) || sharedSceneTrack;
+    setQueue([normalized]);
+    const resumeAtMs = Math.max(0, Number(sharedScene?.at || 0));
+    pendingResumeTimeRef.current = resumeAtMs;
+    setPendingResumeTime(resumeAtMs);
+    setPlaybackResetNonce((value) => value + 1);
+    setWebAudioUnlocked(true);
+    setIsManualStop(false);
+    setIsPlaying(true);
+    setIsSharedSceneOpen(false);
+    flashLastAdded('Playing shared scene', 1800, 'success');
+    try { youtubePlayerRef.current?.playVideo?.(); } catch {}
+  };
+  const openSharedSceneInAether = async () => {
+    try {
+      window.location.href = sharedSceneDesktopLink;
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(sharedSceneUrl);
+      flashLastAdded('Scene link ready for Aether', 1800, 'success');
+    } catch {
+      flashLastAdded('Scene link copied fallback unavailable', 2200, 'warning');
+    }
+  };
 
   return (
     <MotionConfig reducedMotion={performanceMode === 'low' ? 'always' : 'never'} transition={performanceMode === 'low' ? { duration: 0 } : undefined}>
@@ -16921,11 +16989,12 @@ function App() {
 
         {/* ── WEB AUDIO UNLOCK OVERLAY ─────────────────────────────────────────
           Browsers block audio.play() without a prior user gesture in the tab.
-          This overlay captures that gesture. It only renders in web mode
-          (!isStandalone) and disappears permanently once tapped.
+          This overlay captures that gesture for normal playback only. Shared
+          scene links render immediately and ask for a gesture only if the
+          visitor chooses Play in browser.
       ───────────────────────────────────────────────────────────────────── */}
         <AnimatePresence>
-          {!isStandalone && !webAudioUnlocked && (
+          {!isStandalone && !webAudioUnlocked && !isSharedSceneOpen && queue?.[0] && (
             <motion.div
               key="web-audio-unlock"
               initial={{ opacity: 0 }}
@@ -19478,19 +19547,23 @@ function App() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[320] flex items-center justify-center bg-black/80 backdrop-blur-md p-4"
+              className="fixed inset-0 z-[320] flex items-center justify-center bg-black/78 backdrop-blur-md p-4"
               onClick={() => setIsSharedSceneOpen(false)}
             >
               <motion.div
                 initial={{ scale: 0.95, y: 12 }}
                 animate={{ scale: 1, y: 0 }}
                 exit={{ scale: 0.96, y: 8 }}
-                className="relative w-[min(92vw,760px)] rounded-3xl border border-brand-accent/30 bg-[#07090c]/95 shadow-[0_0_70px_rgba(0,255,191,0.15)] overflow-hidden"
+                className="relative w-[min(94vw,880px)] overflow-hidden rounded-[2rem] border border-brand-accent/30 bg-[#07090c]/95 shadow-[0_0_80px_rgba(0,255,191,0.15)]"
                 onClick={(e) => e.stopPropagation()}
               >
+                <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-brand-accent/70 to-transparent" />
                 <div className="p-6 md:p-8 flex flex-col gap-6">
                   <div className="flex justify-between items-start gap-4">
-                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent mt-1">Aether Shared Scene</div>
+                    <div>
+                      <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-accent mt-1">Aether Shared Scene</div>
+                      <div className="mt-2 text-xs font-semibold text-white/42">Preview the moment, continue in Aether, or start playback here.</div>
+                    </div>
                     <button
                       onClick={() => setIsSharedSceneOpen(false)}
                       className={sharedModalCloseButtonClass}
@@ -19498,25 +19571,59 @@ function App() {
                       <X size={16} />
                     </button>
                   </div>
-                  <div className="rounded-2xl border border-white/10 bg-black/30 p-4 md:p-5 flex flex-col md:flex-row gap-4 md:gap-5">
-                    <img
-                      src={sharedScene.thumbnail || (sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : null)}
-                      alt="scene"
-                      className="w-full md:w-40 h-40 rounded-2xl object-cover border border-white/10"
-                      onError={(e) => {
-                        const fallback = sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : '';
-                        if (fallback && e.currentTarget.src !== fallback) e.currentTarget.src = fallback;
-                      }}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="font-black text-brand-accent text-lg truncate">{sharedScene.title || 'Aether Scene'}</div>
-                      <div className="text-[11px] uppercase tracking-[0.2em] text-white/55 mt-1 truncate">{sharedScene.author || 'Unknown Artist'}</div>
-                      <div className="mt-4 text-white/80 text-sm leading-relaxed italic break-words">“{sharedScene.lyric || 'No lyric locked yet'}”</div>
-                      <div className="mt-4 text-[10px] uppercase tracking-[0.18em] text-white/45">
-                        {formatTime(Number(sharedScene.at || 0))} / {formatTime(Number(sharedScene.total || 0))} • {sharedScene.state || 'paused'} • {sharedScene.mode || 'bars'}
+                  <div className="grid gap-5 md:grid-cols-[220px_minmax(0,1fr)]">
+                    <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-black/35">
+                      <img
+                        src={sharedScene.thumbnail || (sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : null)}
+                        alt="scene"
+                        className="aspect-square w-full object-cover"
+                        onError={(e) => {
+                          const fallback = sharedScene.youtubeId ? `https://i.ytimg.com/vi/${sharedScene.youtubeId}/hqdefault.jpg` : '';
+                          if (fallback && e.currentTarget.src !== fallback) e.currentTarget.src = fallback;
+                        }}
+                      />
+                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent p-4">
+                        <div className="text-[10px] font-black uppercase tracking-[0.2em] text-brand-accent">{sharedScene.state || 'paused'} Scene</div>
+                        <div className="mt-1 text-xs font-mono text-white/70">{formatTime(Number(sharedScene.at || 0))} / {formatTime(Number(sharedScene.total || 0))}</div>
                       </div>
-                      <div className="mt-2 text-[10px] uppercase tracking-[0.18em] text-white/45">
-                        Pulse {Number(sharedScene?.pulse?.e || 0)}% • Bass {Number(sharedScene?.pulse?.b || 0)}% • Mids {Number(sharedScene?.pulse?.m || 0)}% • Highs {Number(sharedScene?.pulse?.h || 0)}%
+                    </div>
+                    <div className="min-w-0 rounded-3xl border border-white/10 bg-black/25 p-5 md:p-6">
+                      <div className="font-black text-brand-accent text-xl md:text-2xl leading-tight line-clamp-2">{sharedScene.title || 'Aether Scene'}</div>
+                      <div className="mt-2 text-[11px] uppercase tracking-[0.2em] text-white/55 truncate">{sharedScene.author || 'Unknown Artist'}</div>
+                      <div className="mt-5 rounded-2xl border border-white/8 bg-white/[0.03] p-4 text-white/80 text-sm leading-relaxed italic break-words">“{sharedScene.lyric || 'No lyric locked yet'}”</div>
+                      <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        {[
+                          ['Pulse', Number(sharedScene?.pulse?.e || 0)],
+                          ['Bass', Number(sharedScene?.pulse?.b || 0)],
+                          ['Mids', Number(sharedScene?.pulse?.m || 0)],
+                          ['Highs', Number(sharedScene?.pulse?.h || 0)],
+                        ].map(([label, value]) => (
+                          <div key={label} className="rounded-2xl border border-white/8 bg-black/30 px-3 py-3">
+                            <div className="text-lg font-black text-white">{value}%</div>
+                            <div className="mt-0.5 text-[9px] font-black uppercase tracking-[0.18em] text-white/35">{label}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+                        <button
+                          type="button"
+                          onClick={playSharedSceneInBrowser}
+                          disabled={!sharedSceneCanPlay}
+                          className="flex flex-1 items-center justify-center gap-2 rounded-2xl border border-brand-accent/35 bg-brand-accent px-4 py-3 text-[11px] font-black uppercase tracking-[0.18em] text-black transition-all hover:scale-[1.01] active:scale-[0.98] disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/8 disabled:text-white/35 disabled:hover:scale-100"
+                          title={sharedSceneCanPlay ? 'Start this shared scene in the browser' : 'This shared scene does not include a playable video id'}
+                        >
+                          <Play size={14} fill="currentColor" /> Play in browser
+                        </button>
+                        <button
+                          type="button"
+                          onClick={openSharedSceneInAether}
+                          className="flex flex-1 items-center justify-center gap-2 rounded-2xl border border-brand-accent/25 bg-brand-accent/10 px-4 py-3 text-[11px] font-black uppercase tracking-[0.18em] text-brand-accent transition-all hover:border-brand-accent/45 hover:bg-brand-accent/15"
+                        >
+                          <ExternalLink size={14} /> Continue in Aether
+                        </button>
+                      </div>
+                      <div className="mt-3 text-[10px] leading-5 text-white/34">
+                        Browser playback starts only after you press Play. The scene preview loads without creating a shared session.
                       </div>
                     </div>
                   </div>
