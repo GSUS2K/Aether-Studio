@@ -1203,6 +1203,7 @@ async function startPartyServer() {
     function generateKey(len = 6) {
         return Array.from({ length: len }, () => KEY_CHARS[Math.floor(Math.random() * KEY_CHARS.length)]).join('');
     }
+    let reservedPartyCode = generateKey(8);
     function sysMsg(text) {
         return { id: uuidv4(), type: 'system', message: text, ts: Date.now() };
     }
@@ -1266,13 +1267,16 @@ async function startPartyServer() {
     partyIo.on('connection', (socket) => {
         partyLog && partyLog('connection', { socketId: socket.id, addr: socket.handshake && socket.handshake.address });
         console.log && console.log('[Party] socket connected', socket.id);
-        socket.on('party:create', ({ userId, displayName, isPrivate, avatar } = {}) => {
+        socket.on('party:create', ({ userId, displayName, isPrivate, avatar, requestedPartyId } = {}) => {
             partyLog && partyLog('party:create:received', { userId, displayName, isPrivate, avatar, socketId: socket.id });
             if (!userId || !displayName) {
                 partyLog && partyLog('party:create:bad_request', { userId, displayName });
                 return socket.emit('party:error', { code: 'BAD_REQUEST', message: 'Missing args.' });
             }
-            const partyId = uuidv4().replace(/-/g, '').slice(0, 8).toUpperCase();
+            const requestedId = String(requestedPartyId || '').trim().toUpperCase();
+            const partyId = /^[A-Z0-9]{6,12}$/.test(requestedId) && !partyRooms.has(requestedId)
+                ? requestedId
+                : reservedPartyCode;
             const key = isPrivate ? generateKey() : null;
             const room = {
                 id: partyId, hostId: userId, isPrivate: !!isPrivate, key,
@@ -1418,8 +1422,17 @@ async function startPartyServer() {
                 const localPort = typeof address === 'object' && address ? address.port : null;
                 if (!localPort) throw new Error('Could not reserve a local Party port.');
                 partyLocalPort = localPort;
-                const tunnelPrefix = crypto.randomBytes(4).toString('hex');
-                partyTunnel = await localtunnel({ port: localPort, local_host: '127.0.0.1', subdomain: `aether-party-${tunnelPrefix}` });
+                let tunnelError = null;
+                for (const candidateCode of [reservedPartyCode, generateKey(8), generateKey(8)]) {
+                    try {
+                        partyTunnel = await localtunnel({ port: localPort, local_host: '127.0.0.1', subdomain: `aether-party-${candidateCode.toLowerCase()}` });
+                        reservedPartyCode = candidateCode;
+                        break;
+                    } catch (err) {
+                        tunnelError = err;
+                    }
+                }
+                if (!partyTunnel) throw tunnelError || new Error('Could not create Party tunnel.');
                 console.log(`[Party] Tunnel open at ${partyTunnel.url}`);
                 
                 partyTunnel.on('close', () => {
@@ -1429,7 +1442,7 @@ async function startPartyServer() {
                     console.error('[Party] Tunnel error', err);
                 });
                 
-                resolve({ success: true, url: partyTunnel.url, localPort });
+                resolve({ success: true, url: partyTunnel.url, localPort, partyCode: reservedPartyCode });
             } catch (err) {
                 console.error('[Party] Tunnel failed', err);
                 stopPartyServer();

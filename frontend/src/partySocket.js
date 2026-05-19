@@ -10,7 +10,7 @@ const PARTY_SERVER_URL =
 let _socket = null;
 let _currentUrl = null;
 
-export function getSocket(targetUrl = 'http://localhost:4444') {
+export function getSocket(targetUrl = PARTY_SERVER_URL) {
   if (_socket && _currentUrl !== targetUrl) {
     _socket.disconnect();
     _socket = null;
@@ -65,7 +65,7 @@ export function connectSocket(targetUrl) {
 }
 
 export function disconnectSocket() {
-  if (_socket?.connected) _socket.disconnect();
+  if (_socket) _socket.disconnect();
 }
 
 export { PARTY_SERVER_URL };

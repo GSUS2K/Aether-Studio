@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Play, Pause, SkipForward, Rewind, X, Send, Crown, Users, Music2, MessageSquare, Copy, Check, SkipBack, Wifi, AlertTriangle, ChevronRight, Search, UserPlus, Loader2, Lock, Volume2, VolumeX, Mic, MicOff, ListMusic, Radio, ThumbsUp, ThumbsDown, Music, Hash, Plus, Shuffle, UserMinus, Trash2 } from 'lucide-react';
+import { Play, Pause, SkipForward, Rewind, X, Send, Crown, Users, Music2, MessageSquare, Copy, Check, SkipBack, Wifi, AlertTriangle, ChevronRight, Search, UserPlus, Loader2, Lock, Volume2, VolumeX, Mic, MicOff, ListMusic, Radio, ThumbsUp, ThumbsDown, Music, Hash, Plus, Shuffle, UserMinus, Trash2, Clock, Link2 } from 'lucide-react';
 import { getSocket, connectSocket, disconnectSocket } from './partySocket';
 import bs58 from 'bs58';
 import './PartyMode.css';
@@ -78,6 +78,33 @@ const buildPartyAvatar = (profile, fallbackName) => {
   };
 };
 
+const cleanPartyToken = (value = '') => String(value || '').trim().replace(/\s+/g, '').toUpperCase();
+const parsePartyInviteInput = (rawValue = '') => {
+  const raw = String(rawValue || '').trim();
+  const result = { partyId: cleanPartyToken(raw), key: '', serverUrl: '' };
+  if (!raw) return result;
+
+  const codeMatch = raw.match(/(?:party\s*(?:code|id|room)|room)\s*[:#-]?\s*([A-Z0-9]{4,16})/i);
+  const keyMatch = raw.match(/(?:private\s*)?key\s*[:#-]?\s*([A-Z0-9]{4,12})/i);
+  const serverMatch = raw.match(/(?:server|link)\s*[:#-]?\s*(https?:\/\/[^\s]+)/i);
+  if (codeMatch?.[1]) result.partyId = cleanPartyToken(codeMatch[1]);
+  if (keyMatch?.[1]) result.key = cleanPartyToken(keyMatch[1]).slice(0, 12);
+  if (serverMatch?.[1]) result.serverUrl = serverMatch[1].trim();
+
+  try {
+    const url = new URL(raw);
+    if (url.protocol === 'aether:' || url.protocol === 'http:' || url.protocol === 'https:') {
+      result.serverUrl = url.searchParams.get('server') || (url.protocol.startsWith('http') ? url.origin : result.serverUrl);
+      result.partyId = cleanPartyToken(url.searchParams.get('room') || url.searchParams.get('party') || url.pathname.split('/').filter(Boolean).pop() || result.partyId);
+      result.key = cleanPartyToken(url.searchParams.get('key') || result.key).slice(0, 12);
+    }
+  } catch {
+    // Plain room codes and copied invite text are handled by regex above.
+  }
+
+  return result;
+};
+
 function PartySearchHistoryDropdown({ visible, history, query, label, onPick, onRemove, onClear }) {
   const normalizedQuery = normalizePartySearchHistoryItem(query).toLowerCase();
   const matches = useMemo(() => {
@@ -130,6 +157,7 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [socketStatus, setSocketStatus] = useState('idle');
   const [showInvite, setShowInvite] = useState(false);
   const [inviteCopied, setInviteCopied] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -150,6 +178,7 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
   const searchTimerRef = useRef(null);
   const chatEndRef = useRef(null);
   const syncIntervalRef = useRef(null);
+  const socketListenerCleanupRef = useRef(null);
   const lastSyncedTrackIdRef = useRef(null);
   const syncCooldownRef = useRef(false);
 
@@ -157,6 +186,7 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
   const [hostLeftTab, setHostLeftTab] = useState('search'); // 'search' | 'queue' | 'playlists'
   const partyProfile = sanitizePartyProfile(profile);
   const partyAvatar = buildPartyAvatar(partyProfile, displayName);
+  const activePartySocketUrl = partyState?.partyServerUrl || socketUrl || undefined;
 
   useEffect(() => {
     const profileName = sanitizePartyProfile(profile).displayName;
@@ -188,6 +218,10 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
   useEffect(() => { if (displayName) localStorage.setItem('aether.party.name', displayName); }, [displayName]);
   useEffect(() => { onPartyStateChange?.(partyState); }, [partyState]);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [partyState?.chat]);
+  useEffect(() => () => {
+    socketListenerCleanupRef.current?.();
+    socketListenerCleanupRef.current = null;
+  }, []);
 
   // Escape key to close
   useEffect(() => {
@@ -198,26 +232,53 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
   }, [open, partyState, onClose]);
 
   // Socket listener setup function
-  const attachSocketListeners = (s) => {
+  const attachSocketListeners = (s, activeSocketUrl = socketUrl) => {
+    socketListenerCleanupRef.current?.();
     // Clear any existing listeners to prevent duplicates
     ['party:created','party:joined','party:error','party:sync','party:message',
      'party:member-update','party:host-changed','party:request-notify',
      'party:request-result','party:host-leaving','party:closed','party:idle-warning']
       .forEach(e => s.off(e));
 
+    const handleConnect = () => setSocketStatus('connected');
+    const handleDisconnect = (reason) => {
+      setSocketStatus(reason === 'io client disconnect' ? 'idle' : 'offline');
+    };
+    const handleConnectError = () => setSocketStatus('offline');
+    const handleReconnectAttempt = () => setSocketStatus('reconnecting');
+    const handleReconnect = () => setSocketStatus('connected');
+
+    s.on('connect', handleConnect);
+    s.on('disconnect', handleDisconnect);
+    s.io?.on?.('reconnect_attempt', handleReconnectAttempt);
+    s.io?.on?.('reconnect', handleReconnect);
+    s.io?.on?.('error', handleConnectError);
+    s.io?.on?.('reconnect_error', handleConnectError);
+    setSocketStatus(s.connected ? 'connected' : 'connecting');
+    socketListenerCleanupRef.current = () => {
+      s.off('connect', handleConnect);
+      s.off('disconnect', handleDisconnect);
+      s.io?.off?.('reconnect_attempt', handleReconnectAttempt);
+      s.io?.off?.('reconnect', handleReconnect);
+      s.io?.off?.('error', handleConnectError);
+      s.io?.off?.('reconnect_error', handleConnectError);
+    };
+
     s.on('party:created', ({ partyId, key, state }) => {
       setConnecting(false);
-      setPartyState(prev => ({ ...prev, ...state, partyId, partyKey: key }));
+      setSocketStatus('connected');
+      setPartyState(prev => ({ ...prev, ...state, partyId, partyCode: partyId, partyKey: key, partyServerUrl: activeSocketUrl }));
       setRole('host');
       setError('');
     });
     s.on('party:joined', ({ state }) => {
       setConnecting(false);
-      setPartyState(prev => ({ ...prev, ...state }));
+      setSocketStatus('connected');
+      setPartyState(prev => ({ ...prev, ...state, partyCode: state?.partyId || prev?.partyCode, partyServerUrl: activeSocketUrl }));
       setRole('member');
       setError('');
     });
-    s.on('party:error', ({ message }) => { setConnecting(false); setError(message); });
+    s.on('party:error', ({ message }) => { setConnecting(false); setSocketStatus(s.connected ? 'connected' : 'offline'); setError(message); });
     s.on('party:sync', (data) => {
       setPartyState(prev => prev ? { ...prev, currentTrack: data.track, positionMs: data.positionMs, isPlaying: data.isPlaying, syncTimestamp: data.timestamp, liveLyric: data.liveLyric || null } : prev);
     });
@@ -255,7 +316,7 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
   // Host sync: push playback state + live lyric every 500ms
   useEffect(() => {
     if (!partyState || role !== 'host') return;
-    const s = getSocket(socketUrl || undefined);
+    const s = getSocket(partyState?.partyServerUrl || socketUrl || undefined);
     let lastEmitted = null;
     const push = (action = 'sync') => {
       const payload = {
@@ -277,7 +338,7 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
     push('sync');
     syncIntervalRef.current = setInterval(() => push('sync'), 500);
     return () => clearInterval(syncIntervalRef.current);
-  }, [partyState?.partyId, role, hostTrack, hostIsPlaying, hostPositionMs, hostLiveLyric, myId, socketUrl]);
+  }, [partyState?.partyId, partyState?.partyServerUrl, role, hostTrack, hostIsPlaying, hostPositionMs, hostLiveLyric, myId, socketUrl]);
 
   // Apply synced state to local player for members
   useEffect(() => {
@@ -313,6 +374,9 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
     setHostLeaving(null);
     setIdleWarn(false);
     lastSyncedTrackIdRef.current = null;
+    socketListenerCleanupRef.current?.();
+    socketListenerCleanupRef.current = null;
+    setSocketStatus('idle');
     setSocketUrl(null);
     disconnectSocket();
   }
@@ -328,19 +392,15 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
         throw new Error(message);
       }
       
-      // Encode the URL to a short base58 string to use as the public-facing code
-      const shortCode = bs58.encode(new TextEncoder().encode(res.url));
-      
       // We set the URL so it's tracked if needed
       setSocketUrl(res.url);
       
       // Wait for socket to connect before emitting create
       const s = connectSocket(res.url);
-      attachSocketListeners(s);
+      attachSocketListeners(s, res.url);
       
       const doCreate = () => {
-        s.emit('party:create', { userId: myId, displayName: displayName.trim(), isPrivate, avatar: partyAvatar });
-        setPartyState(prev => prev ? { ...prev, partyCode: shortCode } : { partyCode: shortCode });
+        s.emit('party:create', { userId: myId, displayName: displayName.trim(), isPrivate, avatar: partyAvatar, requestedPartyId: cleanPartyToken(res.partyCode || '') });
       };
       
       if (s.connected) doCreate();
@@ -365,17 +425,22 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
     if (!joinId.trim()) return setError('Enter a party ID or code.');
     setError(''); setConnecting(true);
 
-    let targetId = joinId.trim();
+    const invite = parsePartyInviteInput(joinId);
+    let targetId = invite.partyId || joinId.trim();
     let urlToConnect = 'http://localhost:4444';
+    const privateKey = invite.key || joinKey.trim();
 
-    try {
+    if (invite.serverUrl) {
+      urlToConnect = invite.serverUrl;
+    } else {
+      try {
         // Try decoding base58 code back to a URL
         const decodedBytes = bs58.decode(targetId);
         const decodedUrl = new TextDecoder().decode(decodedBytes);
         if (decodedUrl.startsWith('http')) {
             urlToConnect = decodedUrl;
         }
-    } catch (e) {
+      } catch (e) {
         try {
             if (!window.aether?.partyResolveCode) throw new Error('No party code resolver in this build.');
             const resUrl = await window.aether.partyResolveCode(targetId);
@@ -383,15 +448,18 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
         } catch(err) {
             console.warn("Failed to resolve base58 code locally, maybe it is a raw ID.", err);
         }
+      }
+      if (urlToConnect === 'http://localhost:4444' && /^[A-Z0-9]{6,12}$/.test(cleanPartyToken(targetId))) {
+        urlToConnect = `https://aether-party-${cleanPartyToken(targetId).toLowerCase()}.loca.lt`;
+      }
     }
 
     setSocketUrl(urlToConnect);
     const s = connectSocket(urlToConnect);
-    attachSocketListeners(s);
+    attachSocketListeners(s, urlToConnect);
     
     const doJoin = () => {
-      s.emit('party:join', { partyId: targetId, key: joinKey.trim(), userId: myId, displayName: displayName.trim(), avatar: partyAvatar });
-      setPartyState(prev => prev ? { ...prev, partyCode: targetId } : { partyCode: targetId });
+      s.emit('party:join', { partyId: targetId, key: privateKey, userId: myId, displayName: displayName.trim(), avatar: partyAvatar });
     };
     
     if (s.connected) doJoin();
@@ -412,18 +480,18 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
     const msg = { id: msgId, type: 'chat', userId: myId, displayName, message, ts: Date.now(), status: 'sending' };
     // Optimistically add to local chat immediately
     setPartyState(prev => prev ? { ...prev, chat: [...(prev.chat || []), msg] } : prev);
-    getSocket().emit('party:chat', { partyId: partyState.partyId, userId: myId, displayName, message, localId: msgId });
+    getSocket(activePartySocketUrl).emit('party:chat', { partyId: partyState.partyId, userId: myId, displayName, message, localId: msgId });
     setChatInput('');
   }
 
   function sendRequest(type, value = null) {
     if (!partyState) return;
-    getSocket().emit('party:request', { partyId: partyState.partyId, userId: myId, displayName, type, value });
+    getSocket(activePartySocketUrl).emit('party:request', { partyId: partyState.partyId, userId: myId, displayName, type, value });
   }
 
   function respondRequest(requestId, approved) {
     const req = requests.find(r => r.id === requestId);
-    getSocket().emit('party:request-respond', { partyId: partyState.partyId, userId: myId, requestId, approved });
+    getSocket(activePartySocketUrl).emit('party:request-respond', { partyId: partyState.partyId, userId: myId, requestId, approved });
     setRequests(prev => prev.filter(r => r.id !== requestId));
     if (approved && req) {
       if (req.type === 'skip') onHostControl?.('skip');
@@ -432,17 +500,17 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
   }
 
   function transferHost(newHostId) {
-    getSocket().emit('party:transfer-host', { partyId: partyState.partyId, userId: myId, newHostId });
+    getSocket(activePartySocketUrl).emit('party:transfer-host', { partyId: partyState.partyId, userId: myId, newHostId });
     setHostLeaving(null);
     setRole('member');
   }
 
   function kickMember(targetId) {
-    getSocket().emit('party:kick', { partyId: partyState.partyId, userId: myId, targetId });
+    getSocket(activePartySocketUrl).emit('party:kick', { partyId: partyState.partyId, userId: myId, targetId });
   }
 
   function leaveParty(close = false) {
-    if (partyState) getSocket().emit('party:leave', { partyId: partyState.partyId, userId: myId });
+    if (partyState) getSocket(activePartySocketUrl).emit('party:leave', { partyId: partyState.partyId, userId: myId });
     if (role === 'host') {
       window.aether?.stopPartyServer?.();
     }
@@ -475,18 +543,24 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
   }
 
   function copyId() {
-    const code = partyState?.partyCode || partyState?.partyId;
+    const code = partyState?.partyId || partyState?.partyCode;
     copyTextToClipboard(code);
     setCopied(true);
     setTimeout(() => setCopied(false), 1800);
   }
 
   function copyInvite() {
-    const code = partyState?.partyCode || partyState?.partyId;
+    const code = partyState?.partyId || partyState?.partyCode;
+    const server = partyState?.partyServerUrl || socketUrl;
+    const deepLink = server && code
+      ? `aether://party/join?server=${encodeURIComponent(server)}&room=${encodeURIComponent(code)}${partyState?.partyKey ? `&key=${encodeURIComponent(partyState.partyKey)}` : ''}`
+      : '';
     const lines = [
       `Join my Aether party!`,
       `Party Code: ${code}`,
       partyState?.partyKey ? `Key: ${partyState.partyKey}` : null,
+      server ? `Server: ${server}` : null,
+      deepLink ? `Quick Link: ${deepLink}` : null,
       `Open Aether > Party > Join Party`,
     ].filter(Boolean).join('\n');
     copyTextToClipboard(lines);
@@ -516,7 +590,7 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
     setTimeout(() => setSentReaction(null), 1500);
     const msg = { id: `react_${Date.now()}`, type: 'system', message: `${displayName} reacted ${emoji}`, ts: Date.now() };
     setPartyState(prev => prev ? { ...prev, chat: [...(prev.chat || []), msg] } : prev);
-    getSocket().emit('party:chat', { partyId: partyState.partyId, userId: myId, displayName, message: `reacted ${emoji}` });
+    getSocket(activePartySocketUrl).emit('party:chat', { partyId: partyState.partyId, userId: myId, displayName, message: `reacted ${emoji}` });
   }
 
   function doSearch(q) {
@@ -611,7 +685,7 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
                     }}
                     maxLength={28}
                   />
-                  <p className="mt-2 text-[11px] leading-5 text-white/32">Party uses this profile for your avatar and chat name. Full public discovery will need an Aether account/relay later; this stays local unless you share it.</p>
+                  {/* <p className="mt-2 text-[11px] leading-5 text-white/32">Party uses this profile for your avatar and chat name. Full public discovery will need an Aether account/relay later; this stays local unless you share it.</p> */}
                 </div>
 
                 {tab === 'create' && (
@@ -626,9 +700,14 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
 
                 {tab === 'join' && (<>
                   <div>
-                    <span className="party-label">Party ID or Code</span>
-                    <input className="party-input" placeholder="Party ID or code…" value={joinId}
-                      onChange={e => setJoinId(e.target.value.toUpperCase())} />
+                    <span className="party-label">Party Code or Invite</span>
+                    <input className="party-input" placeholder="Room code, invite text, or quick link…" value={joinId}
+                      onChange={e => {
+                        const value = e.target.value;
+                        setJoinId(value);
+                        const parsed = parsePartyInviteInput(value);
+                        if (parsed.key && !joinKey) setJoinKey(parsed.key);
+                      }} />
                   </div>
                   <div>
                     <span className="party-label">Party Key (if private)</span>
@@ -663,12 +742,22 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
 
             {/* Top bar */}
             <div className="party-topbar">
-              <div className="flex items-center gap-4">
+              <div className="party-topbar-left">
                 <span className="party-logo"><Wifi size={14} className="text-[var(--party-mint)]" />AETHER ONLINE</span>
                 <button className="party-id-chip" onClick={copyId} title="Copy Code">
-                  {copied ? 'COPIED!' : (partyState?.partyCode ? String(partyState.partyCode).slice(0, 12) + '...' : partyState.partyId)} <Copy size={10} className="inline ml-1 opacity-50" />
+                  <span className="party-id-label">Room</span>
+                  {copied ? 'COPIED' : (partyState?.partyId || partyState?.partyCode || 'PARTY')} <Copy size={10} className="inline ml-1 opacity-50" />
                 </button>
-                {partyState.isPrivate && <span className="text-xs text-white/30 font-semibold flex items-center gap-1"><Lock size={10} /> Private</span>}
+                {partyState.partyKey && (
+                  <button className="party-key-chip" onClick={() => { copyTextToClipboard(partyState.partyKey); setCopied(true); setTimeout(() => setCopied(false), 1800); }} title="Copy private key">
+                    <Lock size={10} /> Key {partyState.partyKey}
+                  </button>
+                )}
+                <span className={`party-socket-chip ${socketStatus}`}>
+                  <span className="party-socket-dot" />
+                  {socketStatus === 'connected' ? 'Socket live' : socketStatus === 'reconnecting' ? 'Reconnecting' : socketStatus === 'connecting' ? 'Connecting' : 'Offline'}
+                </span>
+                {partyState.isPrivate && !partyState.partyKey && <span className="text-xs text-white/30 font-semibold flex items-center gap-1"><Lock size={10} /> Private</span>}
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-white/30 font-mono">{partyState.members?.length || 1}/10</span>
@@ -683,15 +772,26 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
 
             {/* Invite panel */}
             {showInvite && (
-              <div className="absolute top-16 right-4 z-30 party-panel p-4 w-72">
+              <div className="party-invite-popover party-panel">
                 <div className="flex items-center justify-between mb-3">
                   <span className="party-label mb-0">Invite to Party</span>
                   <button className="opacity-40 hover:opacity-80" onClick={() => setShowInvite(false)}><X size={13}/></button>
                 </div>
-                <div className="rounded-xl bg-black/30 border border-white/8 p-3 mb-3 font-mono text-xs leading-relaxed text-white/70">
-                  <div className="text-white font-black tracking-widest text-sm mb-1 truncate" title={partyState?.partyCode || partyState.partyId}>{partyState?.partyCode || partyState.partyId}</div>
-                  {partyState.partyKey && <div className="text-white/50">Key: <span className="text-white/80 font-bold">{partyState.partyKey}</span></div>}
-                  <div className="text-white/30 text-[10px] mt-1">Open Aether &gt; Party &gt; Join Party</div>
+                <div className="party-invite-card">
+                  <div>
+                    <div className="party-mini-label">Room code</div>
+                    <div className="party-invite-code">{partyState?.partyId || partyState?.partyCode}</div>
+                  </div>
+                  {partyState.partyKey && (
+                    <div>
+                      <div className="party-mini-label">Private key</div>
+                      <div className="party-invite-key">{partyState.partyKey}</div>
+                    </div>
+                  )}
+                  <div className="party-invite-help">
+                    <Link2 size={11} />
+                    Invite includes the hidden connection link so friends can paste it directly in Join Party.
+                  </div>
                 </div>
                 <button className="party-btn party-btn-mint w-full justify-center gap-2" onClick={copyInvite}>
                   {inviteCopied ? <><Check size={13}/>Copied!</> : <><Copy size={13}/>Copy Invite</>}
@@ -1073,8 +1173,8 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
                         ) : (
                           <div key={msg.id} className={`flex flex-col shrink-0 ${msg.userId === myId ? 'items-end' : 'items-start'}`}>
                             {msg.userId !== myId && <span className="text-[10px] text-[var(--party-mint)] font-bold mb-1 ml-1 uppercase tracking-wider">{msg.displayName}</span>}
-                            <div className={`px-4 py-2.5 rounded-2xl text-[13px] leading-relaxed max-w-[85%] flex items-end gap-2 ${msg.userId === myId ? 'bg-[var(--party-mint-dim)] text-white border border-[var(--party-border-accent)] rounded-tr-sm' : 'bg-white/10 text-white/90 border border-white/5 rounded-tl-sm'}`}>
-                              <span>{msg.message}</span>
+                            <div className={`party-chat-bubble px-4 py-2.5 rounded-2xl text-[13px] leading-relaxed max-w-[85%] flex items-end gap-2 ${msg.userId === myId ? 'bg-[var(--party-mint-dim)] text-white border border-[var(--party-border-accent)] rounded-tr-sm' : 'bg-white/10 text-white/90 border border-white/5 rounded-tl-sm'}`}>
+                              <span className="min-w-0 flex-1">{msg.message}</span>
                               {msg.userId === myId && (
                                 <div className="shrink-0 mb-[2px] opacity-70">
                                   {msg.status === 'sending' ? <Loader2 size={10} className="animate-spin text-white/50" /> : <Check size={10} className="text-[var(--party-mint)]" />}

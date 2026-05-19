@@ -356,9 +356,14 @@ const DEFAULT_SHORTCUTS = Object.freeze({
   volumeDown: 'Mod+Alt+ArrowDown',
   mute: 'Mod+Alt+M',
   clearQueue: 'Mod+Alt+Backspace',
+  focusSearch: 'Mod+F',
+  shortcutSettings: 'Mod+/',
+  studioLibrary: 'Mod+L',
+  experienceCenter: 'Mod+E',
+  auraStage: 'Mod+Shift+A',
   focusMode: 'Shift+F',
   miniPlayer: 'Shift+M',
-  diagnostics: 'D',
+  diagnostics: 'Mod+Alt+D',
 });
 const SHORTCUT_FIELDS = [
   { id: 'playPause', label: 'Play / Pause' },
@@ -368,9 +373,14 @@ const SHORTCUT_FIELDS = [
   { id: 'volumeDown', label: 'Volume Down' },
   { id: 'mute', label: 'Mute / Unmute' },
   { id: 'clearQueue', label: 'Clear Queue' },
+  { id: 'focusSearch', label: 'Focus Search' },
+  { id: 'shortcutSettings', label: 'Shortcut Settings' },
+  { id: 'studioLibrary', label: 'Open Studio Library' },
+  { id: 'experienceCenter', label: 'Experience Center' },
+  { id: 'auraStage', label: 'Aura Stage' },
   { id: 'focusMode', label: 'Toggle Focus View' },
   { id: 'miniPlayer', label: 'Toggle Mini Player' },
-  { id: 'diagnostics', label: 'Toggle Diagnostics' },
+  { id: 'diagnostics', label: 'Diagnostics Page' },
 ];
 const AUTOPLAY_MOOD_MODES = Object.freeze([
   { id: 'flow', label: 'Flow' },
@@ -1333,11 +1343,17 @@ const toReadableShortcut = (combo, isMacPlatform) => {
 };
 
 const getCommandPaletteShortcutLabel = (isMacPlatform) => (isMacPlatform ? '⌘K' : 'Ctrl+K');
+const getReservedShortcutCombos = () => ([
+  { label: 'Command Palette', combo: 'Mod+K' },
+]);
 
 const sanitizeShortcutMap = (candidate, isMacPlatform) => {
   const next = {};
   SHORTCUT_FIELDS.forEach(({ id }) => {
-    const raw = candidate?.[id] ?? DEFAULT_SHORTCUTS[id];
+    const stored = candidate?.[id];
+    const raw = id === 'diagnostics' && String(stored || '').trim().toUpperCase() === 'D'
+      ? DEFAULT_SHORTCUTS[id]
+      : (stored ?? DEFAULT_SHORTCUTS[id]);
     const parsed = parseShortcutCombo(raw, isMacPlatform);
     next[id] = parsed ? buildCanonicalShortcutCombo(parsed, isMacPlatform) : DEFAULT_SHORTCUTS[id];
   });
@@ -1472,6 +1488,10 @@ const HeaderVisualControls = memo(forwardRef(function HeaderVisualControls({
   const saveShortcutSettingsLocal = useCallback(async () => {
     const normalized = sanitizeShortcutMap(shortcutDraft, isMacPlatform);
     const seen = new Map();
+    getReservedShortcutCombos().forEach(({ label, combo }) => {
+      const parsed = parseShortcutCombo(combo, isMacPlatform);
+      if (parsed) seen.set(buildCanonicalShortcutCombo(parsed, isMacPlatform), label);
+    });
 
     for (const { id, label } of SHORTCUT_FIELDS) {
       const parsed = parseShortcutCombo(normalized[id], isMacPlatform);
@@ -1943,6 +1963,27 @@ const ExperienceShortcutSettingsPage = memo(function ExperienceShortcutSettingsP
                 value={shortcutDraft[field.id] || ''}
                 onFocus={() => setRecordingId(field.id)}
                 onBlur={() => setRecordingId(null)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Tab') return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const key = getEventKeyToken(event);
+                  if (!key || key === 'Escape') {
+                    if (key === 'Escape') setRecordingId(null);
+                    return;
+                  }
+                  const parsed = {
+                    ctrl: event.ctrlKey,
+                    meta: event.metaKey,
+                    alt: event.altKey,
+                    shift: event.shiftKey,
+                    key,
+                  };
+                  const combo = buildCanonicalShortcutCombo(parsed, isMacPlatform);
+                  if (!combo) return;
+                  setShortcutSettingsError('');
+                  setShortcutDraft((prev) => ({ ...prev, [field.id]: combo }));
+                }}
                 onChange={(e) => {
                   setShortcutSettingsError('');
                   setShortcutDraft((prev) => ({ ...prev, [field.id]: e.target.value }));
@@ -2503,6 +2544,19 @@ const ExperienceCenterShell = memo(function ExperienceCenterShell({
   onPublishProfile,
   onUnpublishProfile,
   isProfilePublishing,
+  soundLedgerView,
+  diagnostics,
+  engineStatus,
+  isRuntimeRepairing,
+  handleRunRuntimeRepair,
+  openMusicImport,
+  openLibraryOverlay,
+  diagnosticsApiBase,
+  queuePollDisplay,
+  queuePollTime,
+  skipEvents,
+  onClearDiagnosticEvents,
+  handleCopyDiagnosticsValue,
 }) {
   const [page, setPage] = useState('home');
   const [profileSearchQuery, setProfileSearchQuery] = useState('');
@@ -2596,6 +2650,30 @@ const ExperienceCenterShell = memo(function ExperienceCenterShell({
       title: 'Profile',
       detail: 'Avatar, public card, shareable listening stats, and Party identity.',
       category: 'Identity',
+    },
+    recap: {
+      icon: Activity,
+      title: 'Listening Recap',
+      detail: 'Weekly and monthly listening highlights from Signal Ledger.',
+      category: 'Listening Intelligence',
+    },
+    recovery: {
+      icon: AlertTriangle,
+      title: 'Recovery Center',
+      detail: 'Fix runtime, download, clipboard, permission, and connectivity issues.',
+      category: 'Support',
+    },
+    diagnostics: {
+      icon: Monitor,
+      title: 'Diagnostics',
+      detail: 'Runtime status, recent errors, helper paths, and app health signals.',
+      category: 'System',
+    },
+    setup: {
+      icon: Sparkles,
+      title: 'First-Run Setup',
+      detail: 'Relaunch setup for profile, import, offline, shortcuts, and runtime checks.',
+      category: 'Onboarding',
     },
     'gesture-face-lab': {
       icon: Hand,
@@ -3306,6 +3384,159 @@ const ExperienceCenterShell = memo(function ExperienceCenterShell({
                   </motion.div>
                 )}
 
+                {page === 'recap' && (
+                  <motion.div key="experience-recap" initial={{ opacity: 0, x: 18 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -18 }} transition={{ duration: 0.16 }}>
+                    <div className="grid gap-4">
+                      <ExperiencePageIntro category="Listening Recap" title="Aether Recap" subtitle="Weekly and monthly highlights from your Signal Ledger." icon={Activity} />
+                      <section className="rounded-[1.5rem] border border-brand-accent/18 bg-brand-accent/[0.055] p-5">
+                        <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                          {[
+                            ['Listens', profileStats?.listens],
+                            ['Minutes', profileStats?.minutes],
+                            ['Artists', profileStats?.artists],
+                            ['Vaults', profileStats?.vaults],
+                            ['Tracks', profileStats?.tracks],
+                            ['Sessions', soundLedgerView?.totalSessions],
+                          ].map(([label, value]) => <HealthMetricCard key={label} label={label} value={value} tone="good" />)}
+                        </div>
+                      </section>
+                      <section className="grid gap-4 md:grid-cols-2">
+                        <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                          <div className="text-[10px] font-black uppercase tracking-[0.22em] text-brand-accent">Top Artists</div>
+                          <div className="mt-3 space-y-2">
+                            {(soundLedgerView?.topArtists || []).slice(0, 5).map(([artist, entry], index) => (
+                              <div key={artist} className="rounded-2xl border border-white/8 bg-black/20 px-4 py-3">
+                                <div className="text-sm font-black uppercase tracking-tight text-white">{index + 1}. {artist}</div>
+                                <div className="mt-1 text-[10px] uppercase tracking-[0.14em] text-white/35">{Math.max(0, Number(entry?.count) || 0)} plays</div>
+                              </div>
+                            ))}
+                            {(soundLedgerView?.topArtists || []).length === 0 && <div className="text-sm text-white/40">Play a few tracks and your recap will fill in here.</div>}
+                          </div>
+                        </div>
+                        <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                          <div className="text-[10px] font-black uppercase tracking-[0.22em] text-brand-accent">Replay Pulse</div>
+                          <div className="mt-3 space-y-2">
+                            {(soundLedgerView?.topTracks || []).slice(0, 5).map(([track, entry], index) => (
+                              <div key={track} className="rounded-2xl border border-white/8 bg-black/20 px-4 py-3">
+                                <div className="truncate text-sm font-black uppercase tracking-tight text-white">{index + 1}. {entry?.title || track}</div>
+                                <div className="mt-1 text-[10px] uppercase tracking-[0.14em] text-white/35">{Math.max(0, Number(entry?.count) || 0)} listens</div>
+                              </div>
+                            ))}
+                            {(soundLedgerView?.topTracks || []).length === 0 && <div className="text-sm text-white/40">No repeated tracks yet.</div>}
+                          </div>
+                        </div>
+                      </section>
+                    </div>
+                  </motion.div>
+                )}
+
+                {page === 'recovery' && (
+                  <motion.div key="experience-recovery" initial={{ opacity: 0, x: 18 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -18 }} transition={{ duration: 0.16 }}>
+                    <div className="grid gap-4">
+                      <ExperiencePageIntro category="Recovery Center" title="Fix Aether" subtitle="Repair local helpers, permissions, runtime checks, and recent app errors." icon={AlertTriangle} />
+                      <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                        <div className="grid gap-3 sm:grid-cols-3">
+                          <HealthMetricCard label="yt-dlp" value={engineStatus?.ytDlpReady ? 1 : 0} tone={engineStatus?.ytDlpReady ? 'good' : 'danger'} title={engineStatus?.ytDlpPath || 'yt-dlp path unavailable'} />
+                          <HealthMetricCard label="FFmpeg" value={engineStatus?.ffmpegReady ? 1 : 0} tone={engineStatus?.ffmpegReady ? 'good' : 'warn'} title={engineStatus?.ffmpegPath || 'FFmpeg path unavailable'} />
+                          <HealthMetricCard label="Errors" value={[diagnostics?.lastQueueError, diagnostics?.lastSystemError, diagnostics?.lastLyricsError].filter(Boolean).length} tone={[diagnostics?.lastQueueError, diagnostics?.lastSystemError, diagnostics?.lastLyricsError].some(Boolean) ? 'warn' : 'good'} />
+                        </div>
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <button onClick={handleRunRuntimeRepair} disabled={isRuntimeRepairing || !isStandalone} className="rounded-2xl border border-brand-accent/30 bg-brand-accent/12 px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black disabled:opacity-45" title="Automatically repair local playback/download helpers">{isRuntimeRepairing ? 'Repairing...' : 'Repair Runtime'}</button>
+                          <button onClick={() => navigate('diagnostics')} className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Open Diagnostics</button>
+                        </div>
+                        <div className="mt-4 rounded-2xl border border-white/8 bg-black/18 p-4 text-sm leading-6 text-white/45">
+                          If downloads, playback helpers, clipboard image sharing, camera permission, or local imports fail, Aether will surface the issue here and offer the safest automatic repair it has.
+                        </div>
+                      </section>
+                    </div>
+                  </motion.div>
+                )}
+
+                {page === 'diagnostics' && (
+                  <motion.div key="experience-diagnostics" initial={{ opacity: 0, x: 18 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -18 }} transition={{ duration: 0.16 }}>
+                    <div className="grid gap-4">
+                      <ExperiencePageIntro category="System Health" title="Diagnostics" subtitle="Runtime status, recent errors, helper paths, and app health signals." icon={Monitor} />
+                      <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                          <HealthMetricCard label="Queue Poll" value={Number.parseInt(queuePollDisplay, 10) || 0} tone={diagnostics?.lastQueueError ? 'danger' : 'good'} title={`Last queue poll: ${queuePollTime || 'local'}`} />
+                          <HealthMetricCard label="System ms" value={diagnostics?.lastSystemFetchMs || 0} tone={diagnostics?.lastSystemError ? 'danger' : 'neutral'} />
+                          <HealthMetricCard label="Lyrics ms" value={diagnostics?.lastLyricsFetchMs || 0} tone={diagnostics?.lastLyricsError ? 'danger' : 'neutral'} />
+                          <HealthMetricCard label="Guard Hits" value={diagnostics?.transportGuardHits || 0} tone={(diagnostics?.transportGuardHits || 0) > 0 ? 'warn' : 'good'} />
+                        </div>
+                        <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                          <div className="rounded-2xl border border-white/8 bg-black/20 p-4">
+                            <div className="text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent">Runtime</div>
+                            <div className="mt-3 space-y-2 text-[11px] leading-5 text-white/52">
+                              <div>API: <button onClick={() => handleCopyDiagnosticsValue?.(diagnosticsApiBase, 'API base copied')} className="break-all text-left font-mono text-white/72 hover:text-brand-accent">{diagnosticsApiBase || 'local'}</button></div>
+                              <div>Queue: <span className="font-mono text-white/70">{queuePollDisplay}</span> <span className="text-white/32">{queuePollTime}</span></div>
+                              <div>Lyrics source: <span className="font-mono text-white/70">{diagnostics?.lastLyricsSource || 'none'}</span></div>
+                            </div>
+                          </div>
+                          <div className="rounded-2xl border border-white/8 bg-black/20 p-4">
+                            <div className="text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent">Helpers</div>
+                            <div className="mt-3 space-y-2 text-[11px] leading-5 text-white/52">
+                              <button onClick={() => engineStatus?.ytDlpPath && handleCopyDiagnosticsValue?.(engineStatus.ytDlpPath, 'yt-dlp path copied')} className="block w-full truncate text-left font-mono text-white/68 hover:text-brand-accent">yt-dlp: {engineStatus?.ytDlpPath || 'not resolved'}</button>
+                              <button onClick={() => engineStatus?.ffmpegPath && handleCopyDiagnosticsValue?.(engineStatus.ffmpegPath, 'FFmpeg path copied')} className="block w-full truncate text-left font-mono text-white/68 hover:text-brand-accent">ffmpeg: {engineStatus?.ffmpegPath || 'not resolved'}</button>
+                              <button onClick={handleRunRuntimeRepair} disabled={isRuntimeRepairing || !isStandalone} className="mt-2 rounded-xl border border-brand-accent/30 bg-brand-accent/10 px-3 py-2 text-[9px] font-black uppercase tracking-[0.16em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black disabled:opacity-45">{isRuntimeRepairing ? 'Repairing...' : 'Repair Runtime'}</button>
+                            </div>
+                          </div>
+                        </div>
+                        {(diagnostics?.lastQueueError || diagnostics?.lastSystemError || diagnostics?.lastLyricsError) && (
+                          <div className="mt-4 rounded-2xl border border-red-400/20 bg-red-500/[0.06] p-4 text-sm leading-6 text-red-100/80">
+                            {diagnostics.lastQueueError || diagnostics.lastSystemError || diagnostics.lastLyricsError}
+                          </div>
+                        )}
+                      </section>
+                      <section className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-[10px] font-black uppercase tracking-[0.22em] text-brand-accent">Recent Events</div>
+                            <div className="mt-1 text-xs text-white/40">Useful when playback, imports, or runtime helpers misbehave.</div>
+                          </div>
+                          <button onClick={onClearDiagnosticEvents} className="rounded-xl border border-red-400/20 bg-red-500/[0.055] px-3 py-2 text-[9px] font-black uppercase tracking-[0.16em] text-red-200/80 transition-all hover:border-red-400/40 hover:text-red-100">Clear Events</button>
+                        </div>
+                        <div className="mt-4 grid gap-2">
+                          {(skipEvents || []).length === 0 ? (
+                            <div className="rounded-2xl border border-white/8 bg-black/18 p-5 text-center text-sm text-white/38">No diagnostic events yet.</div>
+                          ) : (skipEvents || []).slice(-10).reverse().map((event, index) => (
+                            <div key={`${event.at || 0}-${index}`} className="rounded-2xl border border-white/8 bg-black/18 px-4 py-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="text-[10px] font-black uppercase tracking-[0.16em] text-brand-accent">{event.label || 'event'}</div>
+                                <div className="text-[9px] font-mono text-white/34">{event.at ? new Date(event.at).toLocaleTimeString() : 'now'}</div>
+                              </div>
+                              <div className="mt-1 text-xs leading-5 text-white/48">{event.detail || event.title || 'No details'}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    </div>
+                  </motion.div>
+                )}
+
+                {page === 'setup' && (
+                  <motion.div key="experience-setup" initial={{ opacity: 0, x: 18 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -18 }} transition={{ duration: 0.16 }}>
+                    <div className="grid gap-4">
+                      <ExperiencePageIntro category="First-Run Setup" title="Setup Checklist" subtitle="You can relaunch this anytime from Experience Center." icon={Sparkles} />
+                      <section className="grid gap-3 md:grid-cols-2">
+                        {[
+                          ['Profile + Avatar', 'Create your Party/public identity.', User, () => navigate('profile')],
+                          ['Import Music', 'Bring in local files, playlists, and lyrics.', Upload, openMusicImport],
+                          ['Studio Library', 'Review vault health and offline readiness.', HardDrive, () => openLibraryOverlay?.()],
+                          ['Shortcuts', 'Set playback and command keys.', Keyboard, () => navigate('shortcut-settings')],
+                          ['Recovery Center', 'Check helpers and repair runtime.', AlertTriangle, () => navigate('recovery')],
+                          ['App Lock', 'Protect private settings and profile edits.', Lock, () => navigate('app-lock')],
+                        ].map(([title, detail, Icon, run]) => (
+                          <button key={title} onClick={run} className="rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-5 text-left transition-all hover:border-brand-accent/35 hover:bg-brand-accent/[0.055]">
+                            <Icon size={18} className="text-brand-accent" />
+                            <div className="mt-3 text-sm font-black uppercase tracking-[0.14em] text-white">{title}</div>
+                            <div className="mt-1 text-xs leading-5 text-white/42">{detail}</div>
+                          </button>
+                        ))}
+                      </section>
+                    </div>
+                  </motion.div>
+                )}
+
                 {page === 'gesture-face-lab' && (
                   <motion.div key="experience-gesture-face-lab" initial={{ opacity: 0, x: 18 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -18 }} transition={{ duration: 0.16 }}>
                     <ExperienceGestureFaceLabPage isGestureControlEnabled={isGestureControlEnabled} setIsGestureControlEnabled={setIsGestureControlEnabled} isFaceControlEnabled={isFaceControlEnabled} setIsFaceControlEnabled={setIsFaceControlEnabled} faceControlStatus={faceControlStatus} faceControlSignal={faceControlSignal} cameraHandSignal={cameraHandSignal} setLastAdded={flashLastAdded} />
@@ -3366,6 +3597,22 @@ const SecondaryNowPlayingStrip = memo(function SecondaryNowPlayingStrip({
           {artist || (title ? 'Unknown artist' : 'Queue a track to see it here')}
         </div>
       </div>
+    </div>
+  );
+});
+
+const HealthMetricCard = memo(function HealthMetricCard({ label, value, tone = 'neutral', title = '' }) {
+  const toneClass = tone === 'good'
+    ? 'border-brand-accent/22 bg-brand-accent/[0.06] text-brand-accent'
+    : tone === 'warn'
+      ? 'border-amber-300/18 bg-amber-400/[0.055] text-amber-100/85'
+      : tone === 'danger'
+        ? 'border-red-400/18 bg-red-500/[0.055] text-red-200/85'
+        : 'border-white/8 bg-black/22 text-white/78';
+  return (
+    <div className={`rounded-2xl border p-3 text-center ${toneClass}`} title={title || label}>
+      <div className="text-lg font-black">{Number(value || 0).toLocaleString()}</div>
+      <div className="mt-1 text-[8px] font-black uppercase tracking-[0.18em] text-white/36">{label}</div>
     </div>
   );
 });
@@ -4220,6 +4467,10 @@ const StudioLibraryOverlayIsland = memo(function StudioLibraryOverlayIsland({
   handleImportVault,
   handleGenerateSmartMix,
   handleCleanVault,
+  downloadedTracks,
+  resolveWarmupTrackId,
+  trackHasSavedLyrics,
+  onDownloadMissingForVault,
   onClose,
 }) {
   const clearLibrarySearch = useCallback(() => {
@@ -4260,6 +4511,37 @@ const StudioLibraryOverlayIsland = memo(function StudioLibraryOverlayIsland({
   const removeFocusedTrack = useCallback((track, index) => {
     handleRemoveTrackFromPlaylist(viewingPlaylist, track, index);
   }, [handleRemoveTrackFromPlaylist, viewingPlaylist]);
+
+  const focusedVaultHealth = useMemo(() => {
+    const tracks = Array.isArray(focusedVaultTracks) ? focusedVaultTracks : [];
+    const downloadedSet = new Set((downloadedTracks || []).map((id) => String(id)));
+    const seen = new Set();
+    let duplicates = 0;
+    let missingLinks = 0;
+    let weakMetadata = 0;
+    let noLyrics = 0;
+    let downloaded = 0;
+
+    tracks.forEach((track) => {
+      const key = `${String(track?.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}|${String(track?.author || track?.artist || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}|${track?.youtubeId || track?.id || ''}`;
+      if (seen.has(key)) duplicates += 1;
+      else seen.add(key);
+
+      if (!(track?.actualUrl || track?.url || track?.youtubeId)) missingLinks += 1;
+      const title = String(track?.title || '').trim().toLowerCase();
+      const artist = String(track?.author || track?.artist || '').trim().toLowerCase();
+      if (!title || !artist || title === 'unknown track' || artist === 'unknown artist' || !track?.thumbnail) weakMetadata += 1;
+      if (!trackHasSavedLyrics?.(track)) noLyrics += 1;
+
+      const id = resolveWarmupTrackId?.(track) || track?.id || track?.youtubeId;
+      if (id && (downloadedSet.has(String(id)) || downloadedSet.has(String(track?.id || '')))) downloaded += 1;
+    });
+
+    const missingDownloads = Math.max(0, tracks.length - downloaded);
+    const issueWeight = duplicates + missingLinks + weakMetadata + noLyrics * 0.35 + missingDownloads * 0.6;
+    const score = tracks.length === 0 ? 100 : Math.max(0, Math.round(100 - (issueWeight / Math.max(1, tracks.length)) * 100));
+    return { total: tracks.length, duplicates, missingLinks, weakMetadata, noLyrics, downloaded, missingDownloads, offlineReady: tracks.length > 0 && missingDownloads === 0, score };
+  }, [downloadedTracks, focusedVaultTracks, resolveWarmupTrackId, trackHasSavedLyrics]);
 
   const updateBrowseMode = useCallback((mode) => {
     startTransition(() => setLibraryBrowseMode(mode));
@@ -4316,7 +4598,7 @@ const StudioLibraryOverlayIsland = memo(function StudioLibraryOverlayIsland({
           <div className="flex items-center gap-2 flex-wrap justify-end">
             {isStandalone && <button onClick={handleImportVault} disabled={isVaultImporting} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all disabled:opacity-50" title="Import Vault (.aether)">{isVaultImporting ? 'Importing...' : 'Import'}</button>}
             <button onClick={handleGenerateSmartMix} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all" title="Generate Smart Mix">Smart Mix</button>
-            <button onClick={handleCleanVault} disabled={isVaultCleaning} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all disabled:opacity-40" title="Clean Vault">Clean</button>
+            <button onClick={handleCleanVault} disabled={isVaultCleaning} className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/50 hover:text-brand-accent hover:border-brand-accent/40 text-[10px] font-black uppercase tracking-widest transition-all disabled:opacity-40" title="Playlist Health: remove duplicates, repair weak metadata, and remove unavailable entries">{isVaultCleaning ? 'Scanning...' : 'Health'}</button>
             <button onClick={onClose} className="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 text-white/45 hover:text-red-400 hover:border-red-500/40 transition-all flex items-center justify-center" title="Close">
               <X size={18} />
             </button>
@@ -4596,12 +4878,42 @@ const StudioLibraryOverlayIsland = memo(function StudioLibraryOverlayIsland({
                     <button onClick={() => handlePlaylistPlayAll(viewingPlaylist, false)} className={`p-2 rounded-lg transition-all ${isViewingFavorites ? 'bg-rose-400/10 text-rose-200/80 hover:bg-rose-400/20' : 'bg-brand-accent/10 text-brand-accent hover:bg-brand-accent hover:text-black'}`} title={`Play ${focusedVaultName}`}><Play size={12} /></button>
                     <button onClick={() => handlePlaylistPlayAll(viewingPlaylist, true)} className="p-2 rounded-lg bg-white/5 text-white/40 hover:text-brand-accent transition-all" title={`Shuffle ${focusedVaultName}`}><Shuffle size={12} /></button>
                     <button onClick={() => handlePlaylistAddAll(viewingPlaylist)} className="p-2 rounded-lg bg-brand-accent/10 text-brand-accent hover:bg-brand-accent hover:text-black transition-all" title={`Add all tracks from ${focusedVaultName} to queue`}><Plus size={12} /></button>
+                    <span className={`rounded-lg border px-2 py-1 text-[8px] font-black uppercase tracking-[0.14em] ${focusedVaultHealth.offlineReady ? 'border-brand-accent/35 bg-brand-accent/12 text-brand-accent' : 'border-amber-300/18 bg-amber-400/[0.06] text-amber-100/80'}`} title={focusedVaultHealth.offlineReady ? 'Every track in this vault has a downloaded copy' : `${focusedVaultHealth.missingDownloads} tracks need download for offline playback`}>
+                      {focusedVaultHealth.offlineReady ? 'Ready Offline' : `${focusedVaultHealth.missingDownloads} Missing`}
+                    </span>
+                    {isStandalone && !focusedVaultHealth.offlineReady && (
+                      <button onClick={() => onDownloadMissingForVault?.(focusedVaultTracks, focusedVaultName)} className="p-2 rounded-lg bg-white/5 text-white/40 hover:text-brand-accent transition-all" title={`Download missing tracks for ${focusedVaultName}`}><HardDrive size={12} /></button>
+                    )}
                     {isStandalone && <button onClick={() => handleExportVault(viewingPlaylist)} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-brand-accent transition-all" title={`Export ${focusedVaultName} to .aether`}><Download size={12} /></button>}
                     <button onClick={() => handleDeletePlaylist(viewingPlaylist)} className="p-2 rounded-lg bg-white/5 text-red-400/60 hover:text-red-400 transition-all" title={isViewingFavorites ? 'Clear Favorites' : `Delete ${viewingPlaylist}`}><Trash2 size={12} /></button>
                     <button onClick={() => updateViewingPlaylist(null)} className="p-2 rounded-lg bg-white/5 text-white/35 hover:text-red-400 transition-all" title="Back"><ChevronLeft size={12} /></button>
                   </div>
                 </div>
-                <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 pb-24 space-y-2 bg-gradient-to-b from-brand-accent/5 to-transparent overscroll-contain">
+                <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 pb-24 space-y-3 bg-gradient-to-b from-brand-accent/5 to-transparent overscroll-contain">
+                  <div className="rounded-2xl border border-white/8 bg-black/20 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="text-[9px] font-black uppercase tracking-[0.24em] text-brand-accent">Playlist Health</div>
+                        <div className="mt-1 text-[11px] leading-5 text-white/42">Duplicates, missing links, metadata, lyrics, and offline readiness.</div>
+                      </div>
+                      <div className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] ${focusedVaultHealth.score >= 80 ? 'border-brand-accent/35 bg-brand-accent/12 text-brand-accent' : focusedVaultHealth.score >= 55 ? 'border-amber-300/20 bg-amber-400/[0.06] text-amber-100/85' : 'border-red-400/20 bg-red-500/[0.06] text-red-200/85'}`}>
+                        {focusedVaultHealth.score}% Health
+                      </div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-5">
+                      <HealthMetricCard label="Dupes" value={focusedVaultHealth.duplicates} tone={focusedVaultHealth.duplicates ? 'warn' : 'good'} />
+                      <HealthMetricCard label="Links" value={focusedVaultHealth.missingLinks} tone={focusedVaultHealth.missingLinks ? 'danger' : 'good'} title="Tracks without a usable source link" />
+                      <HealthMetricCard label="Metadata" value={focusedVaultHealth.weakMetadata} tone={focusedVaultHealth.weakMetadata ? 'warn' : 'good'} title="Tracks with weak title, artist, or artwork" />
+                      <HealthMetricCard label="No Lyrics" value={focusedVaultHealth.noLyrics} tone={focusedVaultHealth.noLyrics ? 'neutral' : 'good'} />
+                      <HealthMetricCard label="Offline" value={focusedVaultHealth.downloaded} tone={focusedVaultHealth.offlineReady ? 'good' : 'warn'} title={`${focusedVaultHealth.downloaded}/${focusedVaultHealth.total} downloaded`} />
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button onClick={handleCleanVault} disabled={isVaultCleaning} className="rounded-xl border border-brand-accent/25 bg-brand-accent/10 px-3 py-2 text-[9px] font-black uppercase tracking-[0.16em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black disabled:opacity-45" title="Run the safe health fix across saved vaults">{isVaultCleaning ? 'Scanning...' : 'Fix Safe Issues'}</button>
+                      {isStandalone && !focusedVaultHealth.offlineReady && (
+                        <button onClick={() => onDownloadMissingForVault?.(focusedVaultTracks, focusedVaultName)} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[9px] font-black uppercase tracking-[0.16em] text-white/56 transition-all hover:border-brand-accent/35 hover:text-brand-accent" title="Download tracks that are missing from offline storage">Download Missing</button>
+                      )}
+                    </div>
+                  </div>
                   {focusedVaultVisibleTracks.map((track, tidx) => (
                     <StudioLibraryFocusedTrackRow
                       key={`${viewingPlaylist}-${tidx}`}
@@ -4624,11 +4936,23 @@ const StudioLibraryOverlayIsland = memo(function StudioLibraryOverlayIsland({
             ) : (
               <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 pb-24 flex flex-col gap-3 bg-gradient-to-b from-brand-accent/5 to-transparent overscroll-contain">
                 <div className="rounded-2xl border border-white/8 bg-black/20 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
-                  <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Library Stats</div>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/30">Library Health</div>
+                      <div className="mt-1 text-[11px] leading-5 text-white/38">Aether checks duplicates, broken sources, weak metadata, missing lyrics, and offline coverage.</div>
+                    </div>
+                    <button onClick={handleCleanVault} disabled={isVaultCleaning} className="rounded-xl border border-brand-accent/25 bg-brand-accent/10 px-3 py-2 text-[9px] font-black uppercase tracking-[0.16em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black disabled:opacity-45" title="Run Playlist Health">{isVaultCleaning ? 'Scanning...' : 'Run Health'}</button>
+                  </div>
                   <div className="mt-3 grid grid-cols-3 gap-3 text-center">
                     <div className="rounded-xl bg-white/5 border border-white/8 p-3"><div className="text-brand-accent font-black text-lg">{libraryInsights.unique}</div><div className="text-[8px] uppercase tracking-[0.24em] text-white/30">Unique</div></div>
                     <div className="rounded-xl bg-white/5 border border-white/8 p-3"><div className="text-brand-accent font-black text-lg">{libraryInsights.total}</div><div className="text-[8px] uppercase tracking-[0.24em] text-white/30">Total</div></div>
                     <div className="rounded-xl bg-white/5 border border-white/8 p-3"><div className="text-brand-accent font-black text-lg">{libraryInsights.duplicates}</div><div className="text-[8px] uppercase tracking-[0.24em] text-white/30">Dupes</div></div>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
+                    <HealthMetricCard label="Missing Links" value={libraryInsights.missingLinks} tone={libraryInsights.missingLinks ? 'danger' : 'good'} />
+                    <HealthMetricCard label="Weak Meta" value={libraryInsights.weakMetadata} tone={libraryInsights.weakMetadata ? 'warn' : 'good'} />
+                    <HealthMetricCard label="No Lyrics" value={libraryInsights.noLyrics} tone={libraryInsights.noLyrics ? 'neutral' : 'good'} />
+                    <HealthMetricCard label="Not Offline" value={libraryInsights.notDownloaded} tone={libraryInsights.notDownloaded ? 'warn' : 'good'} />
                   </div>
                 </div>
                 <div className="text-[10px] uppercase tracking-[0.2em] text-white/25 text-center">Select a vault node to focus it here.</div>
@@ -6617,6 +6941,7 @@ function App() {
   const [spotifyImportProgress, setSpotifyImportProgress] = useState({ stage: 'idle', progress: 0, message: '' });
   const [isSpotifyImporting, setIsSpotifyImporting] = useState(false);
   const [isLocalMediaImporting, setIsLocalMediaImporting] = useState(false);
+  const [importReview, setImportReview] = useState(null);
   const [spotifyImportLogs, setSpotifyImportLogs] = useState([]);
   const [isVaultImporting, setIsVaultImporting] = useState(false);
   const [isShortcutSettingsSaving, setIsShortcutSettingsSaving] = useState(false);
@@ -6880,6 +7205,7 @@ function App() {
   }, []);
 
   const inspectPlaylistTracks = useMemo(() => isPlaylistInspect && Array.isArray(inspectTarget?.tracks) ? inspectTarget.tracks.filter(Boolean) : [], [isPlaylistInspect, inspectTarget?.tracks]);
+  const isInspectPlaylistFromVault = isPlaylistInspect && String(inspectTarget?.source || '').startsWith('vault:');
   const inspectPrimaryTrack = inspectPlaylistTracks[0] || null;
   const inspectTrack = isPlaylistInspect ? null : inspectTarget?.track || null;
   const inspectSourceUrl = useMemo(() => {
@@ -6909,6 +7235,39 @@ function App() {
   const inspectPlaylistDurationMs = useMemo(() => inspectPlaylistTracks.reduce((total, track) => total + Math.max(0, Number(track?.totalDurationMs || track?.duration || 0)), 0), [inspectPlaylistTracks]);
   const inspectPlaylistArtistCount = useMemo(() => new Set(inspectPlaylistTracks.map((track) => String(track?.author || 'Unknown Artist').trim()).filter(Boolean)).size, [inspectPlaylistTracks]);
   const inspectPlaylistQueuedCount = useMemo(() => inspectPlaylistTracks.filter((track) => queue.some((queuedTrack) => normalizeTrackIdentity(queuedTrack) === normalizeTrackIdentity(track))).length, [inspectPlaylistTracks, queue, normalizeTrackIdentity]);
+  const inspectPlaylistSignal = useMemo(() => {
+    const identityCounts = new Map();
+    const artistCounts = new Map();
+    let downloaded = 0;
+    let favorites = 0;
+    let missingSources = 0;
+    inspectPlaylistTracks.forEach((track) => {
+      const identity = normalizeTrackIdentity(track);
+      if (identity) identityCounts.set(identity, (identityCounts.get(identity) || 0) + 1);
+      const artist = String(track?.author || track?.artist || 'Unknown Artist').trim() || 'Unknown Artist';
+      artistCounts.set(artist, (artistCounts.get(artist) || 0) + 1);
+      const id = String(track?.id || track?.youtubeId || extractYouTubeId(track?.url) || extractYouTubeId(track?.actualUrl) || '').trim();
+      if (id && downloadedTracks.includes(id)) downloaded += 1;
+      if (identity && favoriteTracks?.[identity]) favorites += 1;
+      if (!getInspectSourceUrl(track)) missingSources += 1;
+    });
+    const duplicateTracks = Array.from(identityCounts.values()).reduce((total, count) => total + Math.max(0, count - 1), 0);
+    const topArtistEntry = Array.from(artistCounts.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+    const avgDurationMs = inspectPlaylistTracks.length ? inspectPlaylistDurationMs / inspectPlaylistTracks.length : 0;
+    const queuedPercent = inspectPlaylistTracks.length ? Math.round((inspectPlaylistQueuedCount / inspectPlaylistTracks.length) * 100) : 0;
+    const offlinePercent = inspectPlaylistTracks.length ? Math.round((downloaded / inspectPlaylistTracks.length) * 100) : 0;
+    return {
+      duplicateTracks,
+      topArtist: topArtistEntry?.[0] || 'Mixed artists',
+      topArtistCount: topArtistEntry?.[1] || 0,
+      avgDurationMs,
+      downloaded,
+      favorites,
+      missingSources,
+      queuedPercent,
+      offlinePercent,
+    };
+  }, [downloadedTracks, favoriteTracks, inspectPlaylistDurationMs, inspectPlaylistQueuedCount, inspectPlaylistTracks, normalizeTrackIdentity]);
 
 
 
@@ -9044,6 +9403,17 @@ function App() {
     return `meta:${title}|${author}`;
   }, []);
 
+  const trackHasSavedLyrics = useCallback((track) => {
+    if (!track) return false;
+    const keys = new Set([
+      getTrackActionKey(track),
+      track.youtubeId ? `yt:${String(track.youtubeId)}` : '',
+      track.id ? `id:${String(track.id)}` : '',
+      `meta:${String(track.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}|${String(track.author || track.artist || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}`,
+    ].filter(Boolean));
+    return Array.from(keys).some((key) => (manualLyricsStoreRef.current?.[key]?.lines || []).length > 0);
+  }, [getTrackActionKey]);
+
   const hasTrackInList = useCallback((list, target) => {
     const key = normalizeTrackIdentity(target);
     return (list || []).some(item => normalizeTrackIdentity(item) === key);
@@ -10926,7 +11296,12 @@ function App() {
     const allTracks = Object.values(playlists).flat();
     const seen = new Map();
     const artistCount = new Map();
+    const downloadedSet = new Set((downloadedTracks || []).map((id) => String(id)));
     let duplicates = 0;
+    let missingLinks = 0;
+    let weakMetadata = 0;
+    let noLyrics = 0;
+    let notDownloaded = 0;
 
     allTracks.forEach((track) => {
       const key = normalizeTrackIdentity(track);
@@ -10935,6 +11310,13 @@ function App() {
 
       const artist = (track?.author || 'Unknown').trim();
       artistCount.set(artist, (artistCount.get(artist) || 0) + 1);
+      const resolvedId = track?.youtubeId || extractYouTubeId(track?.actualUrl || track?.url || track?.id) || track?.id;
+      if (!(track?.actualUrl || track?.url || track?.youtubeId)) missingLinks += 1;
+      const title = String(track?.title || '').trim().toLowerCase();
+      const normalizedArtist = String(track?.author || track?.artist || '').trim().toLowerCase();
+      if (!title || !normalizedArtist || title === 'unknown track' || normalizedArtist === 'unknown artist' || !track?.thumbnail) weakMetadata += 1;
+      if (!trackHasSavedLyrics(track)) noLyrics += 1;
+      if (!resolvedId || (!downloadedSet.has(String(resolvedId)) && !downloadedSet.has(String(track?.id || '')))) notDownloaded += 1;
     });
 
     const topArtists = [...artistCount.entries()]
@@ -10945,9 +11327,13 @@ function App() {
       total: allTracks.length,
       unique: seen.size,
       duplicates,
+      missingLinks,
+      weakMetadata,
+      noLyrics,
+      notDownloaded,
       topArtists,
     };
-  }, [playlists, normalizeTrackIdentity]);
+  }, [downloadedTracks, playlists, normalizeTrackIdentity, trackHasSavedLyrics]);
 
   const smartMixTracks = useMemo(() => {
     const allTracks = Object.values(playlists).flat();
@@ -13374,6 +13760,24 @@ function App() {
     return derivedYoutubeId || idFromTrack || track.id || null;
   }, []);
 
+  const handleDownloadMissingForVault = useCallback((tracks = [], label = 'vault') => {
+    if (!isStandalone || !window.aether?.download) {
+      flashLastAdded('Offline downloads unavailable', 2200, 'warning');
+      return;
+    }
+    const downloadedSet = new Set((downloadedTracks || []).map((id) => String(id)));
+    const missing = (Array.isArray(tracks) ? tracks : []).filter((track) => {
+      const id = resolveWarmupTrackId(track);
+      return id && !downloadedSet.has(String(id)) && !downloadedSet.has(String(track?.id || ''));
+    });
+    if (missing.length === 0) {
+      flashLastAdded(`${label} is ready offline`, 1800, 'success');
+      return;
+    }
+    missing.slice(0, 24).forEach((track) => warmupTrack(track));
+    flashLastAdded(`Downloading ${Math.min(missing.length, 24)} missing track${missing.length === 1 ? '' : 's'} for ${label}`, 3200, 'success');
+  }, [downloadedTracks, flashLastAdded, isStandalone, resolveWarmupTrackId]);
+
   const downloadLabelById = useMemo(() => {
     const map = new Map();
     const addTrack = (track) => {
@@ -13750,6 +14154,27 @@ function App() {
       const playlistName = spotifyImportPlaylistName.trim() || res.playlistName || `${providerLabel} Playlist`;
       const uniquePlaylistName = buildUniquePlaylistName(playlistName, playlists);
       const importedTracks = res.tracks.map(normalizeQueueTrack).filter(Boolean);
+      const importedKeys = new Set();
+      const duplicateCount = importedTracks.reduce((count, track) => {
+        const key = normalizeTrackIdentity(track);
+        if (importedKeys.has(key)) return count + 1;
+        importedKeys.add(key);
+        return count;
+      }, 0);
+      setImportReview({
+        source: providerLabel,
+        playlistName: uniquePlaylistName,
+        matched: importedTracks.length,
+        total: Number(res.totalTracks) || importedTracks.length,
+        duplicates: duplicateCount,
+        lyrics: 0,
+        skipped: Math.max(0, (Number(res.totalTracks) || importedTracks.length) - importedTracks.length),
+        suggestions: [
+          duplicateCount > 0 ? 'Run Playlist Health to remove duplicate matches.' : '',
+          importedTracks.length < (Number(res.totalTracks) || importedTracks.length) ? 'Some source tracks could not be matched. Try local import for exact files.' : '',
+          'Open the new vault and use Download Missing for offline readiness.',
+        ].filter(Boolean),
+      });
       const nextPlaylists = { ...playlists, [uniquePlaylistName]: importedTracks };
       setPlaylists(nextPlaylists);
       persistPlaylistOrder([...playlistOrder.filter((name) => name !== uniquePlaylistName), uniquePlaylistName]);
@@ -13854,6 +14279,28 @@ function App() {
       await refreshStorageEstimate();
 
       const summary = `Imported ${importedTracks.length} local file${importedTracks.length === 1 ? '' : 's'}${lyricCount ? ` + ${lyricCount} lyric set${lyricCount === 1 ? '' : 's'}` : ''}`;
+      const reviewTracks = [...importedTracks, ...importedPlaylists.flatMap((entry) => Array.isArray(entry.tracks) ? entry.tracks : [])].map(normalizeQueueTrack).filter(Boolean);
+      const reviewKeys = new Set();
+      const duplicateCount = reviewTracks.reduce((count, track) => {
+        const key = normalizeTrackIdentity(track);
+        if (reviewKeys.has(key)) return count + 1;
+        reviewKeys.add(key);
+        return count;
+      }, 0);
+      setImportReview({
+        source: 'Local Files',
+        playlistName: firstPlaylistName || spotifyImportPlaylistName.trim() || 'Local Imports',
+        matched: reviewTracks.length,
+        total: reviewTracks.length + Math.max(0, Number(res.skippedFiles) || 0),
+        duplicates: duplicateCount,
+        lyrics: lyricCount,
+        skipped: Math.max(0, Number(res.skippedFiles) || 0),
+        suggestions: [
+          lyricCount > 0 ? 'Matched lyric files were saved and will load before online lyrics.' : 'Add .lrc files with matching names to attach local lyrics.',
+          duplicateCount > 0 ? 'Run Playlist Health to collapse duplicate local files.' : '',
+          'Use Download Missing after review if you want the vault ready offline.',
+        ].filter(Boolean),
+      });
       setSpotifyImportProgress({ stage: 'complete', progress: 100, message: summary });
       flashLastAdded(summary, 3200, 'success');
       setIsSpotifyImportOpen(false);
@@ -14392,6 +14839,41 @@ function App() {
     handleControlRef.current = handleControl;
   }, [handleControl]);
 
+  const cleanQueueBuffer = useCallback(() => {
+    let removed = 0;
+    setQueue((prev) => {
+      if (!Array.isArray(prev) || prev.length <= 1) return prev;
+      const seen = new Set();
+      const next = [];
+      prev.forEach((track, index) => {
+        const key = getTrackActionKey(track) || `${track?.title || ''}|${track?.author || ''}`;
+        if (index > 0 && seen.has(key)) {
+          removed += 1;
+          return;
+        }
+        seen.add(key);
+        next.push(track);
+      });
+      return next;
+    });
+    flashLastAdded(removed > 0 ? `Queue cleaned • removed ${removed} duplicate${removed === 1 ? '' : 's'}` : 'Queue already clean', 2200, removed > 0 ? 'success' : 'warning');
+  }, [flashLastAdded, getTrackActionKey]);
+
+  const playDownloadedOnly = useCallback(() => {
+    const downloadedSet = new Set((downloadedTracks || []).map((id) => String(id)));
+    let removed = 0;
+    setQueue((prev) => {
+      const next = (Array.isArray(prev) ? prev : []).filter((track) => {
+        const id = resolveWarmupTrackId(track) || track?.id || track?.youtubeId;
+        const keep = id && (downloadedSet.has(String(id)) || downloadedSet.has(String(track?.id || '')));
+        if (!keep) removed += 1;
+        return keep;
+      });
+      return next;
+    });
+    flashLastAdded(removed > 0 ? `Queue set to downloaded only • removed ${removed}` : 'Queue is already downloaded only', 2400, removed > 0 ? 'success' : 'warning');
+  }, [downloadedTracks, flashLastAdded, resolveWarmupTrackId]);
+
   const [accentColor, setAccentColor] = useState('#00ffbf');
 
   const handleSeek = useCallback(async (time) => {
@@ -14483,13 +14965,14 @@ function App() {
     setIsFocusedMode((prev) => !prev);
   }, [videoMode]);
 
-  const toggleDiagnostics = useCallback(() => {
-    const next = !isDiagnosticsOpen;
+  const openDiagnosticsPage = useCallback(() => {
     runAfterInputPaint(() => {
-      if (next) closeHeaderSurfaces('diagnostics');
-      setIsDiagnosticsOpen(next);
+      closeHeaderSurfaces('diagnostics');
+      setIsDiagnosticsOpen(false);
+      setExperienceCenterInitialPage('diagnostics');
+      setIsExperienceCenterOpen(true);
     });
-  }, [closeHeaderSurfaces, isDiagnosticsOpen, runAfterInputPaint]);
+  }, [closeHeaderSurfaces, runAfterInputPaint]);
 
   const commandPaletteShortcutLabel = useMemo(() => getCommandPaletteShortcutLabel(isMacPlatform), [isMacPlatform]);
   const shortcutLabel = useCallback((id) => toReadableShortcut(shortcuts?.[id], isMacPlatform), [isMacPlatform, shortcuts]);
@@ -14528,6 +15011,14 @@ function App() {
       keywords: 'vault library playlist songs',
       run: () => openLibraryOverlay(),
     },
+    ...librarySongEntries.slice(0, 12).map((entry, index) => ({
+      id: `song-${entry.key || index}`,
+      title: entry.track?.title || 'Library Track',
+      detail: `${entry.track?.author || 'Unknown Artist'} • Queue from library`,
+      icon: Music,
+      keywords: `song track artist library ${entry.track?.author || ''} ${(entry.playlists || []).join(' ')}`,
+      run: () => handleAdd(entry.track),
+    })),
     {
       id: 'experience-center',
       title: 'Open Experience Center',
@@ -14543,6 +15034,47 @@ function App() {
       icon: Signal,
       keywords: 'history stats ledger',
       run: () => openExperienceCenterPage('signal-ledger'),
+    },
+    {
+      id: 'listening-recap',
+      title: 'Open Listening Recap',
+      detail: 'Weekly and monthly listening highlights.',
+      icon: Activity,
+      keywords: 'recap stats weekly monthly listening replay',
+      run: () => openExperienceCenterPage('recap'),
+    },
+    {
+      id: 'profile',
+      title: 'Open Profile',
+      detail: 'Avatar, share card, public profile, and Party identity.',
+      icon: User,
+      keywords: 'avatar profile public share party identity',
+      run: () => openExperienceCenterPage('profile'),
+    },
+    {
+      id: 'recovery-center',
+      title: 'Open Recovery Center',
+      detail: 'Repair downloads, runtime helpers, and app issues.',
+      icon: AlertTriangle,
+      keywords: 'repair recovery yt-dlp ffmpeg error fix diagnostics',
+      run: () => openExperienceCenterPage('recovery'),
+    },
+    {
+      id: 'diagnostics-page',
+      title: 'Open Diagnostics',
+      detail: 'Runtime status and recent app health events.',
+      icon: Monitor,
+      keywords: 'diagnostics debug health status runtime',
+      shortcut: shortcutLabel('diagnostics'),
+      run: () => openExperienceCenterPage('diagnostics'),
+    },
+    {
+      id: 'first-run-setup',
+      title: 'Open Setup Checklist',
+      detail: 'Relaunch first-run setup anytime.',
+      icon: Sparkles,
+      keywords: 'setup onboarding first run import profile shortcuts',
+      run: () => openExperienceCenterPage('setup'),
     },
     {
       id: 'feedback',
@@ -14599,6 +15131,33 @@ function App() {
       },
     },
     {
+      id: 'clean-queue',
+      title: 'Clean Queue',
+      detail: 'Remove duplicate upcoming tracks from the queue.',
+      icon: RefreshCw,
+      keywords: 'queue duplicate clean remove',
+      hidden: queue.length <= 1,
+      run: cleanQueueBuffer,
+    },
+    {
+      id: 'save-queue-vault',
+      title: 'Save Queue as Vault',
+      detail: 'Open Studio Library with the current queue ready to save.',
+      icon: Save,
+      keywords: 'queue save vault playlist',
+      hidden: queue.length === 0,
+      run: () => openLibraryOverlay({ type: 'queue', items: queue.slice() }),
+    },
+    {
+      id: 'downloaded-only-queue',
+      title: 'Play Downloaded Only',
+      detail: 'Remove queue items that are not ready offline.',
+      icon: HardDrive,
+      keywords: 'queue offline downloaded only',
+      hidden: queue.length === 0,
+      run: playDownloadedOnly,
+    },
+    {
       id: 'lock-app',
       title: 'Lock App',
       detail: 'Lock Aether now.',
@@ -14615,7 +15174,7 @@ function App() {
       keywords: 'issue bug support',
       run: openFeedbackPanel,
     },
-  ], [closeHeaderSurfaces, focusMusicSearch, isOfflineMode, isStandalone, lockStatus?.enabled, openExperienceCenterPage, openFeedbackPanel, openLibraryOverlay, openMusicImport, shortcutLabel, toggleMiniPlayer]);
+  ], [cleanQueueBuffer, closeHeaderSurfaces, focusMusicSearch, handleAdd, isOfflineMode, isStandalone, librarySongEntries, lockStatus?.enabled, openExperienceCenterPage, openFeedbackPanel, openLibraryOverlay, openMusicImport, playDownloadedOnly, queue, shortcutLabel, toggleMiniPlayer]);
 
   const toggleLooksPanel = useCallback(() => {
     const next = !isLooksPanelOpen;
@@ -15426,6 +15985,17 @@ function App() {
     }
   }, [appendRecentEvent, currentTrack?.actualUrl, currentTrack?.url, handleResetPlaybackEngine, isStandalone, refreshEngineStatus, refreshOfflineDownloads, refreshStorageEstimate, refreshStorageStats, requestDestructiveConfirmation]);
 
+  const clearDiagnosticEvents = useCallback(async () => {
+    const confirmed = await requestDestructiveConfirmation({
+      title: 'Clear diagnostic events?',
+      message: 'Aether will clear the recent diagnostic event list.',
+      detail: 'This only clears diagnostics shown here. Your music library is not changed.',
+      confirmLabel: 'Clear Events',
+      preferenceKey: 'diagnostics.clearEvents',
+    });
+    if (confirmed) setSkipEvents([]);
+  }, [requestDestructiveConfirmation]);
+
   useEffect(() => {
     const isEditingTarget = (event) => {
       const target = getKeyboardEventElement(event) || (document.activeElement instanceof Element ? document.activeElement : null);
@@ -15542,6 +16112,32 @@ function App() {
         handleControl('clear');
         return;
       }
+      if (isParsedShortcutEventMatch(e, parsedShortcuts.focusSearch)) {
+        e.preventDefault();
+        focusMusicSearch();
+        return;
+      }
+      if (isParsedShortcutEventMatch(e, parsedShortcuts.shortcutSettings)) {
+        e.preventDefault();
+        openShortcutSettings();
+        return;
+      }
+      if (isParsedShortcutEventMatch(e, parsedShortcuts.studioLibrary)) {
+        e.preventDefault();
+        openLibraryOverlay();
+        return;
+      }
+      if (isParsedShortcutEventMatch(e, parsedShortcuts.experienceCenter)) {
+        e.preventDefault();
+        openExperienceCenterPage('home');
+        return;
+      }
+      if (isParsedShortcutEventMatch(e, parsedShortcuts.auraStage)) {
+        e.preventDefault();
+        closeHeaderSurfaces('aura-stage');
+        setIsAuraStageOpen(true);
+        return;
+      }
       if (isParsedShortcutEventMatch(e, parsedShortcuts.focusMode)) {
         e.preventDefault();
         toggleFocusMode();
@@ -15554,13 +16150,13 @@ function App() {
       }
       if (isParsedShortcutEventMatch(e, parsedShortcuts.diagnostics)) {
         e.preventDefault();
-        toggleDiagnostics();
+        openDiagnosticsPage();
       }
     };
 
     window.addEventListener('keydown', onShortcut);
     return () => window.removeEventListener('keydown', onShortcut);
-  }, [destructiveConfirmRequest, handleControl, inspectTarget, isAuraStageOpen, isCommandPaletteOpen, isExperienceCenterOpen, isFeedbackOpen, isGestureLabOpen, isLibraryOverlayOpen, isLockModalOpen, isManualLyricsEditorOpen, isManualLyricsRawEditorOpen, isMixtapeVaultOpen, isPlayerOverlayOpen, isPlaying, isShortcutSettingsOpen, isSharedSceneOpen, isSpotifyImportOpen, isStandalone, isTipsOverlayOpen, isViewingFullDiscovery, isViewingFullPlaylist, isViewingFullQueue, oauthPrompt, parsedShortcuts, toggleDiagnostics, toggleFocusMode, toggleMiniPlayer]);
+  }, [closeHeaderSurfaces, destructiveConfirmRequest, focusMusicSearch, handleControl, inspectTarget, isAuraStageOpen, isCommandPaletteOpen, isExperienceCenterOpen, isFeedbackOpen, isGestureLabOpen, isLibraryOverlayOpen, isLockModalOpen, isManualLyricsEditorOpen, isManualLyricsRawEditorOpen, isMixtapeVaultOpen, isPlayerOverlayOpen, isPlaying, isShortcutSettingsOpen, isSharedSceneOpen, isSpotifyImportOpen, isStandalone, isTipsOverlayOpen, isViewingFullDiscovery, isViewingFullPlaylist, isViewingFullQueue, oauthPrompt, openDiagnosticsPage, openExperienceCenterPage, openLibraryOverlay, openShortcutSettings, parsedShortcuts, toggleFocusMode, toggleMiniPlayer]);
 
   const musicImportTheme = musicImportProvider === 'apple'
     ? {
@@ -16238,6 +16834,26 @@ function App() {
     setLastAdded(`Queued ${inspectPlaylistName} (${normalized.length})`);
     setTimeout(() => setLastAdded(null), 2600);
   };
+  const favoriteInspectPlaylist = () => {
+    const next = { ...(favoriteTracks || {}) };
+    let added = 0;
+    inspectPlaylistTracks.forEach((track) => {
+      const normalized = normalizeQueueTrack(track) || track;
+      const key = normalizeTrackIdentity(normalized);
+      if (key && !next[key]) {
+        next[key] = normalized;
+        added += 1;
+      }
+    });
+    if (added <= 0) {
+      setLastAdded('Playlist already in favorites');
+      setTimeout(() => setLastAdded(null), 2200);
+      return;
+    }
+    persistFavoriteTracks(next);
+    setLastAdded(`Favorited ${added} playlist tracks`);
+    setTimeout(() => setLastAdded(null), 2400);
+  };
   const rootModeClass = [
     isVerticalStack ? 'vertical-stack-mode' : '',
     isDoodleMode ? `doodle-mode-active doodle-preset-${doodleIntensity}` : '',
@@ -16573,8 +17189,8 @@ function App() {
                 <SlidersHorizontal size={15} />
               </button>
               <button
-                onClick={toggleDiagnostics}
-                className={`${headerIconButtonClass} shrink-0 ${isDiagnosticsOpen ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`}
+                onClick={openDiagnosticsPage}
+                className={`${headerIconButtonClass} shrink-0 ${isExperienceCenterOpen && experienceCenterInitialPage === 'diagnostics' ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`}
                 title="Diagnostics"
                 aria-label="Diagnostics"
               >
@@ -16747,9 +17363,14 @@ function App() {
                       <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.volumeDown, isMacPlatform)}</span> — Volume down</li>
                       <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.mute, isMacPlatform)}</span> — Mute / Unmute</li>
                       <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.clearQueue, isMacPlatform)}</span> — Clear queue</li>
+                      <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.focusSearch, isMacPlatform)}</span> — Focus search</li>
+                      <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.shortcutSettings, isMacPlatform)}</span> — Shortcut settings</li>
+                      <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.studioLibrary, isMacPlatform)}</span> — Studio Library</li>
+                      <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.experienceCenter, isMacPlatform)}</span> — Experience Center</li>
+                      <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.auraStage, isMacPlatform)}</span> — Aura Stage</li>
                       <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.focusMode, isMacPlatform)}</span> — Toggle focus view</li>
                       <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.miniPlayer, isMacPlatform)}</span> — Toggle mini player</li>
-                      <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.diagnostics, isMacPlatform)}</span> — Open diagnostics panel</li>
+                      <li><span className="text-brand-accent font-black">{toReadableShortcut(shortcuts.diagnostics, isMacPlatform)}</span> — Diagnostics page</li>
                     </ul>
                     <div className="mt-3 text-[11px] text-white/45">Tip: media keys may be managed by your OS. App shortcuts above always work while Aether is focused.</div>
                   </div>
@@ -16840,7 +17461,7 @@ function App() {
                   <button
                     onClick={() => {
                       dismissRuntimeIssuePrompt();
-                      setIsDiagnosticsOpen(true);
+                      openDiagnosticsPage();
                     }}
                     className="rounded-2xl border border-white/12 bg-white/[0.04] px-4 py-3 text-[11px] font-black uppercase tracking-[0.16em] text-white/62 transition-all hover:border-brand-accent/35 hover:text-brand-accent"
                   >
@@ -16866,7 +17487,7 @@ function App() {
         </AnimatePresence>
 
         <AnimatePresence>
-          {isDiagnosticsOpen && (
+          {false && isDiagnosticsOpen && (
             <motion.div
               initial={{ opacity: 0, y: -8, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -17659,6 +18280,22 @@ function App() {
                     >
                       <Shuffle size={10} />
                     </button>
+                    <button
+                      onClick={cleanQueueBuffer}
+                      disabled={queue.length <= 1}
+                      className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-white/10 hover:text-brand-accent disabled:opacity-30"
+                      title="Clean Queue: remove duplicate upcoming tracks"
+                    >
+                      <RefreshCw size={10} />
+                    </button>
+                    <button
+                      onClick={playDownloadedOnly}
+                      disabled={queue.length === 0}
+                      className="p-1.5 rounded-lg transition-all flex items-center gap-2 bg-white/5 text-white/50 border border-white/10 hover:bg-white/10 hover:text-brand-accent disabled:opacity-30"
+                      title="Play Downloaded Only"
+                    >
+                      <HardDrive size={10} />
+                    </button>
                     <div className="relative">
                       <button
                         onClick={(e) => {
@@ -17822,7 +18459,7 @@ function App() {
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     <button onClick={handleGenerateSmartMix} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Generate Smart Mix"><Zap size={10} /></button>
-                    <button onClick={handleCleanVault} disabled={isVaultCleaning} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors disabled:opacity-40 flex items-center justify-center" title="Clean Vault (dedupe + remove unavailable + normalize metadata)"><RefreshCw size={10} className={isVaultCleaning ? 'animate-spin' : ''} /></button>
+                    <button onClick={handleCleanVault} disabled={isVaultCleaning} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors disabled:opacity-40 flex items-center justify-center" title="Playlist Health Scan"><RefreshCw size={10} className={isVaultCleaning ? 'animate-spin' : ''} /></button>
                     <button onClick={() => openLibraryOverlay(null)} className="w-6 h-6 rounded-md bg-white/5 text-white/40 hover:text-brand-accent hover:border-brand-accent/30 border border-white/10 transition-colors flex items-center justify-center" title="Open Vault Overlay"><ListMusic size={10} /></button>
                     {isStandalone && (
                       <>
@@ -18626,6 +19263,7 @@ function App() {
                             message: provider === 'local' ? 'Local import selected. Pick files or folders when ready.' : `${label} selected. Paste a public playlist URL.`,
                           });
                           setSpotifyImportLogs([]);
+                          setImportReview(null);
                         }}
                         className={`no-drag rounded-2xl border px-4 py-4 text-left transition-all ${musicImportProvider === provider ? 'text-white shadow-[0_0_22px_var(--music-import-accent-shadow)]' : 'border-white/10 bg-white/[0.035] text-white/60 hover:text-white'}`}
                         style={musicImportProvider === provider ? { borderColor: 'var(--music-import-accent-border)', background: 'var(--music-import-accent-soft)' } : undefined}
@@ -18712,6 +19350,31 @@ function App() {
                       {spotifyImportProgress.message || ((isSpotifyImporting || isLocalMediaImporting) ? 'Preparing import…' : 'Ready to import.')}
                     </div>
                   </div>
+
+                  {importReview && (
+                    <div className="rounded-2xl border border-brand-accent/20 bg-brand-accent/[0.055] px-4 py-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div className="text-[9px] font-black uppercase tracking-[0.22em] text-brand-accent/80">Smart Import Review</div>
+                          <div className="mt-1 text-sm font-black uppercase tracking-tight text-white">{importReview.playlistName || importReview.source}</div>
+                        </div>
+                        <span className="rounded-full border border-brand-accent/25 bg-brand-accent/10 px-3 py-1 text-[9px] font-black uppercase tracking-[0.16em] text-brand-accent">{importReview.source}</span>
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        <HealthMetricCard label="Matched" value={importReview.matched} tone="good" />
+                        <HealthMetricCard label="Skipped" value={importReview.skipped} tone={importReview.skipped ? 'warn' : 'good'} />
+                        <HealthMetricCard label="Dupes" value={importReview.duplicates} tone={importReview.duplicates ? 'warn' : 'good'} />
+                        <HealthMetricCard label="Lyrics" value={importReview.lyrics} tone={importReview.lyrics ? 'good' : 'neutral'} />
+                      </div>
+                      {Array.isArray(importReview.suggestions) && importReview.suggestions.length > 0 && (
+                        <div className="mt-3 space-y-1">
+                          {importReview.suggestions.slice(0, 3).map((suggestion) => (
+                            <div key={suggestion} className="rounded-xl border border-white/8 bg-black/18 px-3 py-2 text-[11px] leading-5 text-white/48">{suggestion}</div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <div className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3">
                     <div className="mb-2 flex items-center justify-between gap-3">
@@ -19073,6 +19736,8 @@ function App() {
                             <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectPlaylistQueuedCount}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Queued</div></div>
                             <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{formatTime(inspectPlaylistDurationMs)}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Length</div></div>
                             <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectPlaylistArtistCount}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Artists</div></div>
+                            <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectPlaylistSignal.favorites}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Favorites</div></div>
+                            <div className="rounded-xl border border-white/8 bg-black/24 p-3"><div className="text-lg font-black text-brand-accent">{inspectPlaylistSignal.downloaded}</div><div className="text-[8px] uppercase tracking-[0.22em] text-white/30">Downloaded</div></div>
                           </>
                         ) : (
                           <>
@@ -19155,12 +19820,13 @@ function App() {
                       <div className="mt-3 grid grid-cols-2 gap-2">
                         {isPlaylistInspect ? (
                           <>
-                            <button onClick={() => playInspectPlaylist(false)} className="rounded-xl border border-brand-accent/25 bg-brand-accent/12 px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black">Play Playlist</button>
-                            <button onClick={queueInspectPlaylist} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Queue All</button>
+                            <button onClick={() => playInspectPlaylist(false)} className="rounded-xl border border-brand-accent/25 bg-brand-accent/12 px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent transition-all hover:bg-brand-accent hover:text-black">Play Now</button>
+                            <button onClick={queueInspectPlaylist} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Add To Queue</button>
                             <button onClick={() => playInspectPlaylist(true)} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Shuffle Play</button>
-                            <button onClick={() => openLibraryOverlay({ type: 'queue', items: inspectPlaylistTracks })} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Vault Copy</button>
-                            <button disabled={!inspectPlaylistSourceText} onClick={() => handleCopyDiagnosticsValue(inspectPlaylistSourceText, 'Playlist URLs copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Copy URLs</button>
-                            <button disabled={!inspectPlaylistTracklistText} onClick={() => handleCopyDiagnosticsValue(inspectPlaylistTracklistText, 'Tracklist copied')} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent disabled:opacity-35">Copy List</button>
+                            {!isInspectPlaylistFromVault && (
+                              <button onClick={() => openLibraryOverlay({ type: 'queue', items: inspectPlaylistTracks })} className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/58 transition-all hover:border-brand-accent/35 hover:text-brand-accent">Save To Vault</button>
+                            )}
+                            <button onClick={favoriteInspectPlaylist} className="rounded-xl border border-rose-300/15 bg-rose-400/[0.055] px-3 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-rose-200/70 transition-all hover:border-rose-300/35 hover:text-rose-200">Favorite All</button>
                           </>
                         ) : (
                           <>
@@ -19179,15 +19845,38 @@ function App() {
                       {isPlaylistInspect ? (
                         <>
                           <div className="text-[9px] font-black uppercase tracking-[0.25em] text-white/30">Playlist Signal</div>
-                          <div className="mt-4 text-2xl font-black leading-tight text-white/90">
-                            {inspectPlaylistTracks.length} tracks in {inspectPlaylistName}
+                          <div className="mt-4 text-xl font-black leading-tight text-white/90">
+                            {inspectPlaylistSignal.topArtistCount > 1 ? `${inspectPlaylistSignal.topArtist} leads this vault` : 'Balanced artist spread'}
                           </div>
-                          <div className="mt-4 grid gap-2">
-                            {inspectPlaylistTracks.slice(0, 4).map((track, index) => (
-                              <div key={`${inspectPlaylistName}-signal-${normalizeTrackIdentity(track)}-${index}`} className="truncate rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-white/48">
-                                {index + 1}. {track.title || 'Unknown Track'}
+                          <div className="mt-3 text-sm leading-6 text-white/45">
+                            Avg track {formatTime(inspectPlaylistSignal.avgDurationMs)} // {inspectPlaylistSignal.queuedPercent}% already queued // {inspectPlaylistSignal.offlinePercent}% downloaded
+                          </div>
+                          <div className="mt-4 grid grid-cols-2 gap-2">
+                            {[
+                              ['Duplicates', inspectPlaylistSignal.duplicateTracks],
+                              ['Missing Links', inspectPlaylistSignal.missingSources],
+                              ['Favorites', inspectPlaylistSignal.favorites],
+                              ['Offline Ready', inspectPlaylistSignal.downloaded],
+                            ].map(([label, value]) => (
+                              <div key={label} className={`rounded-xl border px-3 py-3 ${value > 0 ? 'border-brand-accent/18 bg-brand-accent/[0.055]' : 'border-white/8 bg-white/[0.03]'}`}>
+                                <div className="text-lg font-black text-white">{value}</div>
+                                <div className="mt-1 text-[8px] font-black uppercase tracking-[0.18em] text-white/32">{label}</div>
                               </div>
                             ))}
+                          </div>
+                          <div className="mt-4 rounded-xl border border-white/8 bg-white/[0.03] p-3">
+                            <div className="text-[8px] font-black uppercase tracking-[0.2em] text-brand-accent">Recommended</div>
+                            <div className="mt-2 text-[11px] leading-5 text-white/45">
+                              {inspectPlaylistSignal.duplicateTracks > 0
+                                ? 'Clean duplicates before exporting or sharing this vault.'
+                                : inspectPlaylistSignal.missingSources > 0
+                                  ? 'Some tracks do not have source links, so copy URLs may be incomplete.'
+                                  : inspectPlaylistQueuedCount > 0
+                                    ? 'Use Add To Queue to append only when you want these after the current buffer.'
+                                    : isInspectPlaylistFromVault
+                                      ? 'Playlist is ready for Play Now, Shuffle Play, or Favorite All.'
+                                      : 'Playlist is ready for Play Now, Shuffle Play, or saving into a vault.'}
+                            </div>
                           </div>
                           <div className="mt-4 text-[10px] uppercase tracking-[0.2em] text-white/32">
                             Opened from {inspectTarget?.source || 'playlist'} // {new Date(inspectTarget?.openedAt || Date.now()).toLocaleTimeString()}
@@ -19291,6 +19980,10 @@ function App() {
               handleImportVault={handleImportVault}
               handleGenerateSmartMix={handleGenerateSmartMix}
               handleCleanVault={handleCleanVault}
+              downloadedTracks={downloadedTracks}
+              resolveWarmupTrackId={resolveWarmupTrackId}
+              trackHasSavedLyrics={trackHasSavedLyrics}
+              onDownloadMissingForVault={handleDownloadMissingForVault}
               onClose={closeLibraryOverlay}
             />
           )}
@@ -20169,6 +20862,19 @@ function App() {
         onPublishProfile={publishAetherProfile}
         onUnpublishProfile={unpublishAetherProfile}
         isProfilePublishing={isProfilePublishing}
+        soundLedgerView={soundLedgerView}
+        diagnostics={diagnostics}
+        engineStatus={engineStatus}
+        isRuntimeRepairing={isRuntimeRepairing}
+        handleRunRuntimeRepair={handleRunRuntimeRepair}
+        openMusicImport={openMusicImport}
+        openLibraryOverlay={openLibraryOverlay}
+        diagnosticsApiBase={diagnosticsApiBase}
+        queuePollDisplay={queuePollDisplay}
+        queuePollTime={queuePollTime}
+        skipEvents={skipEvents}
+        onClearDiagnosticEvents={clearDiagnosticEvents}
+        handleCopyDiagnosticsValue={handleCopyDiagnosticsValue}
       />
 
       <AetherConfirmDialog
