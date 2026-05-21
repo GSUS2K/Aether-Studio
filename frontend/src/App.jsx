@@ -7307,9 +7307,12 @@ function App() {
   const [dualFocusMode, setDualFocusMode] = useState(null); // null | 'video' | 'lyrics'
   const videoModeRef = useRef(null); // synchronous mirror — safe to read in audio callbacks
   const isPlayingRef = useRef(false); // live mirror of isPlaying for video handler closures
+  const volumeRef = useRef(volume);
+  const webAudioUnlockedRef = useRef(webAudioUnlocked);
   const queueRef = useRef([]);
   const currentTimeRef = useRef(0);   // live mirror of currentTime for video handler closures
   const currentTimeCommitRef = useRef({ committed: 0, at: 0 });
+  const webPlaybackFallbackRef = useRef({ trackKey: '', attemptedIds: new Set(), inFlight: false });
   const isAppLockedRef = useRef(isAppLocked);
   const lockIdleMinutesRef = useRef(lockIdleMinutes);
   const lockIdleListenersActiveRef = useRef(false);
@@ -7634,6 +7637,8 @@ function App() {
   useEffect(() => { videoModeRef.current = videoMode; }, [videoMode]);
   // Live mirrors so video handler closures never go stale on isPlaying / currentTime
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+  useEffect(() => { volumeRef.current = volume; }, [volume]);
+  useEffect(() => { webAudioUnlockedRef.current = webAudioUnlocked; }, [webAudioUnlocked]);
   useEffect(() => { queueRef.current = Array.isArray(queue) ? queue : []; }, [queue]);
   useEffect(() => { isAppLockedRef.current = isAppLocked; }, [isAppLocked]);
   useEffect(() => { lockIdleMinutesRef.current = lockIdleMinutes; }, [lockIdleMinutes]);
@@ -9605,12 +9610,132 @@ function App() {
     setIsLyricPresetSaved(parseLyricOffsetValue(lyricOffsetMs) === presetValue);
   }, [currentTrackPresetKey, lyricOffsetMs, lyricOffsetPresets]);
 
+  const normalizeWebPlaybackCandidate = useCallback((track) => {
+    if (!track || typeof track !== 'object') return null;
+    const trackUrl = track.actualUrl || track.url || track.link || track.webpage_url || '';
+    const youtubeId = track.youtubeId || extractYouTubeId(trackUrl || track.id || track.thumbnail || '');
+    if (!youtubeId) return null;
+
+    const url = `https://www.youtube.com/watch?v=${youtubeId}`;
+    const durationMs = Number(track.totalDurationMs || track.durationMs || track.duration || 0);
+    return {
+      ...track,
+      id: track.id || youtubeId,
+      youtubeId,
+      actualUrl: url,
+      url,
+      title: track.title || track.name || 'Unknown Track',
+      author: track.author || track.artist || track.channel || 'Unknown Artist',
+      artist: track.artist || track.author || track.channel || 'Unknown Artist',
+      thumbnail: track.thumbnail || track.artwork || `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`,
+      duration: durationMs,
+      totalDurationMs: durationMs,
+      source: track.source || 'youtube',
+    };
+  }, []);
+
+  const tryWebPlaybackFallback = useCallback(async ({ code, youtubeId, track }) => {
+    if (isStandalone) return false;
+
+    const errorCode = Number(code);
+    const blockedCodes = new Set([2, 5, 100, 101, 150]);
+    if (!blockedCodes.has(errorCode)) return false;
+
+    const currentHead = queueRef.current?.[0];
+    const isStillCurrentTrack = currentHead && (
+      currentHead.queueNonce === track?.queueNonce ||
+      currentHead.youtubeId === youtubeId ||
+      currentHead.id === track?.id
+    );
+    if (!isStillCurrentTrack) return false;
+
+    const fallbackRootId = String(track?.webFallbackRoot || track?.webFallbackFor || youtubeId || track?.queueNonce || track?.id || '');
+    const trackKey = fallbackRootId;
+    const fallbackState = webPlaybackFallbackRef.current;
+    if (fallbackState.trackKey !== trackKey) {
+      fallbackState.trackKey = trackKey;
+      fallbackState.attemptedIds = new Set([fallbackRootId, String(youtubeId || '')].filter(Boolean));
+      fallbackState.inFlight = false;
+    }
+
+    if (fallbackState.inFlight) return true;
+    fallbackState.inFlight = true;
+
+    try {
+      const query = [track?.author || track?.artist, track?.title].filter(Boolean).join(' ').trim() || track?.title || '';
+      if (!query) return false;
+
+      setIsAudioBuffering(true);
+      const response = await axios.get(`${API_BASE}/api/search?q=${encodeURIComponent(query)}`);
+      const results = Array.isArray(response.data) ? response.data : [];
+      const attemptedIds = fallbackState.attemptedIds;
+      const replacement = results
+        .map(normalizeWebPlaybackCandidate)
+        .find((candidate) => {
+          if (!candidate?.youtubeId) return false;
+          if (candidate.youtubeId === youtubeId || attemptedIds.has(candidate.youtubeId)) return false;
+          return Boolean(candidate.title && (candidate.actualUrl || candidate.url));
+        });
+
+      if (!replacement) {
+        setIsPlaying(false);
+        setIsAudioBuffering(false);
+        setDiagnostics((prev) => ({
+          ...prev,
+          lastSongSource: 'youtube-iframe-blocked',
+          lastSongError: `YouTube embed blocked (${errorCode})`,
+          lastSongFetchAt: Date.now(),
+        }));
+        flashLastAdded('This video cannot play in the browser. Try another result or open Aether desktop.', 3800, 'warning');
+        return false;
+      }
+
+      attemptedIds.add(replacement.youtubeId);
+      const fallbackNonce = `web-fallback-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      setQueue((prev) => {
+        if (!Array.isArray(prev) || prev.length === 0) return prev;
+        const head = prev[0];
+        const stillSameHead = head.queueNonce === track?.queueNonce || head.youtubeId === youtubeId || head.id === track?.id;
+        if (!stillSameHead) return prev;
+        return [
+          {
+            ...replacement,
+            queueNonce: fallbackNonce,
+            webFallbackRoot: fallbackRootId || youtubeId,
+            webFallbackFor: youtubeId,
+            webFallbackReason: errorCode,
+          },
+          ...prev.slice(1),
+        ];
+      });
+      setIsManualStop(false);
+      setIsPlaying(true);
+      setDiagnostics((prev) => ({
+        ...prev,
+        lastSongSource: 'youtube-iframe-fallback',
+        lastSongError: '',
+        lastSongFetchAt: Date.now(),
+      }));
+      flashLastAdded('Official video was restricted. Trying another playable result.', 3200, 'warning');
+      return true;
+    } catch (error) {
+      console.warn('[Aether/Audio] Web playback fallback search failed', error);
+      setIsAudioBuffering(false);
+      flashLastAdded('Could not find a playable web fallback.', 2800, 'error');
+      return false;
+    } finally {
+      fallbackState.inFlight = false;
+    }
+  }, [flashLastAdded, isStandalone, normalizeWebPlaybackCandidate]);
+
   useEffect(() => {
     if (isStandalone) return undefined;
 
     const player = youtubePlayerRef.current;
     if (!currentTrack?.title) {
       webTrackLoadKeyRef.current = '';
+      clearInterval(youtubeProgressTimerRef.current);
+      youtubeProgressTimerRef.current = null;
       if (player?.stopVideo) {
         try { player.stopVideo(); } catch { }
       }
@@ -9635,8 +9760,8 @@ function App() {
       title: currentTrack.title,
       author: currentTrack.author,
       youtubeId,
-      isPlaying,
-      volume,
+      isPlaying: isPlayingRef.current,
+      volume: volumeRef.current,
     });
 
     let cancelled = false;
@@ -9701,8 +9826,9 @@ function App() {
     };
 
     const skipCurrentWebTrack = () => {
-      const skipTrackId = currentTrack?.id || currentTrack?.youtubeId || currentTrack?.actualUrl || currentTrack?.url || '';
-      console.log("[Aether/Audio] Web ended", { title: currentTrack.title, skipTrackId });
+      const liveTrack = currentTrackRef.current || currentTrack;
+      const skipTrackId = liveTrack?.id || liveTrack?.youtubeId || liveTrack?.actualUrl || liveTrack?.url || '';
+      console.log("[Aether/Audio] Web ended", { title: liveTrack?.title, skipTrackId });
       advanceQueueRef.current?.('natural_end');
     };
 
@@ -9716,8 +9842,8 @@ function App() {
           webTrackLoadKeyRef.current = trackLoadKey;
           setIsAudioBuffering(true);
           existing.loadVideoById({ videoId: youtubeId, startSeconds: Math.max(0, Math.floor(currentTimeRef.current / 1000)) });
-          existing.setVolume?.(Math.round(volume * 100));
-          if (webAudioUnlocked && isPlaying) {
+          existing.setVolume?.(Math.round(volumeRef.current * 100));
+          if (webAudioUnlockedRef.current && isPlayingRef.current) {
             existing.playVideo?.();
             startProgressTimer();
             scheduleBufferingFallback(existing);
@@ -9736,18 +9862,20 @@ function App() {
           height: '135',
           videoId: youtubeId,
           playerVars: {
-            autoplay: webAudioUnlocked && isPlaying ? 1 : 0,
+            autoplay: webAudioUnlockedRef.current && isPlayingRef.current ? 1 : 0,
             controls: 0,
             disablekb: 1,
+            enablejsapi: 1,
             modestbranding: 1,
             origin: window.location.origin,
             playsinline: 1,
             rel: 0,
+            widget_referrer: window.location.href,
           },
           events: {
             onReady: (event) => {
               if (cancelled) return;
-              event.target.setVolume(Math.round(volume * 100));
+              event.target.setVolume(Math.round(volumeRef.current * 100));
               setIsAudioBuffering(false);
               setDiagnostics(prev => ({
                 ...prev,
@@ -9755,7 +9883,7 @@ function App() {
                 lastSongFetchAt: Date.now(),
                 lastSongSource: 'youtube-iframe',
               }));
-              if (webAudioUnlocked && isPlaying) {
+              if (webAudioUnlockedRef.current && isPlayingRef.current) {
                 event.target.playVideo();
                 startProgressTimer();
                 scheduleBufferingFallback(event.target);
@@ -9770,7 +9898,7 @@ function App() {
                 if (!clearWebBufferingIfAudible(event.target)) setIsAudioBuffering(true);
                 startProgressTimer();
               } else if (event.data === YT.PlayerState.CUED) {
-                if (webAudioUnlocked && isPlaying) event.target.playVideo?.();
+                if (webAudioUnlockedRef.current && isPlayingRef.current) event.target.playVideo?.();
               } else if (event.data === YT.PlayerState.PAUSED) {
                 stopProgressTimer();
               } else if (event.data === YT.PlayerState.ENDED) {
@@ -9778,13 +9906,25 @@ function App() {
                 skipCurrentWebTrack();
               }
             },
-            onError: (event) => {
+            onError: async (event) => {
+              const errorCode = Number(event?.data);
+              const liveTrack = currentTrackRef.current || currentTrack;
+              const liveTrackUrl = liveTrack?.actualUrl || liveTrack?.url || '';
+              const liveYoutubeId = liveTrack?.youtubeId || extractYouTubeId(liveTrackUrl || liveTrack?.id || liveTrack?.thumbnail || '') || youtubeId;
               console.error('[Aether/Audio] YouTube player error', {
-                code: event?.data,
-                title: currentTrack.title,
-                youtubeId,
+                code: errorCode,
+                title: liveTrack?.title,
+                youtubeId: liveYoutubeId,
               });
-              setIsAudioBuffering(false);
+              const recovered = await tryWebPlaybackFallback({
+                code: errorCode,
+                youtubeId: liveYoutubeId,
+                track: liveTrack,
+              });
+              if (!recovered) {
+                setIsAudioBuffering(false);
+                setIsPlaying(false);
+              }
             },
           },
         });
@@ -9798,7 +9938,7 @@ function App() {
       cancelled = true;
       bufferingFallbackTimers.forEach((timer) => window.clearTimeout(timer));
     };
-  }, [isStandalone, currentTrack?.title, currentTrack?.actualUrl, currentTrack?.url, currentTrack?.youtubeId, currentTrack?.id, currentTrack?.queueNonce, volume, webAudioUnlocked, isPlaying, API_BASE, setCurrentTime]);
+  }, [isStandalone, currentTrack?.title, currentTrack?.actualUrl, currentTrack?.url, currentTrack?.youtubeId, currentTrack?.id, currentTrack?.queueNonce, setCurrentTime, tryWebPlaybackFallback]);
 
   useEffect(() => {
     if (isStandalone) return;
