@@ -76,7 +76,16 @@ const decodeHtmlEntities = (value) => String(value || '')
 const handleOAuthIntercept = (text) => {
     const normalized = String(text || '');
     if (normalized.includes('HTTP Error 429') || normalized.includes('Sign in to confirm')) {
-        engineEvents.emit('oauth-required', { url: null, code: null });
+        const cookiesPath = getResolvedCookiesPath();
+        const cookieAudit = auditCookiesFile(cookiesPath);
+        engineEvents.emit('oauth-required', {
+            url: null,
+            code: null,
+            reason: normalized.slice(0, 700),
+            cookiesPath: cookiesPath || null,
+            cookieAudit,
+            hasCookies: Boolean(cookiesPath),
+        });
         return true;
     }
     return false;
@@ -2166,11 +2175,27 @@ streamApp.get('/stream', async (req, res) => {
 
     const proc = spawn(ytdlpPath, args);
     activeStreamProcesses.add(proc);
+    let stderrText = '';
+    let responseFinished = false;
 
-    proc.stdout.on('data', () => {
+    const sendStreamFailure = (status, message) => {
+        if (responseFinished || res.headersSent) return;
+        responseFinished = true;
+        res.status(status).type('text/plain').send(message);
+    };
+
+    proc.stdout.on('data', (chunk) => {
         if (!firstChunkTime) {
             firstChunkTime = Date.now();
             console.log(`${tag} first chunk in ${firstChunkTime - startTime}ms for ${trackId}`);
+        }
+        if (!res.headersSent) {
+            res.setHeader('Content-Type', 'audio/mp4');
+            res.setHeader('Accept-Ranges', 'bytes');
+            res.setHeader('Cache-Control', 'no-cache');
+        }
+        if (!res.writableEnded) {
+            res.write(chunk);
         }
     });
 
@@ -2178,19 +2203,17 @@ streamApp.get('/stream', async (req, res) => {
         activeStreamProcesses.delete(proc);
         logDebug('Stream Spawn Fault', { ytdlpPath, error: err.message, stack: err.stack });
         console.error(`[Aether] Engine launch error: ${err.message}`);
-        if (!res.headersSent) res.status(500).send(`Neural Engine failed: ${err.message}`);
+        sendStreamFailure(500, `Neural Engine failed: ${err.message}`);
     });
 
-    // yt-dlp primary format is m4a, so expose mp4 audio MIME for browser compatibility.
-    res.setHeader('Content-Type', 'audio/mp4');
-    res.setHeader('Accept-Ranges', 'bytes');
-    proc.stdout.pipe(res);
     res.on('finish', () => {
+        responseFinished = true;
         console.log(`[Aether] yt-dlp stream for ${trackId} took ${Date.now() - startTime}ms`);
     });
 
     proc.stderr.on('data', (d) => {
         const msg = d.toString().trim();
+        if (msg) stderrText += `${msg}\n`;
         if (msg.length > 5 && !msg.includes('frag')) {
             console.log(`[Aether/Engine] ${msg}`);
             logRemuxIfDetected(msg);
@@ -2198,19 +2221,25 @@ streamApp.get('/stream', async (req, res) => {
         handleOAuthIntercept(msg);
     });
 
-    proc.stderr.on('data', (data) => {
-        console.error(`[Aether Stream Error] ${data}`);
-    });
-
     proc.on('close', (code) => {
         activeStreamProcesses.delete(proc);
         const streamTotal = Date.now() - startTime;
         console.log(`${tag} stream closed ${trackId || 'direct'} code=${code} total=${streamTotal}ms`);
+        if (!firstChunkTime && !responseFinished && !res.headersSent) {
+            const authBlocked = /(sign in|cookies|login|bot|captcha|forbidden|403|private|unavailable|confirm)/i.test(stderrText);
+            const message = authBlocked
+                ? 'YouTube needs cookies for this track. Upload a fresh cookies.txt and try again.'
+                : 'No playable audio stream was returned for this track.';
+            sendStreamFailure(authBlocked ? 401 : 502, message);
+        } else if (firstChunkTime && !responseFinished && !res.writableEnded) {
+            responseFinished = true;
+            res.end();
+        }
     });
 
     req.on('close', () => {
         activeStreamProcesses.delete(proc);
-        proc.kill('SIGKILL');
+        if (!proc.killed) proc.kill('SIGKILL');
     });
 });
 
