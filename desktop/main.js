@@ -857,6 +857,33 @@ const getBinaryStat = (filePath) => {
         return null;
     }
 };
+const runtimeBinaryOptions = (binaryName) => ({
+    minBytes: /ffmpeg/i.test(binaryName) ? 5 * 1024 * 1024 : 1024 * 1024,
+    windowsExe: process.platform === 'win32' && /\.exe$/i.test(binaryName),
+});
+const isRuntimeBinaryFile = (filePath, options = {}) => {
+    const { minBytes = 64 * 1024, windowsExe = false } = options;
+    const stat = getBinaryStat(filePath);
+    if (!stat?.isFile?.() || stat.size < minBytes) return false;
+
+    if (windowsExe || (process.platform === 'win32' && /\.exe$/i.test(filePath))) {
+        let fd = null;
+        try {
+            fd = fs.openSync(filePath, 'r');
+            const magic = Buffer.alloc(2);
+            fs.readSync(fd, magic, 0, 2, 0);
+            return magic[0] === 0x4d && magic[1] === 0x5a;
+        } catch {
+            return false;
+        } finally {
+            if (fd !== null) {
+                try { fs.closeSync(fd); } catch {}
+            }
+        }
+    }
+
+    return true;
+};
 const ensureExecutablePermissions = (filePath) => {
     if (!filePath || process.platform === 'win32' || !fs.existsSync(filePath)) return filePath;
     try {
@@ -866,6 +893,39 @@ const ensureExecutablePermissions = (filePath) => {
     }
     return filePath;
 };
+const promoteRuntimeBinary = (sourcePath, targetPath, options = {}) => {
+    const { minBytes = 64 * 1024, windowsExe = false } = options;
+    if (!isRuntimeBinaryFile(sourcePath, { minBytes, windowsExe })) return null;
+
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    const tmpTarget = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+    fs.copyFileSync(sourcePath, tmpTarget);
+    ensureExecutablePermissions(tmpTarget);
+
+    if (!isRuntimeBinaryFile(tmpTarget, { minBytes, windowsExe })) {
+        try { fs.rmSync(tmpTarget, { force: true }); } catch {}
+        return null;
+    }
+
+    try {
+        if (fs.existsSync(targetPath)) fs.rmSync(targetPath, { force: true });
+    } catch {}
+
+    try {
+        fs.renameSync(tmpTarget, targetPath);
+        if (process.platform === 'win32') {
+            try { fs.utimesSync(targetPath, new Date(), new Date()); } catch {}
+        }
+        return ensureExecutablePermissions(targetPath);
+    } catch (renameError) {
+        logDebug('binary promote rename failed', {
+            sourcePath,
+            targetPath,
+            error: renameError?.message || String(renameError),
+        });
+        return ensureExecutablePermissions(tmpTarget);
+    }
+};
 
 // --- BULLETPROOF NATIVE BINARY EXTRACTOR ---
 // Sidesteps read-only /Applications restrictions and Python deprecations
@@ -873,49 +933,20 @@ const unpackNativeEngine = (binaryName, options = {}) => {
     const { force = false } = options;
     const sourcePath = getBundledPath(`desktop/bin/${binaryName}`);
     const targetExecutable = getUserDataBinaryPath(binaryName);
-    const sourceStat = getBinaryStat(sourcePath);
+    const binaryOptions = runtimeBinaryOptions(binaryName);
 
-    if (!sourceStat?.isFile?.()) {
-        logDebug('bundled binary missing for unpack', { binaryName, sourcePath });
+    if (!isRuntimeBinaryFile(sourcePath, binaryOptions)) {
+        logDebug('bundled binary missing or invalid for unpack', { binaryName, sourcePath });
         return null;
     }
 
     try {
-        const targetStat = getBinaryStat(targetExecutable);
-        if (!force && targetStat?.isFile?.() && targetStat.size > 0) {
+        if (!force && isRuntimeBinaryFile(targetExecutable, binaryOptions)) {
             return ensureExecutablePermissions(targetExecutable);
         }
 
-        fs.mkdirSync(path.dirname(targetExecutable), { recursive: true });
-        const tmpTarget = `${targetExecutable}.${process.pid}.${Date.now()}.tmp`;
-        fs.copyFileSync(sourcePath, tmpTarget);
-        ensureExecutablePermissions(tmpTarget);
-
-        try {
-            if (force && fs.existsSync(targetExecutable)) {
-                try { fs.rmSync(targetExecutable, { force: true }); } catch {}
-            }
-            if (!fs.existsSync(targetExecutable)) {
-                fs.renameSync(tmpTarget, targetExecutable);
-            } else {
-                try { fs.unlinkSync(tmpTarget); } catch {}
-            }
-        } catch (renameError) {
-            logDebug('binary unpack rename failed', {
-                binaryName,
-                sourcePath,
-                targetExecutable,
-                error: renameError?.message || String(renameError),
-            });
-            return ensureExecutablePermissions(tmpTarget);
-        }
-
-        if (process.platform === 'win32') {
-            try {
-                fs.utimesSync(targetExecutable, new Date(), new Date());
-            } catch {}
-        }
-        return ensureExecutablePermissions(targetExecutable);
+        const promoted = promoteRuntimeBinary(sourcePath, targetExecutable, binaryOptions);
+        if (promoted) return promoted;
     } catch (e) {
         logDebug('binary unpack failed', { binaryName, sourcePath, targetExecutable, error: e?.message || String(e) });
         console.error(`[Aether] Execution unpack fault: ${e.message}`);
@@ -953,7 +984,7 @@ function isSpawnableCommand(commandPath) {
     try {
         const result = spawnSync(commandPath, ['--version'], {
             stdio: 'ignore',
-            timeout: 2500,
+            timeout: process.platform === 'win32' ? 7000 : 3500,
             shell: false,
         });
         return !result.error && result.status === 0;
@@ -1107,6 +1138,13 @@ const ensureYtDlpPath = async () => {
                 }
             }
 
+            const refreshedBundled = unpackNativeEngine(binaryName, { force: true });
+            if (refreshedBundled && isSpawnableCommand(refreshedBundled)) {
+                ytdlpPath = refreshedBundled;
+                logDebug('yt-dlp refreshed from bundled runtime', { ytdlpPath });
+                return true;
+            }
+
             const downloadUrl = process.platform === 'win32'
                 ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
                 : process.platform === 'darwin'
@@ -1118,25 +1156,16 @@ const ensureYtDlpPath = async () => {
             await downloadFileWithRedirects(downloadUrl, tempTarget);
             ensureExecutablePermissions(tempTarget);
 
-            let selectedTarget = tempTarget;
-            try {
-                if (!fs.existsSync(target)) {
-                    fs.renameSync(tempTarget, target);
-                    selectedTarget = target;
-                }
-            } catch (renameError) {
-                logDebug('yt-dlp bootstrap rename skipped', {
-                    target,
-                    tempTarget,
-                    error: renameError?.message || String(renameError),
-                });
+            const binaryOptions = runtimeBinaryOptions(binaryName);
+            if (!isRuntimeBinaryFile(tempTarget, binaryOptions)) {
+                try { fs.rmSync(tempTarget, { force: true }); } catch {}
+                throw new Error(`Downloaded yt-dlp looks invalid: ${tempTarget}`);
             }
 
-            if (process.platform === 'win32') {
-                try { fs.utimesSync(selectedTarget, new Date(), new Date()); } catch {}
-            }
+            const selectedTarget = promoteRuntimeBinary(tempTarget, target, binaryOptions);
+            try { fs.rmSync(tempTarget, { force: true }); } catch {}
 
-            if (isSpawnableCommand(selectedTarget)) {
+            if (selectedTarget && isSpawnableCommand(selectedTarget)) {
                 ytdlpPath = selectedTarget;
                 console.log(`[Aether] yt-dlp bootstrapped at ${selectedTarget}`);
                 logDebug('yt-dlp bootstrapped', { target: selectedTarget });
@@ -3233,7 +3262,25 @@ app.whenReady().then(async () => {
                                 result.fixAttempts.push({ platform: 'win32', target: p, action: 'unblock', ok, stdout: String(ps.stdout || ''), stderr: String(ps.stderr || '') });
                                 const works = testExec(p);
                                 result.fixAttempts.push({ platform: 'win32', target: p, action: 'exec-test', ok: works });
-                                if (works && name.toLowerCase().includes('yt-dlp')) result.ytDlpReady = true;
+                                const lowerName = name.toLowerCase();
+
+                                if (works && lowerName.includes('yt-dlp')) {
+                                    const managedPath = getUserDataBinaryPath('yt-dlp.exe');
+                                    const promotedPath = promoteRuntimeBinary(p, managedPath, runtimeBinaryOptions('yt-dlp.exe'));
+                                    const promotedWorks = !!promotedPath && testExec(promotedPath);
+                                    result.fixAttempts.push({ platform: 'win32', target: promotedPath || managedPath, action: 'promote-managed-runtime', ok: promotedWorks });
+                                    ytdlpPath = promotedWorks ? promotedPath : p;
+                                    result.ytDlpReady = true;
+                                    result.ytDlpPath = ytdlpPath;
+                                }
+
+                                if (works && lowerName.includes('ffmpeg')) {
+                                    const managedPath = getUserDataBinaryPath('ffmpeg.exe');
+                                    const promotedPath = promoteRuntimeBinary(p, managedPath, runtimeBinaryOptions('ffmpeg.exe'));
+                                    const promotedWorks = !!promotedPath && testExec(promotedPath);
+                                    result.fixAttempts.push({ platform: 'win32', target: promotedPath || managedPath, action: 'promote-managed-runtime', ok: promotedWorks });
+                                    result.ffmpegReady = promotedWorks || result.ffmpegReady;
+                                }
                             } catch (e) {
                                 result.fixAttempts.push({ platform: 'win32', target: p, action: 'unblock', ok: false, error: e?.message || String(e) });
                             }

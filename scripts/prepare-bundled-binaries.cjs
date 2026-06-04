@@ -15,12 +15,14 @@ const targets = (() => {
         label: 'yt-dlp',
         fileName: 'yt-dlp.exe',
         minBytes: 1024 * 1024,
+        windowsExe: true,
         url: 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe',
       },
       {
         label: 'ffmpeg',
         fileName: 'ffmpeg.exe',
         minBytes: 5 * 1024 * 1024,
+        windowsExe: true,
         url: 'https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64.gz',
       },
     ];
@@ -65,10 +67,28 @@ const targets = (() => {
   ];
 })();
 
-const isValidBinary = (filePath, minBytes) => {
+const hasWindowsExeMagic = (filePath) => {
+  let fd = null;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const magic = Buffer.alloc(2);
+    fs.readSync(fd, magic, 0, 2, 0);
+    return magic[0] === 0x4d && magic[1] === 0x5a;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch {}
+    }
+  }
+};
+
+const isValidBinary = (filePath, target) => {
   try {
     const stat = fs.statSync(filePath);
-    return stat.isFile() && stat.size > minBytes;
+    if (!stat.isFile() || stat.size <= target.minBytes) return false;
+    if (target.windowsExe && !hasWindowsExeMagic(filePath)) return false;
+    return true;
   } catch {
     return false;
   }
@@ -152,7 +172,7 @@ const downloadWithRedirects = (url, filePath, redirects = 0) => new Promise((res
 
 const ensureBinary = async (target) => {
   const destination = path.join(binDir, target.fileName);
-  if (isValidBinary(destination, target.minBytes)) {
+  if (isValidBinary(destination, target)) {
     markExecutable(destination);
     console.log(`[prepare-bundled-binaries] Using existing ${target.fileName}`);
     return;
@@ -162,7 +182,7 @@ const ensureBinary = async (target) => {
   await downloadWithRedirects(target.url, destination);
   markExecutable(destination);
 
-  if (!isValidBinary(destination, target.minBytes)) {
+  if (!isValidBinary(destination, target)) {
     throw new Error(`Downloaded ${target.label} looks invalid: ${destination}`);
   }
 
