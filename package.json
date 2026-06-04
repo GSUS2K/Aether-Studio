@@ -14,6 +14,7 @@
     "party:dev": "cd party-server && node --watch index.js",
     "party:start": "cd party-server && node index.js",
     "prepare-binaries": "node scripts/prepare-bundled-binaries.cjs",
+    "build": "npm run build-frontend",
     "build-frontend": "cd frontend && npm install && npm run build",
     "package": "npm run prepare-binaries && npm run build-frontend && electron-builder build --mac --dir",
     "dist": "npm run prepare-binaries && npm run build-frontend && electron-builder build --mac",
