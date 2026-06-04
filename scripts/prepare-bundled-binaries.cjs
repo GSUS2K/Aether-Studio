@@ -99,7 +99,7 @@ const markExecutable = (filePath) => {
   try { fs.chmodSync(filePath, 0o755); } catch {}
 };
 
-const downloadWithRedirects = (url, filePath, redirects = 0) => new Promise((resolve, reject) => {
+const downloadWithRedirects = (url, filePath, redirects = 0, decompress = url.endsWith('.gz')) => new Promise((resolve, reject) => {
   if (redirects > 8) {
     reject(new Error('Too many redirects'));
     return;
@@ -127,7 +127,7 @@ const downloadWithRedirects = (url, filePath, redirects = 0) => new Promise((res
       cleanup();
       const nextUrl = location.startsWith('http') ? location : new URL(location, url).toString();
       res.resume();
-      resolve(downloadWithRedirects(nextUrl, filePath, redirects + 1));
+      resolve(downloadWithRedirects(nextUrl, filePath, redirects + 1, decompress));
       return;
     }
 
@@ -138,7 +138,7 @@ const downloadWithRedirects = (url, filePath, redirects = 0) => new Promise((res
       return;
     }
 
-    const streams = url.endsWith('.gz')
+    const streams = decompress
       ? [res, createGunzip(), file]
       : [res, file];
 
