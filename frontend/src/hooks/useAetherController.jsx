@@ -1,7 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, startTransition, memo, forwardRef, useImperativeHandle, Profiler } from 'react';
-// NOTE: Many async operations and state changes below may be subject to race conditions if triggered rapidly.
-// Consider debouncing or locking for critical flows (e.g., downloads, updates, queue changes).
-import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, VolumeX, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles, Clapperboard, Columns2, Repeat, MessageSquare, Send, Layers, Eye, EyeOff, Hand, MousePointer2, Camera, Copy, Check, Heart, Link2, Users, SlidersHorizontal } from 'lucide-react';
+import { Play, Pause, SkipForward, Search, Plus, Loader2, ListMusic, Music, Globe, User, UserPlus, BookOpen, Trash2, Rewind, FastForward, ExternalLink, ChevronLeft, ChevronRight, Zap, X, HardDrive, Activity, Radio, Signal, Wifi, Clock, Maximize2, Minimize2, RotateCcw, AlertTriangle, RefreshCw, Monitor, Target, AppWindow, Volume2, VolumeX, Shuffle, Download, Upload, Save, Lock, Fingerprint, Keyboard, Edit3, PlusCircle, MinusCircle, Sparkles, Clapperboard, Columns2, Repeat, MessageSquare, Send, Layers, Eye, EyeOff, Hand, MousePointer2, Camera, Copy, Check, Heart, Link2, Users, SlidersHorizontal, Home } from 'lucide-react';
 import { motion, AnimatePresence, MotionConfig } from 'framer-motion';
 import { setupDiscordSdk } from '../discord';
 import axios from 'axios';
@@ -16,6 +14,7 @@ import { MixtapeVaultContent } from '../components/mixtape/MixtapeVault';
 import { HeaderSearchBox, HeaderSleepTimerControls, HeaderVisualControls } from '../components/header/HeaderControls';
 import { ExperienceCenterShell } from '../components/experience/ExperienceCenter';
 import { StudioLibraryOverlayIsland } from '../components/library/StudioLibraryOverlay';
+import { AetherHome } from '../components/home/AetherHome';
 import { LyricLineIsland, PlaybackProgressIsland, PlayerActionButtons, PlayerModePill, PlayerTransportControls } from '../components/player/PlayerControls';
 import { FullPlaylistOverlay, FullQueueOverlay } from '../components/player/QueuePlaylistOverlays';
 import { AppLockSettingsIsland, FeedbackIsland, GestureLabIsland, SignalLedgerIsland } from '../components/tools/ToolIslands';
@@ -35,6 +34,7 @@ import { createPlaybackLedgerData, getLocalDateKey, normalizePlaybackLedgerData,
 import { readConfirmationSkipPrefs, resetConfirmationSkipPrefs, setConfirmationSkipPref } from '../utils/confirmationPrefs';
 import { buildUniquePlaylistName } from '../utils/playlists';
 import { inferToastTone } from '../utils/toast';
+import { buildArtistCatalog, buildDiscoveryHome, buildSearchSuggestions, filterArtistTracks } from '../utils/discovery';
 import catDoodlePeek from '../assets/cat-doodle-peek.svg';
 import PartyMode from '../PartyMode';
 import { buildAetherViewProps } from './buildAetherViewProps';
@@ -247,6 +247,21 @@ export function useAetherController() {
   const [neuralRecommendations, setNeuralRecommendations] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [hasCompletedSearch, setHasCompletedSearch] = useState(false);
+  const [isHomeOpen, setIsHomeOpen] = useState(false);
+  const [homeFeed, setHomeFeed] = useState([]);
+  const [homeResults, setHomeResults] = useState([]);
+  const [homeArtistName, setHomeArtistName] = useState('');
+  const [homeArtistResults, setHomeArtistResults] = useState([]);
+  const [homeLoading, setHomeLoading] = useState(false);
+  const [homeError, setHomeError] = useState('');
+  const [homeFilter, setHomeFilter] = useState('all');
+  const [homeSort, setHomeSort] = useState('relevant');
+  const homeFetchIdRef = useRef(0);
+  const homeFeedSeedRef = useRef('');
+  const autoplayRequestRef = useRef(false);
+  const [selectedArtistName, setSelectedArtistName] = useState('');
+  const [artistFilter, setArtistFilter] = useState('all');
+  const [artistSort, setArtistSort] = useState('popular');
   const [addingIds, setAddingIds] = useState(new Set());
   const [isAutoScrollPaused, setIsAutoScrollPaused] = useState(false);
   const [lyricOffsetPresets, setLyricOffsetPresets] = useState({});
@@ -327,9 +342,14 @@ export function useAetherController() {
   const [experienceCenterInitialPage, setExperienceCenterInitialPage] = useState('home');
   const [showShortcutHints, setShowShortcutHints] = useState(() => {
     try {
-      return JSON.parse(localStorage.getItem('aether.showShortcutHints') ?? 'true');
+      if (!localStorage.getItem('aether.shortcutHintsDefaultOffMigrated')) {
+        localStorage.setItem('aether.shortcutHintsDefaultOffMigrated', 'true');
+        localStorage.setItem('aether.showShortcutHints', 'false');
+        return false;
+      }
+      return JSON.parse(localStorage.getItem('aether.showShortcutHints') ?? 'false');
     } catch {
-      return true;
+      return false;
     }
   });
   useEffect(() => {
@@ -2696,7 +2716,8 @@ export function useAetherController() {
     lastRPCPlayingRef,
     lastRPCTrackIdRef,
     partyInfo,
-    queue
+    queue,
+    videoMode
   }); // Combined effect replaced the previous two RPC effects
   // Handle Play/Pause sync
   useEffect(() => {
@@ -2935,6 +2956,7 @@ export function useAetherController() {
     warmupTrack
   });
   const triggerAutoplay = createTriggerAutoplay({
+    autoplayRequestRef,
     autoplayMoodMode,
     currentTrack,
     handleAdd,
@@ -3795,6 +3817,168 @@ export function useAetherController() {
     normalizeTrackIdentity,
     playlists
   });
+  const downloadedIdSet = useMemo(() => new Set((downloadedTracks || []).map(id => String(id))), [downloadedTracks]);
+  const artistCatalog = useMemo(() => buildArtistCatalog(librarySongEntries, {
+    downloadedIds: downloadedIdSet,
+    resolveId: resolveWarmupTrackId
+  }), [downloadedIdSet, librarySongEntries, resolveWarmupTrackId]);
+  const selectedArtist = useMemo(() => {
+    const needle = selectedArtistName.trim().toLowerCase();
+    if (!needle) return null;
+    return artistCatalog.find(artist => artist.name.toLowerCase() === needle) || null;
+  }, [artistCatalog, selectedArtistName]);
+  const artistExplorerTracks = useMemo(() => filterArtistTracks(selectedArtist, artistFilter, artistSort, {
+    getTrackLastListenedMs,
+    getTrackPlayCount
+  }), [artistFilter, artistSort, getTrackLastListenedMs, getTrackPlayCount, selectedArtist]);
+  const recentLibraryTracks = useMemo(() => librarySongEntries.map(entry => entry.track).filter(Boolean).sort((left, right) => getTrackLastListenedMs(right) - getTrackLastListenedMs(left)).filter(track => getTrackLastListenedMs(track) > 0).slice(0, 12), [getTrackLastListenedMs, librarySongEntries]);
+  const discoveryHome = useMemo(() => buildDiscoveryHome({
+    artists: artistCatalog,
+    recentTracks: recentLibraryTracks,
+    favoriteTracks: favoriteTracksList,
+    currentTrack
+  }), [artistCatalog, currentTrack, favoriteTracksList, recentLibraryTracks]);
+  const homeSeedArtists = useMemo(() => {
+    const activeArtist = currentTrack ? artistCatalog.find(artist => artist.name.toLowerCase() === String(currentTrack.author || '').trim().toLowerCase()) : null;
+    const next = [];
+    const seen = new Set();
+    [activeArtist, ...artistCatalog].forEach(artist => {
+      if (!artist || seen.has(artist.id)) return;
+      seen.add(artist.id);
+      next.push(artist);
+    });
+    return next.slice(0, 10);
+  }, [artistCatalog, currentTrack]);
+  const fetchHomeResults = useCallback(async query => {
+    const trimmed = String(query || '').trim();
+    if (!trimmed) return [];
+    let timeoutId = null;
+    const timeout = new Promise((_, reject) => {
+      timeoutId = window.setTimeout(() => reject(new Error('Search took too long. Try again or use a shorter search.')), 12000);
+    });
+    const search = isStandalone ? window.aether?.search?.(trimmed) : axios.get(`${API_BASE}/api/search?q=${encodeURIComponent(trimmed)}`).then(response => response.data);
+    const response = await Promise.race([search, timeout]).finally(() => {
+      if (timeoutId) window.clearTimeout(timeoutId);
+    });
+    return Array.isArray(response) ? response.filter(Boolean).slice(0, 36) : [];
+  }, [isStandalone]);
+  const runHomeSearch = useCallback(async query => {
+    const trimmed = String(query || '').trim();
+    if (!trimmed) return;
+    const runId = ++homeFetchIdRef.current;
+    setIsHomeOpen(true);
+    setHomeArtistName('');
+    setHomeError('');
+    setHomeLoading(true);
+    try {
+      const results = await fetchHomeResults(trimmed);
+      if (runId !== homeFetchIdRef.current) return;
+      setHomeResults(results);
+      setHomeArtistResults([]);
+      if (!results.length) setHomeError('No online results found. Try a shorter search.');
+    } catch (error) {
+      if (runId !== homeFetchIdRef.current) return;
+      setHomeError(error?.message || 'Home search failed.');
+    } finally {
+      if (runId === homeFetchIdRef.current) setHomeLoading(false);
+    }
+  }, [fetchHomeResults]);
+  const openHomeArtist = useCallback(async name => {
+    const artistName = String(name || '').trim();
+    if (!artistName) return;
+    const runId = ++homeFetchIdRef.current;
+    setIsHomeOpen(true);
+    setHomeArtistName(artistName);
+    setHomeResults([]);
+    setHomeError('');
+    setHomeLoading(true);
+    try {
+      const results = await fetchHomeResults(`${artistName} official music video`);
+      if (runId !== homeFetchIdRef.current) return;
+      setHomeArtistResults(results);
+      if (!results.length) setHomeError(`No online results found for ${artistName}.`);
+    } catch (error) {
+      if (runId !== homeFetchIdRef.current) return;
+      setHomeError(error?.message || 'Artist search failed.');
+    } finally {
+      if (runId === homeFetchIdRef.current) setHomeLoading(false);
+    }
+  }, [fetchHomeResults]);
+  const clearHomeArtist = useCallback(() => {
+    setHomeArtistName('');
+    setHomeArtistResults([]);
+    setHomeError('');
+  }, []);
+  const isHomeTrackDownloaded = useCallback(track => {
+    const ids = [track?.youtubeId, track?.id, resolveWarmupTrackId(track)].filter(Boolean).map(String);
+    return ids.some(id => downloadedIdSet.has(id));
+  }, [downloadedIdSet, resolveWarmupTrackId]);
+  const isHomeTrackInLibrary = useCallback(track => {
+    const key = normalizeTrackIdentity(track);
+    if (!key) return false;
+    return librarySongEntries.some(entry => entry.key === key || normalizeTrackIdentity(entry.track) === key);
+  }, [librarySongEntries, normalizeTrackIdentity]);
+  const playHomeTrack = useCallback(track => {
+    const normalized = normalizeQueueTrack(track);
+    if (!normalized) {
+      flashLastAdded('That result cannot be played', 2200, 'warning');
+      return;
+    }
+    setQueue([normalized]);
+    setCurrentTime(0);
+    setIsManualStop(false);
+    setIsPlaying(true);
+    setIsHomeOpen(false);
+  }, [flashLastAdded, normalizeQueueTrack]);
+  useEffect(() => {
+    if (!isHomeOpen) return;
+    if (homeFeed.length > 0) return;
+    const seedNames = homeSeedArtists.map(artist => artist.name).filter(Boolean);
+    const seed = seedNames[0] || currentTrack?.author || favoriteTracksList[0]?.author || 'music videos';
+    const seedKey = String(seed || '').trim().toLowerCase();
+    if (!seedKey || homeFeedSeedRef.current === seedKey) return;
+    homeFeedSeedRef.current = seedKey;
+    let cancelled = false;
+    setHomeLoading(true);
+    setHomeError('');
+    fetchHomeResults(seed)
+      .then(results => {
+        if (cancelled) return;
+        setHomeFeed(results);
+        if (!results.length) setHomeError('No recommendations found yet. Search an artist or try a quick start.');
+      })
+      .catch(error => {
+        if (!cancelled) {
+          homeFeedSeedRef.current = '';
+          setHomeError(error?.message || 'Home feed failed.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setHomeLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentTrack?.author, favoriteTracksList, fetchHomeResults, homeFeed.length, homeSeedArtists, isHomeOpen]);
+  const openArtistExplorer = useCallback(name => {
+    const normalized = String(name || '').trim();
+    if (!normalized) return;
+    setSelectedArtistName(normalized);
+    setArtistFilter('all');
+    setArtistSort('popular');
+    setSearchQuery('');
+    setSearchResults([]);
+    setHasCompletedSearch(false);
+  }, []);
+  const clearArtistExplorer = useCallback(() => setSelectedArtistName(''), []);
+  const getHeaderSearchSuggestions = useCallback(draft => buildSearchSuggestions({
+    query: draft,
+    songEntries: librarySongEntries,
+    artists: artistCatalog,
+    playlistNames: orderedPlaylistNames,
+    history: searchHistoryByScope[isOfflineMode ? 'offline' : 'online'] || [],
+    limit: 8
+  }), [artistCatalog, isOfflineMode, librarySongEntries, orderedPlaylistNames, searchHistoryByScope]);
   const shouldHydrateLibrarySearch = isLibraryOverlayContentReady || Boolean(librarySearchNeedle);
   const librarySearchIndex = useMemo(() => shouldHydrateLibrarySearch ? buildLibrarySearchIndex({
     songEntries: librarySongEntries,
@@ -4029,10 +4213,29 @@ export function useAetherController() {
     setSearchQuery,
     setSearchResults
   });
+  const runSuggestedSearch = useCallback(query => {
+    setSelectedArtistName('');
+    handleSearch(query);
+  }, [handleSearch]);
+  const handleHeaderSuggestionPick = useCallback(item => {
+    if (!item) return;
+    const value = item.value || item.title || '';
+    if (item.type === 'artist') {
+      openHomeArtist(value);
+      return;
+    }
+    if (item.type === 'vault') {
+      setLibrarySearchTerm(value);
+      openLibraryOverlay(null);
+      return;
+    }
+    runSuggestedSearch(value);
+  }, [openHomeArtist, openLibraryOverlay, runSuggestedSearch]);
   const clearDiscoveryResults = useCallback(() => {
     setSearchResults([]);
     setHasCompletedSearch(false);
     setIsSearching(false);
+    setSelectedArtistName('');
   }, []);
   useEffect(() => {
     if (searchQuery.trim()) return;
@@ -5097,8 +5300,9 @@ export function useAetherController() {
   const trimmedSearchQuery = searchQuery.trim();
   const isSearchActive = trimmedSearchQuery.length > 0;
   const hasActiveSearchState = Boolean(trimmedSearchQuery || searchResults.length > 0 || hasCompletedSearch);
-  const discoveryItems = isSearchActive ? searchResults : neuralRecommendations;
-  const discoveryModeLabel = isSearchActive ? 'RESULT' : 'RECOMMENDATION';
+  const isArtistExplorerActive = Boolean(selectedArtist);
+  const discoveryItems = isArtistExplorerActive ? artistExplorerTracks : isSearchActive ? searchResults : neuralRecommendations;
+  const discoveryModeLabel = isArtistExplorerActive ? 'ARTIST TRACK' : isSearchActive ? 'RESULT' : 'RECOMMENDATION';
   const diagnosticsApiBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
   const queuePollDisplay = isStandalone ? 'local' : `${diagnostics.lastQueueFetchMs ?? '—'}ms`;
   const queuePollTime = isStandalone ? 'direct engine' : formatDiagTime(diagnostics.lastQueueFetchAt);
@@ -5313,6 +5517,7 @@ export function useAetherController() {
     APP_VERSION,
     Activity,
     AetherConfirmDialog,
+    AetherHome,
     AlertTriangle,
     AnimatePresence,
     BUILD_VERSION,
@@ -5343,6 +5548,7 @@ export function useAetherController() {
     HeaderSleepTimerControls,
     HealthMetricCard,
     Heart,
+    Home,
     Layers,
     ListMusic,
     Loader2,
@@ -5404,6 +5610,8 @@ export function useAetherController() {
     autoplayMenuButtonRef,
     autoplayMenuStyle,
     autoplayMoodMode,
+    artistFilter,
+    artistSort,
     avatarFileInputRef,
     beatRingsRef,
     cameraHandSignal,
@@ -5416,6 +5624,7 @@ export function useAetherController() {
     chromeTopOffset,
     clamp01,
     cleanQueueBuffer,
+    clearArtistExplorer,
     clearAllDownloadedTracks,
     clearDiagnosticEvents,
     clearDiscoveryResults,
@@ -5449,6 +5658,7 @@ export function useAetherController() {
     diagnosticsTopOffset,
     discardSearchHistoryItem,
     discordPrivate,
+    discoveryHome,
     discoveryItems,
     discoveryModeLabel,
     dismissRuntimeIssuePrompt,
@@ -5486,6 +5696,7 @@ export function useAetherController() {
     getInspectSourceUrl,
     getProxyUrl,
     getTrackAddedMs,
+    getHeaderSearchSuggestions,
     getTrackLastListenedMs,
     getTrackPlayCount,
     globalMediaShortcutsEnabled,
@@ -5529,6 +5740,7 @@ export function useAetherController() {
     handleRunRuntimeRepair,
     handleSaveLyricPreset,
     handleSaveManualLyrics,
+    handleHeaderSuggestionPick,
     handleSearch,
     handleSeek,
     handleSetSleepTimer,
@@ -5543,6 +5755,15 @@ export function useAetherController() {
     headerAccentButtonClass,
     headerIconButtonClass,
     headerSearchInputRef,
+    homeArtistName,
+    homeArtistResults,
+    homeError,
+    homeFeed,
+    homeFilter,
+    homeLoading,
+    homeResults,
+    homeSeedArtists,
+    homeSort,
     immersiveBeatIntensity,
     importReview,
     inferToastTone,
@@ -5582,6 +5803,7 @@ export function useAetherController() {
     isFullPlaylistContentReady,
     isFullQueueContentReady,
     isGestureControlEnabled,
+    isHomeOpen,
     isImmersiveLyricsLocked,
     isInspectPlaylistFromVault,
     isLibraryOverlayOpen,
@@ -5703,6 +5925,8 @@ export function useAetherController() {
     openLibraryOverlay,
     openManualLyricsEditor,
     openMusicImport,
+    openArtistExplorer,
+    openHomeArtist,
     openPlaylistInspect,
     openSharedSceneInAether,
     openShortcutSettings,
@@ -5759,6 +5983,8 @@ export function useAetherController() {
     resolveWarmupTrackId,
     rootModeClass,
     runAfterInputPaint,
+    runHomeSearch,
+    runSuggestedSearch,
     runStorageOptimize,
     runtimeIssuePrompt,
     saveProfileShareCard,
@@ -5767,8 +5993,11 @@ export function useAetherController() {
     searchQuery,
     searchResults,
     seekActivePlaybackTo,
+    selectedArtist,
     sessionRestoreNotice,
     setAetherProfile,
+    setArtistFilter,
+    setArtistSort,
     setAuraPreset,
     setAutoplayMoodMode,
     setDiscordPrivate,
@@ -5776,6 +6005,8 @@ export function useAetherController() {
     setDraggedQueueIndex,
     setExperienceCenterInitialPage,
     setGlobalMediaShortcutsEnabled,
+    setHomeFilter,
+    setHomeSort,
     setImportReview,
     setInspectTarget,
     setIsAppLocked,
@@ -5793,6 +6024,7 @@ export function useAetherController() {
     setIsFaceControlEnabled,
     setIsFocusedMode,
     setIsGestureControlEnabled,
+    setIsHomeOpen,
     setIsLockModalOpen,
     setIsLyricsExpanded,
     setIsManualLyricsEditorOpen,
@@ -5896,6 +6128,10 @@ export function useAetherController() {
     toReadableShortcut,
     toggleFavoriteTrack,
     toggleWindowMaximize,
+    clearHomeArtist,
+    isHomeTrackDownloaded,
+    isHomeTrackInLibrary,
+    playHomeTrack,
     topHeaderClass,
     trackControlAccent,
     trackControlGlow,

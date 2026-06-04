@@ -65,7 +65,7 @@
     "mac": {
       "category": "public.app-category.music",
       "target": "dmg",
-      "artifactName": "${productName}-${arch}.${ext}",
+      "artifactName": "${productName}-macOS-${arch}.${ext}",
       "icon": "icon.png",
       "extendInfo": {
         "NSCameraUsageDescription": "Aether uses the camera only when you enable Gesture + Face Lab camera controls for face and hand playback gestures.",
@@ -74,11 +74,11 @@
     },
     "win": {
       "target": "nsis",
-      "artifactName": "${productName}-Setup-${arch}.${ext}"
+      "artifactName": "${productName}-Windows-Setup-${arch}.${ext}"
     },
     "linux": {
       "target": "AppImage",
-      "artifactName": "${productName}-${arch}.${ext}"
+      "artifactName": "${productName}-Linux-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,

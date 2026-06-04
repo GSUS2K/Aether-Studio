@@ -17,30 +17,11 @@ export function getSocket(targetUrl = PARTY_SERVER_URL) {
   }
   
   if (!_socket) {
-    // allow polling fallback to recover from websocket-only failures (e.g. tunnel or proxy issues)
-    const attachListeners = (s, allowPollingFallback = true) => {
+    const attachListeners = (s) => {
       s.on('connect', () => console.log('[PartySocket] Connected successfully to', targetUrl));
       s.on('connect_error', (err) => {
         console.error('[PartySocket] Connection error:', err && err.message ? err.message : err);
         console.error('[PartySocket] Full error:', err);
-        // Try a single polling-only fallback if websocket fails repeatedly
-        try {
-          if (allowPollingFallback && !s._triedPolling) {
-            s._triedPolling = true;
-            console.log('[PartySocket] Attempting polling-only fallback');
-            try { s.disconnect(); } catch (e) {}
-            _socket = io(targetUrl, {
-              autoConnect: false,
-              reconnectionAttempts: 5,
-              reconnectionDelay: 1000,
-              transports: ['polling']
-            });
-            attachListeners(_socket, false);
-            _socket.connect();
-          }
-        } catch (e) {
-          console.error('[PartySocket] fallback error', e);
-        }
       });
       s.on('disconnect', (reason) => console.log('[PartySocket] Disconnected:', reason));
     };
@@ -49,7 +30,8 @@ export function getSocket(targetUrl = PARTY_SERVER_URL) {
       autoConnect: false,
       reconnectionAttempts: 15,
       reconnectionDelay: 1000,
-      transports: ['websocket', 'polling']
+      transports: ['polling', 'websocket'],
+      upgrade: true,
     });
     attachListeners(_socket);
     

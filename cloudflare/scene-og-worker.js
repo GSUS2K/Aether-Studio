@@ -28,7 +28,8 @@ export default {
     const title = `${scene.title} - ${scene.author}`.slice(0, 120);
     const description = `${scene.lyric} - ${formatTime(scene.at)} / ${formatTime(scene.total)} - ${scene.state} - ${scene.mode}`.slice(0, 220);
     const image = scene.thumbnail || `https://aetherstudio.me/aether-logo.png`;
-    const html = renderSceneHtml({ scene, pageUrl, title, description, image });
+    const appUrl = `aether://scene?scene=${encodeURIComponent(encoded)}`;
+    const html = renderSceneHtml({ scene, pageUrl, appUrl, title, description, image });
 
     return new Response(html, {
       status: 200,
@@ -78,10 +79,11 @@ function normalizeScenePayload(raw) {
   };
 }
 
-function renderSceneHtml({ scene, pageUrl, title, description, image }) {
+function renderSceneHtml({ scene, pageUrl, appUrl, title, description, image }) {
   const safeTitle = escapeHtml(title);
   const safeDescription = escapeHtml(description);
   const safePageUrl = escapeHtml(pageUrl);
+  const safeAppUrl = escapeHtml(appUrl);
   const safeImage = escapeHtml(image);
   const chips = [
     ['Pulse', scene.pulse],
@@ -249,6 +251,12 @@ function renderSceneHtml({ scene, pageUrl, title, description, image }) {
       letter-spacing: 0.24em;
       text-transform: uppercase;
     }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 10px;
+    }
     .button {
       display: inline-flex;
       align-items: center;
@@ -262,6 +270,12 @@ function renderSceneHtml({ scene, pageUrl, title, description, image }) {
       text-decoration: none;
       letter-spacing: 0.2em;
     }
+    .button.primary {
+      border-color: transparent;
+      background: var(--accent);
+      color: #03110d;
+      box-shadow: 0 16px 42px rgba(33, 255, 210, 0.22);
+    }
     @media (max-width: 760px) {
       body { padding: 18px; }
       .shell { padding: 18px; border-radius: 24px; }
@@ -269,6 +283,8 @@ function renderSceneHtml({ scene, pageUrl, title, description, image }) {
       .art { max-width: 260px; }
       .chips { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .footer { align-items: flex-start; flex-direction: column; }
+      .actions { justify-content: flex-start; width: 100%; }
+      .button { width: 100%; }
     }
   </style>
 </head>
@@ -291,7 +307,10 @@ function renderSceneHtml({ scene, pageUrl, title, description, image }) {
     </section>
     <div class="footer">
       <span>Shared from Aether</span>
-      <a class="button" href="${safePageUrl}">Open Scene</a>
+      <div class="actions">
+        <a class="button primary" href="${safePageUrl}">Play In Browser</a>
+        <a class="button" href="${safeAppUrl}">Open In Aether</a>
+      </div>
     </div>
   </main>
 </body>

@@ -18,12 +18,12 @@ export function AppDialogOverlays(props) {
   librarySongSort, librarySongSortOptions, librarySort, libraryTrackSort, libraryVisiblePlaylistNames, libraryVisibleSongEntries, line, livePulseReadout,
   lyrics, mixtapeDurationMs, mixtapeEnergyPct, mixtapeLiveLyric, mixtapePositionMs, mixtapeProgressPct, mixtapePulse, mixtapePulseReadout,
   mixtapeSpectrum, mixtapeVaultRef, motion, movePlaylist, musicImportProvider, musicImportTheme, name, newPlaylistName,
-  nextLyric, normalizeQueueTrack, normalizeTrackIdentity, openFeedbackPanel, openGestureLab, openLibraryOverlay, openTrackInspect,
+  nextLyric, normalizeQueueTrack, normalizeTrackIdentity, openFeedbackPanel, openGestureLab, openLibraryOverlay, openSharedSceneInAether, openTrackInspect,
   pendingLibraryItems, playInspectPlaylist, playlists, prev, provider, queueInspectPlaylist, renameValue,
-  reorderPlaylistByDrag, resolveWarmupTrackId, rowSourceUrl, setDraggedPlaylistName, setImportReview, setInspectTarget, setIsAuraStageOpen, setIsCreatingPlaylist,
+  playSharedSceneInBrowser, reorderPlaylistByDrag, resolveWarmupTrackId, rowSourceUrl, setDraggedPlaylistName, setImportReview, setInspectTarget, setIsAuraStageOpen, setIsCreatingPlaylist,
   setIsManualStop, setIsMixtapeVaultOpen, setIsPlaying, setIsRenamingPlaylist, setIsSharedSceneOpen, setIsSpotifyImportOpen, setLibraryBrowseMode, setLibraryFilter,
   setLibrarySearchTerm, setLibrarySongFilter, setLibrarySongSort, setLibrarySort, setLibraryTrackSort, setMusicImportProvider, setNewPlaylistName, setQueue,
-  setRenameValue, setSpotifyImportLogs, setSpotifyImportPlaylistName, setSpotifyImportProgress, setSpotifyImportUrl, setViewingPlaylist, sharedModalCloseButtonClass, sharedScene,
+  setRenameValue, setSpotifyImportLogs, setSpotifyImportPlaylistName, setSpotifyImportProgress, setSpotifyImportUrl, setViewingPlaylist, sharedModalCloseButtonClass, sharedScene, sharedSceneCanPlay,
   showFavoriteLibraryCard, spotifyImportLogs, spotifyImportPlaylistName, spotifyImportProgress, spotifyImportUrl, suggestion, toggleFavoriteTrack,
   track, trackControlAccent, trackControlGlow, trackHasSavedLyrics, trackProgressAccent, trackProgressGlow, value, vaultPulse,
   viewingPlaylist, volume,
@@ -318,6 +318,15 @@ export function AppDialogOverlays(props) {
                             <div className="mt-0.5 text-[9px] font-black uppercase tracking-[0.18em] text-white/35">{label}</div>
                           </div>)}
                       </div>
+                      {!isStandalone && <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                          <button type="button" disabled={!sharedSceneCanPlay} onClick={playSharedSceneInBrowser} className="no-drag inline-flex min-h-[48px] items-center justify-center rounded-2xl border border-brand-accent/40 bg-brand-accent px-4 text-[11px] font-black uppercase tracking-[0.18em] text-black transition hover:shadow-[0_0_24px_rgba(0,255,191,0.24)] disabled:cursor-not-allowed disabled:opacity-40">
+                            <Play size={15} className="mr-2" />
+                            Play in Browser
+                          </button>
+                          <button type="button" onClick={openSharedSceneInAether} className="no-drag inline-flex min-h-[48px] items-center justify-center rounded-2xl border border-brand-accent/35 bg-brand-accent/10 px-4 text-[11px] font-black uppercase tracking-[0.18em] text-brand-accent transition hover:bg-brand-accent/15">
+                            Open in Aether
+                          </button>
+                        </div>}
                     </div>
                   </div>
                 </div>

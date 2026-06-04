@@ -44,7 +44,8 @@ jobs:
     - name: Download Windows installer from latest Release
       run: |
         mkdir -p frontend/public
-        curl -L -o frontend/public/Aether-Setup-x64.exe https://github.com/GSUS2K/Aether-Studio/releases/latest/download/Aether-Setup-x64.exe
+        curl -L -o frontend/public/Aether-Windows-Setup-x64.exe https://github.com/GSUS2K/Aether-Studio/releases/latest/download/Aether-Windows-Setup-x64.exe
+        cp frontend/public/Aether-Windows-Setup-x64.exe frontend/public/Aether-Setup-x64.exe
 
     - name: Build frontend
       run: |

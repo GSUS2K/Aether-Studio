@@ -22,14 +22,14 @@ export function QueueBufferHeader({
   setLastAdded,
 }) {
   const queueCount = Math.max(0, queue.length - 1);
-  const iconButtonClass = 'flex shrink-0 items-center gap-2 rounded-lg border border-white/10 bg-white/5 p-1.5 text-white/50 transition-all hover:bg-brand-accent/20 hover:text-brand-accent disabled:cursor-not-allowed disabled:opacity-30';
+  const iconButtonClass = 'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5 p-0 text-white/50 transition-all hover:bg-brand-accent/20 hover:text-brand-accent disabled:cursor-not-allowed disabled:opacity-30';
 
   return (
-    <div className={`flex items-center justify-between gap-2 border-b border-white/5 p-3 ${panelHeaderClass}`}>
-      <div className="flex min-w-0 shrink-0 items-center gap-3">
+    <div className={`grid grid-cols-[auto_minmax(0,1fr)] items-center gap-2 border-b border-white/5 p-3 ${panelHeaderClass}`}>
+      <div className="flex w-7 shrink-0 items-center justify-center">
         <ListMusic size={18} className="shrink-0 text-brand-accent" />
       </div>
-      <div className="flex min-w-0 flex-1 items-center justify-end gap-2 min-[1280px]:gap-3">
+      <div className="flex min-w-0 items-center justify-end gap-1.5 min-[1400px]:gap-2">
           <button
             onClick={() => { if (queue.length > 0) openLibraryOverlay({ type: 'queue', items: queue.slice() }); }}
             className={iconButtonClass}
@@ -64,7 +64,7 @@ export function QueueBufferHeader({
           <button
             onClick={cleanQueueBuffer}
             disabled={queue.length <= 1}
-            className={iconButtonClass}
+            className={`${iconButtonClass} hidden min-[1260px]:flex`}
             title="Clean queue: remove duplicate upcoming tracks"
           >
             <RefreshCw size={10} />
@@ -72,7 +72,7 @@ export function QueueBufferHeader({
           <button
             onClick={playDownloadedOnly}
             disabled={queue.length === 0}
-            className={iconButtonClass}
+            className={`${iconButtonClass} hidden min-[1260px]:flex`}
             title="Play downloaded only"
           >
             <HardDrive size={10} />
@@ -86,12 +86,12 @@ export function QueueBufferHeader({
                 setIsAutoplayMenuOpen(prev => !prev);
               }}
               disabled={isOfflineMode}
-              className={`flex shrink-0 items-center gap-2 rounded-lg border p-1.5 transition-all ${isAutoplayEnabled ? 'border-brand-accent/30 bg-brand-accent/20 text-brand-accent shadow-neon' : 'border-white/10 bg-white/5 text-white/30 opacity-70'} ${isOfflineMode ? 'cursor-not-allowed opacity-30' : 'hover:bg-brand-accent/10 hover:text-brand-accent'}`}
+              className={`flex h-9 shrink-0 items-center gap-2 rounded-lg border px-3 py-0 transition-all ${isAutoplayEnabled ? 'border-brand-accent/30 bg-brand-accent/20 text-brand-accent shadow-neon' : 'border-white/10 bg-white/5 text-white/30 opacity-70'} ${isOfflineMode ? 'cursor-not-allowed opacity-30' : 'hover:bg-brand-accent/10 hover:text-brand-accent'}`}
               title={isOfflineMode ? 'Autoplay needs Online Mode' : 'Neural Autoplay Mode'}
             >
               <Zap size={10} className={isAutoplayEnabled ? 'animate-pulse' : ''} />
-              <span className="whitespace-nowrap text-[8px] font-black uppercase tracking-tighter">{isAutoplayEnabled ? 'AUTO_ON' : 'AUTO_OFF'}</span>
-              <span className="hidden whitespace-nowrap text-[8px] font-black uppercase tracking-tighter opacity-80 min-[1180px]:inline">{autoplayMoodMode}</span>
+              <span className="whitespace-nowrap text-[8px] font-black uppercase tracking-tight">{isAutoplayEnabled ? 'AUTO' : 'OFF'}</span>
+              <span className="hidden whitespace-nowrap text-[8px] font-black uppercase tracking-tight opacity-80 min-[1500px]:inline">{autoplayMoodMode}</span>
             </button>
 
             {isAutoplayMenuOpen && createPortal(
@@ -128,7 +128,7 @@ export function QueueBufferHeader({
               document.body,
             )}
           </div>
-          <span className="shrink-0 rounded-full bg-brand-accent/10 px-2 py-0.5 text-[10px] font-mono font-black text-brand-accent">{queueCount}</span>
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-brand-accent/10 text-[10px] font-mono font-black text-brand-accent">{queueCount}</span>
       </div>
     </div>
   );

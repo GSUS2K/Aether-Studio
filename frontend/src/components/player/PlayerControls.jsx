@@ -119,7 +119,7 @@ export const PlayerTransportControls = memo(function PlayerTransportControls({
   trackControlAccent,
   trackControlGlow,
   playPauseShortcutLabel = '',
-  showShortcutHints = true,
+  showShortcutHints = false,
 }) {
   return (
     <div className="flex items-center justify-center w-full mt-2 relative">

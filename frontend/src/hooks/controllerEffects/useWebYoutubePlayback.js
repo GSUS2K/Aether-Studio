@@ -42,6 +42,10 @@ export function useWebYoutubePlayback(props) {
     volume: volumeRef.current
   });
   let cancelled = false;
+  let webEndSettled = false;
+  let webNearEndSince = 0;
+  let webLastProgressMs = 0;
+  let webLastProgressAt = Date.now();
   const bufferingFallbackTimers = [];
   const ensureHost = () => {
     let host = document.getElementById('aether-youtube-player-host');
@@ -88,8 +92,37 @@ export function useWebYoutubePlayback(props) {
       if (!ytPlayer?.getCurrentTime) return;
       try {
         const nextMs = Math.max(0, Math.floor(ytPlayer.getCurrentTime() * 1000));
+        const durationSec = Number(ytPlayer.getDuration?.() || 0);
+        const durationMs = Number.isFinite(durationSec) && durationSec > 0 ? Math.round(durationSec * 1000) : Number(currentTrackRef.current?.totalDurationMs || currentTrackRef.current?.duration || currentTrack?.totalDurationMs || currentTrack?.duration || 0);
+        const state = ytPlayer.getPlayerState?.();
         setCurrentTime(nextMs);
         if (nextMs > 0) clearWebBufferingIfAudible(ytPlayer);
+        if (nextMs > webLastProgressMs + 120) {
+          webLastProgressMs = nextMs;
+          webLastProgressAt = Date.now();
+        }
+        if (!webEndSettled && durationMs > 0) {
+          const remainingMs = Math.max(0, durationMs - nextMs);
+          const nearEndWindowMs = Math.max(900, Math.min(1800, durationMs * 0.03));
+          if (remainingMs <= nearEndWindowMs && nextMs > 0) {
+            webNearEndSince ||= Date.now();
+          } else {
+            webNearEndSince = 0;
+          }
+          const nearEndLongEnough = webNearEndSince > 0 && Date.now() - webNearEndSince > 1600;
+          const stalledNearEnd = isPlayingRef.current && state === 1 && remainingMs <= nearEndWindowMs && Date.now() - webLastProgressAt > 1400;
+          if (state === 0 || remainingMs <= 180 || nearEndLongEnough || stalledNearEnd) {
+            console.warn('[Aether/Audio] Web near-end watchdog advancing queue', {
+              title: currentTrackRef.current?.title || currentTrack?.title,
+              nextMs,
+              durationMs,
+              remainingMs,
+              nearEndLongEnough,
+              stalledNearEnd
+            });
+            skipCurrentWebTrack();
+          }
+        }
       } catch {}
     }, 500);
   };
@@ -97,7 +130,19 @@ export function useWebYoutubePlayback(props) {
     clearInterval(youtubeProgressTimerRef.current);
     youtubeProgressTimerRef.current = null;
   };
-  const skipCurrentWebTrack = () => {
+  const isWebPlayerNearEnd = ytPlayer => {
+    try {
+      const positionMs = Math.max(0, Math.floor(Number(ytPlayer?.getCurrentTime?.() || 0) * 1000));
+      const durationSec = Number(ytPlayer?.getDuration?.() || 0);
+      const durationMs = Number.isFinite(durationSec) && durationSec > 0 ? Math.round(durationSec * 1000) : Number(currentTrackRef.current?.totalDurationMs || currentTrackRef.current?.duration || currentTrack?.totalDurationMs || currentTrack?.duration || 0);
+      return durationMs > 0 && positionMs > 0 && durationMs - positionMs <= Math.max(900, Math.min(1800, durationMs * 0.03));
+    } catch {
+      return false;
+    }
+  };
+  function skipCurrentWebTrack() {
+    if (webEndSettled) return;
+    webEndSettled = true;
     const liveTrack = currentTrackRef.current || currentTrack;
     const skipTrackId = liveTrack?.id || liveTrack?.youtubeId || liveTrack?.actualUrl || liveTrack?.url || '';
     console.log("[Aether/Audio] Web ended", {
@@ -105,6 +150,12 @@ export function useWebYoutubePlayback(props) {
       skipTrackId
     });
     advanceQueueRef.current?.('natural_end');
+  }
+  const resetWebEndGuard = () => {
+    webEndSettled = false;
+    webNearEndSince = 0;
+    webLastProgressMs = 0;
+    webLastProgressAt = Date.now();
   };
   loadYouTubeIframeApi().then(YT => {
     if (cancelled) return;
@@ -112,6 +163,7 @@ export function useWebYoutubePlayback(props) {
     const existing = youtubePlayerRef.current;
     if (existing?.loadVideoById && webTrackLoadKeyRef.current !== trackLoadKey) {
       webTrackLoadKeyRef.current = trackLoadKey;
+      resetWebEndGuard();
       setIsAudioBuffering(true);
       existing.loadVideoById({
         videoId: youtubeId,
@@ -130,6 +182,7 @@ export function useWebYoutubePlayback(props) {
     }
     if (existing) return;
     webTrackLoadKeyRef.current = trackLoadKey;
+    resetWebEndGuard();
     setIsAudioBuffering(true);
     youtubePlayerRef.current = new YT.Player('aether-youtube-player-host', {
       width: '240',
@@ -174,6 +227,10 @@ export function useWebYoutubePlayback(props) {
           } else if (event.data === YT.PlayerState.CUED) {
             if (webAudioUnlockedRef.current && isPlayingRef.current) event.target.playVideo?.();
           } else if (event.data === YT.PlayerState.PAUSED) {
+            if (isPlayingRef.current && isWebPlayerNearEnd(event.target)) {
+              skipCurrentWebTrack();
+              return;
+            }
             stopProgressTimer();
           } else if (event.data === YT.PlayerState.ENDED) {
             stopProgressTimer();

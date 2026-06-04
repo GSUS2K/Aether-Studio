@@ -9,7 +9,7 @@ export const CommandPalette = memo(function CommandPalette({
   onClose,
   commands,
   shortcutLabel,
-  showShortcutHints = true,
+  showShortcutHints = false,
 }) {
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);

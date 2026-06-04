@@ -94,6 +94,42 @@ useEffect(() => {
     const youtubeUrl = track.youtubeId ? `https://www.youtube.com/watch?v=${track.youtubeId}` : track.actualUrl || track.url;
     const streamBase = isStandalone ? `http://localhost:${streamPort}` : API_BASE;
     let didOfflineFallback = false;
+    let didSettleAudioEnd = false;
+    let lastStateTimeUpdateAt = 0;
+    let lastStateTimeMs = 0;
+    let audioNearEndSince = 0;
+    let lastObservedAudioMs = 0;
+    let lastAudioProgressAt = Date.now();
+    const commitAudioTime = (nextMs, force = false) => {
+      currentTimeRef.current = nextMs;
+      const now = Date.now();
+      if (force || nextMs === 0 || Math.abs(nextMs - lastStateTimeMs) >= 900 || now - lastStateTimeUpdateAt >= 900) {
+        lastStateTimeMs = nextMs;
+        lastStateTimeUpdateAt = now;
+        setCurrentTime(nextMs);
+      }
+    };
+    const getResolvedAudioDurationMs = () => {
+      const mediaDuration = Number(localAudioRef.current?.duration);
+      const mediaDurationMs = Number.isFinite(mediaDuration) && mediaDuration > 0 ? Math.round(mediaDuration * 1000) : 0;
+      const trackDurationMs = Number(track.totalDurationMs || track.duration || 0);
+      return mediaDurationMs || (Number.isFinite(trackDurationMs) && trackDurationMs > 0 ? trackDurationMs : 0);
+    };
+    const settleAudioEnd = reason => {
+      if (didSettleAudioEnd || videoModeRef.current) return;
+      didSettleAudioEnd = true;
+      const durationMs = getResolvedAudioDurationMs();
+      if (durationMs > 0) {
+        commitAudioTime(durationMs, true);
+      }
+      setIsAudioBuffering(false);
+      console.log('[Aether/Audio] Settled audio end', {
+        reason,
+        title: track.title,
+        durationMs
+      });
+      advanceQueueRef.current(reason);
+    };
     const fallbackToOnlineStream = () => {
       if (isOfflineMode) return;
       if (!isPlayingRef.current || !isLocalDownloaded || didOfflineFallback) return;
@@ -124,8 +160,7 @@ useEffect(() => {
         if (isLocalDownloaded) {
           localAudioRef.current.currentTime = resumeSec;
         }
-        setCurrentTime(Math.floor(resumeSec * 1000));
-        currentTimeRef.current = Math.floor(resumeSec * 1000);
+        commitAudioTime(Math.floor(resumeSec * 1000), true);
         pendingResumeTimeRef.current = null;
         setPendingResumeTime(null);
         setIsAudioBuffering(false);
@@ -137,8 +172,11 @@ useEffect(() => {
     localAudioRef.current.ontimeupdate = () => {
       if (videoModeRef.current) return;
       const nextMs = Math.max(0, liveStreamStartOffsetMsRef.current + Math.floor((localAudioRef.current?.currentTime || 0) * 1000));
-      currentTimeRef.current = nextMs;
-      setCurrentTime(nextMs);
+      commitAudioTime(nextMs);
+      if (nextMs > lastObservedAudioMs + 120) {
+        lastObservedAudioMs = nextMs;
+        lastAudioProgressAt = Date.now();
+      }
       if (isPlayingRef.current && nextMs >= 0) {
         setIsAudioBuffering(false);
       }
@@ -186,7 +224,7 @@ useEffect(() => {
         return;
       }
       const playedMs = Math.floor((localAudioRef.current?.currentTime || 0) * 1000);
-      const durationMs = Number(track.totalDurationMs || track.duration || 0);
+      const durationMs = getResolvedAudioDurationMs();
       const completion = durationMs > 0 ? playedMs / durationMs : 1;
       if (completion > 0 && completion < 0.9 && !prematureEndGuardRef.current.retried) {
         if (isOfflineMode) {
@@ -217,8 +255,7 @@ useEffect(() => {
         });
         return;
       }
-      console.log("[Aether/Audio] Terminated Naturally. Handing to Shared Advance.");
-      advanceQueueRef.current('natural_end');
+      settleAudioEnd('natural_end');
     };
     localAudioRef.current.onerror = e => {
       if (videoModeRef.current) {
@@ -310,11 +347,9 @@ useEffect(() => {
         localAudioRef.current.currentTime = 0;
       } catch {}
       if (startSec === 0) {
-        currentTimeRef.current = 0;
-        setCurrentTime(0);
+        commitAudioTime(0, true);
       } else {
-        currentTimeRef.current = Math.floor(startSec * 1000);
-        setCurrentTime(Math.floor(startSec * 1000));
+        commitAudioTime(Math.floor(startSec * 1000), true);
       }
     }
     const startupWatchdog = setTimeout(() => {
@@ -332,6 +367,36 @@ useEffect(() => {
         fallbackToOnlineStream();
       }
     }, 12000);
+    const nearEndWatchdog = window.setInterval(() => {
+      const audio = localAudioRef.current;
+      if (!audio || !isPlayingRef.current || videoModeRef.current || didSettleAudioEnd) return;
+      const durationMs = getResolvedAudioDurationMs();
+      if (!Number.isFinite(durationMs) || durationMs <= 0) return;
+      const currentMs = Math.max(0, liveStreamStartOffsetMsRef.current + Math.floor((audio.currentTime || 0) * 1000));
+      const remainingMs = durationMs - currentMs;
+      const endWindowMs = Math.max(700, Math.min(1800, durationMs * 0.025));
+      const oldEnough = Date.now() - loadStartTime > 1500;
+      if (remainingMs <= endWindowMs && currentMs > 0) {
+        audioNearEndSince ||= Date.now();
+      } else {
+        audioNearEndSince = 0;
+      }
+      const nearEndLongEnough = audioNearEndSince > 0 && Date.now() - audioNearEndSince > 1600;
+      const stalledNearEnd = remainingMs <= endWindowMs && Date.now() - lastAudioProgressAt > 1400;
+      const pausedNearEnd = isPlayingRef.current && audio.paused && remainingMs <= Math.max(700, endWindowMs);
+      if (audio.ended || (oldEnough && currentMs > 0 && (remainingMs <= 180 || nearEndLongEnough || stalledNearEnd || pausedNearEnd))) {
+        console.warn('[Aether/Audio] Near-end watchdog advancing queue', {
+          title: track.title,
+          currentMs,
+          durationMs,
+          remainingMs,
+          nearEndLongEnough,
+          stalledNearEnd,
+          pausedNearEnd
+        });
+        settleAudioEnd('audio_near_end_watchdog');
+      }
+    }, 700);
 
     // Trigger background download if not already cached / warming
     if (!isOfflineMode && window.aether?.download && !downloadedTracks.includes(track.id) && !warmingTrackIds.has(track.id)) {
@@ -379,7 +444,10 @@ useEffect(() => {
     } else {
       setIsAudioBuffering(false);
     }
-    const clearWatchdog = () => clearTimeout(startupWatchdog);
+    const clearWatchdog = () => {
+      clearTimeout(startupWatchdog);
+      window.clearInterval(nearEndWatchdog);
+    };
 
     // Return cleanup function to clear state before next effect run
     return () => {

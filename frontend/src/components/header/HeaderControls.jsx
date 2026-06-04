@@ -509,6 +509,46 @@ export const SearchHistoryDropdown = memo(function SearchHistoryDropdown({
   );
 });
 
+export const SearchSuggestionDropdown = memo(function SearchSuggestionDropdown({
+  visible,
+  suggestions = [],
+  onPick,
+}) {
+  if (!visible || suggestions.length === 0) return null;
+
+  return (
+    <div className="absolute left-0 right-0 top-[calc(100%+0.55rem)] z-[80] overflow-hidden rounded-[1.35rem] border border-brand-accent/18 bg-[#050807]/95 p-2 shadow-[0_24px_80px_rgba(0,0,0,0.5)] backdrop-blur-2xl">
+      <div className="px-3 py-2 text-[8px] font-black uppercase tracking-[0.24em] text-brand-accent/65">Suggestions</div>
+      <div className="flex max-h-[310px] flex-col gap-1 overflow-y-auto custom-scrollbar">
+        {suggestions.map((item, index) => (
+          <button
+            key={`${item.type}-${item.value}-${index}`}
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => onPick?.(item)}
+            className="flex w-full items-center gap-3 rounded-2xl border border-white/0 px-3 py-2.5 text-left transition-all hover:border-brand-accent/20 hover:bg-brand-accent/[0.08]"
+          >
+            {item.thumbnail ? (
+              <img src={item.thumbnail} alt="" className="h-10 w-10 shrink-0 rounded-xl border border-white/10 object-cover bg-white/5" />
+            ) : (
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-[10px] font-black uppercase tracking-widest text-brand-accent/70">
+                {item.type === 'artist' ? 'AR' : item.type === 'vault' ? 'VA' : item.type === 'recent' ? 'RE' : 'TR'}
+              </div>
+            )}
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[12px] font-black uppercase tracking-[0.08em] text-white">{item.title}</div>
+              <div className="mt-1 truncate text-[9px] font-bold uppercase tracking-[0.18em] text-white/35">{item.detail}</div>
+            </div>
+            <span className="shrink-0 rounded-full border border-white/10 bg-white/[0.04] px-2 py-1 text-[7px] font-black uppercase tracking-[0.18em] text-white/38">
+              {item.type}
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+});
+
 export const HeaderSearchBox = memo(function HeaderSearchBox({
   searchQuery,
   isSearching,
@@ -520,12 +560,15 @@ export const HeaderSearchBox = memo(function HeaderSearchBox({
   onClear,
   inputRef,
   commandPaletteShortcutLabel = '',
-  showShortcutHints = true,
+  showShortcutHints = false,
   searchHistory = [],
   historyLabel = 'Recent searches',
   onHistoryPick,
   onHistoryRemove,
   onHistoryClear,
+  suggestions = [],
+  getSuggestions,
+  onSuggestionPick,
 }) {
   const [draft, setDraft] = useState(searchQuery || '');
   const [isFocused, setIsFocused] = useState(false);
@@ -537,6 +580,10 @@ export const HeaderSearchBox = memo(function HeaderSearchBox({
   const trimmedDraft = draft.trim();
   const hasLocalSearchState = Boolean(trimmedDraft || hasActiveSearchState);
   const isYouTubeLink = /(youtube\.com|youtu\.be)/i.test(trimmedDraft);
+  const liveSuggestions = useMemo(() => {
+    if (typeof getSuggestions === 'function') return getSuggestions(draft);
+    return suggestions;
+  }, [draft, getSuggestions, suggestions]);
 
   const submitSearch = useCallback((event) => {
     event.preventDefault();
@@ -556,6 +603,19 @@ export const HeaderSearchBox = memo(function HeaderSearchBox({
     setIsFocused(false);
     (onHistoryPick || onSearch)(normalized);
   }, [onHistoryPick, onSearch]);
+
+  const pickSuggestion = useCallback((item) => {
+    if (!item) return;
+    setDraft(item.value || item.title || '');
+    setIsFocused(false);
+    if (onSuggestionPick) {
+      onSuggestionPick(item);
+      return;
+    }
+    onSearch(item.value || item.title || '');
+  }, [onSearch, onSuggestionPick]);
+
+  const showSuggestions = isFocused && trimmedDraft.length >= 2 && liveSuggestions.length > 0;
 
   return (
     <form onSubmit={submitSearch} className="relative w-full group no-drag" data-no-maximize="true">
@@ -609,13 +669,18 @@ export const HeaderSearchBox = memo(function HeaderSearchBox({
         )}
       </div>
       <SearchHistoryDropdown
-        visible={!disabled && isFocused}
+        visible={!disabled && isFocused && !showSuggestions}
         history={searchHistory}
         query={draft}
         label={historyLabel}
         onPick={pickHistoryItem}
         onRemove={onHistoryRemove}
         onClear={onHistoryClear}
+      />
+      <SearchSuggestionDropdown
+        visible={!disabled && showSuggestions}
+        suggestions={liveSuggestions}
+        onPick={pickSuggestion}
       />
     </form>
   );

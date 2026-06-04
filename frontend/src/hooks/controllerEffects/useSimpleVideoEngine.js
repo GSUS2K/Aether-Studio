@@ -85,14 +85,24 @@ useEffect(() => {
     lastProgressAt: Date.now()
   };
   const getResolvedVideoDurationMs = () => Number.isFinite(Number(vid?.duration)) && Number(vid?.duration) > 0 ? Math.round(Number(vid.duration) * 1000) : Number(track.totalDurationMs || track.duration || 0);
+  let lastVideoStateUpdateAt = 0;
+  let lastVideoStateMs = 0;
+  const commitVideoTime = (nextMs, force = false) => {
+    currentTimeRef.current = nextMs;
+    const now = Date.now();
+    if (force || nextMs === 0 || Math.abs(nextMs - lastVideoStateMs) >= 900 || now - lastVideoStateUpdateAt >= 900) {
+      lastVideoStateMs = nextMs;
+      lastVideoStateUpdateAt = now;
+      setCurrentTime(nextMs);
+    }
+  };
   const settleVideoNaturalEnd = () => {
     const guard = videoEndGuardRef.current;
     if (!guard || guard.trackKey !== trackActionKey || guard.settled) return;
     guard.settled = true;
     const resolvedDurationMs = getResolvedVideoDurationMs();
     if (Number.isFinite(resolvedDurationMs) && resolvedDurationMs > 0) {
-      currentTimeRef.current = Math.max(currentTimeRef.current || 0, resolvedDurationMs);
-      setCurrentTime(resolvedDurationMs);
+      commitVideoTime(Math.max(currentTimeRef.current || 0, resolvedDurationMs), true);
     }
     advanceQueueRef.current('natural_end');
   };
@@ -125,7 +135,7 @@ useEffect(() => {
         guard.lastNearEndAt = 0;
       }
     }
-    if (currentMs > 0) setCurrentTime(currentMs);
+    if (currentMs > 0) commitVideoTime(currentMs);
   };
   vid.onended = () => settleVideoNaturalEnd();
   vid.onerror = () => {

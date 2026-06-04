@@ -86,9 +86,13 @@ export function useAdvanceQueueAction(props) {
       next = [...next, removed];
     }
     if (next.length === 0) {
-      setIsPlaying(false);
       if (isAutoplayEnabled && removed) {
-        setTimeout(() => triggerAutoplay(removed), 50);
+        setTimeout(async () => {
+          const added = await triggerAutoplay(removed);
+          if (!added) setIsPlaying(false);
+        }, 50);
+      } else {
+        setIsPlaying(false);
       }
     }
     return next;

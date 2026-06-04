@@ -3,6 +3,7 @@ import { AppMainFrame } from './AppMainFrame';
 export function AppView(props) {
   const {
     AetherConfirmDialog,
+    AetherHome,
     CommandPalette,
     ExperienceCenterShell,
     MotionConfig,
@@ -36,6 +37,15 @@ export function AppView(props) {
     handleControl,
     handleCopyDiagnosticsValue,
     handleRunRuntimeRepair,
+    homeArtistName,
+    homeArtistResults,
+    homeError,
+    homeFeed,
+    homeFilter,
+    homeLoading,
+    homeResults,
+    homeSeedArtists,
+    homeSort,
     isAudioBuffering,
     isCommandPaletteOpen,
     isDepthMotionEnabled,
@@ -43,6 +53,9 @@ export function AppView(props) {
     isExperienceCenterOpen,
     isFaceControlEnabled,
     isGestureControlEnabled,
+    isHomeOpen,
+    isHomeTrackDownloaded,
+    isHomeTrackInLibrary,
     isMacPlatform,
     isOfflineMode,
     isPartyModeOpen,
@@ -60,6 +73,7 @@ export function AppView(props) {
     openAppLockSettings,
     openFeedbackPanel,
     openGestureLab,
+    openHomeArtist,
     openLibraryOverlay,
     openMusicImport,
     openShortcutSettings,
@@ -81,6 +95,8 @@ export function AppView(props) {
     setAuraPreset,
     setDiscordPrivate,
     setGlobalMediaShortcutsEnabled,
+    setHomeFilter,
+    setHomeSort,
     setIsAppLocked,
     setIsAuraStageOpen,
     setIsCommandPaletteOpen,
@@ -89,6 +105,7 @@ export function AppView(props) {
     setIsExperienceCenterOpen,
     setIsFaceControlEnabled,
     setIsGestureControlEnabled,
+    setIsHomeOpen,
     setIsManualStop,
     setIsOfflineMode,
     setIsPartyModeOpen,
@@ -114,10 +131,14 @@ export function AppView(props) {
     videoMode,
     visualizerMode
   } = props;
+  const homePage = <AetherHome open={isHomeOpen} onClose={() => setIsHomeOpen(false)} currentTrack={currentTrack} isPlaying={isPlaying} videoMode={videoMode} homeFeed={homeFeed} homeResults={homeResults} homeArtistName={homeArtistName} homeArtistResults={homeArtistResults} homeLoading={homeLoading} homeError={homeError} homeFilter={homeFilter} homeSort={homeSort} setHomeFilter={setHomeFilter} setHomeSort={setHomeSort} runHomeSearch={props.runHomeSearch} openHomeArtist={openHomeArtist} clearHomeArtist={props.clearHomeArtist} homeSeedArtists={homeSeedArtists} discoveryHome={props.discoveryHome} getProxyUrl={getProxyUrl} isHomeTrackDownloaded={isHomeTrackDownloaded} isHomeTrackInLibrary={isHomeTrackInLibrary} playHomeTrack={props.playHomeTrack} queueHomeTrack={props.handleAdd} openTrackInspect={props.openTrackInspect} />;
   return <MotionConfig reducedMotion={performanceMode === 'low' ? 'always' : 'never'} transition={performanceMode === 'low' ? {
     duration: 0
   } : undefined}>
-      <AppMainFrame {...props} />
+      <div className={`fixed inset-0 transition-opacity duration-150 ${isHomeOpen ? 'pointer-events-none opacity-0' : 'opacity-100'}`} aria-hidden={isHomeOpen ? 'true' : undefined}>
+        <AppMainFrame {...props} />
+      </div>
+      {isHomeOpen ? homePage : null}
 
       <ExperienceCenterShell open={isExperienceCenterOpen} onClose={() => setIsExperienceCenterOpen(false)} initialPage={experienceCenterInitialPage} visualizerMode={visualizerMode} setVisualizerMode={setVisualizerMode} performanceMode={performanceMode} setPerformanceMode={setPerformanceMode} auraPreset={auraPreset} setAuraPreset={setAuraPreset} isDepthMotionEnabled={isDepthMotionEnabled} setIsDepthMotionEnabled={setIsDepthMotionEnabled} isDoodleMode={isDoodleMode} setIsDoodleMode={setIsDoodleMode} doodleIntensityBadge={doodleIntensityBadge} setIsAuraStageOpen={setIsAuraStageOpen} isGestureControlEnabled={isGestureControlEnabled} openGestureLab={openGestureLab} openSignalLedger={openSignalLedger} openShortcutSettings={openShortcutSettings} openFeedbackPanel={openFeedbackPanel} openAppLockSettings={openAppLockSettings} lockStatus={lockStatus} isStandalone={isStandalone} discordPrivate={discordPrivate} onToggleDiscordPrivate={() => {
       const next = !discordPrivate;

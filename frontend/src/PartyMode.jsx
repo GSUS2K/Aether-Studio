@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Play, Pause, SkipForward, Rewind, X, Send, Crown, Users, Music2, MessageSquare, Copy, Check, SkipBack, Wifi, AlertTriangle, ChevronRight, Search, UserPlus, Loader2, Lock, Volume2, VolumeX, Mic, MicOff, ListMusic, Radio, ThumbsUp, ThumbsDown, Music, Hash, Plus, Shuffle, UserMinus, Trash2, Clock, Link2 } from 'lucide-react';
-import { getSocket, connectSocket, disconnectSocket } from './partySocket';
+import { getSocket, connectSocket, disconnectSocket, PARTY_SERVER_URL } from './partySocket';
 import bs58 from 'bs58';
 import './PartyMode.css';
 
@@ -79,6 +79,9 @@ const buildPartyAvatar = (profile, fallbackName) => {
 };
 
 const cleanPartyToken = (value = '') => String(value || '').trim().replace(/\s+/g, '').toUpperCase();
+const isLocalPartyServerUrl = (value = '') => /^(https?:\/\/)?(localhost|127\.0\.0\.1)(:|\/|$)/i.test(String(value || ''));
+const defaultPartyServerUrl = PARTY_SERVER_URL || 'http://localhost:4444';
+const usesHostedPartyServer = !isLocalPartyServerUrl(defaultPartyServerUrl);
 const parsePartyInviteInput = (rawValue = '') => {
   const raw = String(rawValue || '').trim();
   const result = { partyId: cleanPartyToken(raw), key: '', serverUrl: '' };
@@ -95,7 +98,8 @@ const parsePartyInviteInput = (rawValue = '') => {
     const url = new URL(raw);
     if (url.protocol === 'aether:' || url.protocol === 'http:' || url.protocol === 'https:') {
       result.serverUrl = url.searchParams.get('server') || (url.protocol.startsWith('http') ? url.origin : result.serverUrl);
-      result.partyId = cleanPartyToken(url.searchParams.get('room') || url.searchParams.get('party') || url.pathname.split('/').filter(Boolean).pop() || result.partyId);
+      const tunnelRoom = url.hostname.match(/^aether-party-([a-z0-9]+)/i)?.[1] || '';
+      result.partyId = cleanPartyToken(url.searchParams.get('room') || url.searchParams.get('party') || tunnelRoom || url.pathname.split('/').filter(Boolean).pop() || result.partyId);
       result.key = cleanPartyToken(url.searchParams.get('key') || result.key).slice(0, 12);
     }
   } catch {
@@ -386,7 +390,37 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
     setError(''); setConnecting(true);
     
     try {
-      const res = await window.aether.startPartyServer(displayName.trim());
+      if (usesHostedPartyServer) {
+        const s = connectSocket(defaultPartyServerUrl);
+        setSocketUrl(defaultPartyServerUrl);
+        attachSocketListeners(s, defaultPartyServerUrl);
+        let createSettled = false;
+        const createTimer = setTimeout(() => {
+          if (createSettled) return;
+          setConnecting(false);
+          setError('Party server connected but did not create a room. Try again or check the hosted Party server logs.');
+        }, 25000);
+        const markSettled = () => {
+          createSettled = true;
+          clearTimeout(createTimer);
+        };
+        s.once('party:created', markSettled);
+        s.once('party:error', markSettled);
+        const doCreate = () => {
+          s.emit('party:create', { userId: myId, displayName: displayName.trim(), isPrivate, avatar: partyAvatar });
+        };
+        if (s.connected) doCreate();
+        else s.once('connect', doCreate);
+        return;
+      }
+
+      if (!window.aether?.startPartyServer) {
+        throw new Error('Party needs the desktop app bridge. Restart Aether and try again.');
+      }
+      const res = await Promise.race([
+        window.aether.startPartyServer(displayName.trim()),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Party link setup timed out. Check your network and try again.')), 45000)),
+      ]);
       if (!res.success) {
         const message = [res.error || 'Failed to start party.', res.recovery].filter(Boolean).join(' ');
         throw new Error(message);
@@ -398,6 +432,20 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
       // Wait for socket to connect before emitting create
       const s = connectSocket(res.url);
       attachSocketListeners(s, res.url);
+      let createSettled = false;
+      const createTimer = setTimeout(() => {
+        if (createSettled) return;
+        setConnecting(false);
+        setError(s.connected
+          ? 'Party tunnel connected but did not create a room. Try again.'
+          : 'Party tunnel timed out. Localtunnel may be blocked or slow right now.');
+      }, 25000);
+      const markSettled = () => {
+        createSettled = true;
+        clearTimeout(createTimer);
+      };
+      s.once('party:created', markSettled);
+      s.once('party:error', markSettled);
       
       const doCreate = () => {
         s.emit('party:create', { userId: myId, displayName: displayName.trim(), isPrivate, avatar: partyAvatar, requestedPartyId: cleanPartyToken(res.partyCode || '') });
@@ -405,14 +453,6 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
       
       if (s.connected) doCreate();
       else s.once('connect', doCreate);
-      
-      // Timeout
-      setTimeout(() => {
-        if (!s.connected) {
-          setConnecting(false);
-          setError('Connection to tunnel timed out. Trying again usually works!');
-        }
-      }, 25000);
 
     } catch (err) {
       setError(err.message || 'Could not start server');
@@ -427,7 +467,7 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
 
     const invite = parsePartyInviteInput(joinId);
     let targetId = invite.partyId || joinId.trim();
-    let urlToConnect = 'http://localhost:4444';
+    let urlToConnect = defaultPartyServerUrl;
     const privateKey = invite.key || joinKey.trim();
 
     if (invite.serverUrl) {
@@ -449,7 +489,7 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
             console.warn("Failed to resolve base58 code locally, maybe it is a raw ID.", err);
         }
       }
-      if (urlToConnect === 'http://localhost:4444' && /^[A-Z0-9]{6,12}$/.test(cleanPartyToken(targetId))) {
+      if (isLocalPartyServerUrl(urlToConnect) && /^[A-Z0-9]{6,12}$/.test(cleanPartyToken(targetId))) {
         urlToConnect = `https://aether-party-${cleanPartyToken(targetId).toLowerCase()}.loca.lt`;
       }
     }
@@ -457,6 +497,20 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
     setSocketUrl(urlToConnect);
     const s = connectSocket(urlToConnect);
     attachSocketListeners(s, urlToConnect);
+    let joinSettled = false;
+    const joinTimer = setTimeout(() => {
+      if (joinSettled) return;
+      setConnecting(false);
+      setError(s.connected
+        ? 'Party server connected but did not join that room. Check the code and key.'
+        : 'Connection timed out.');
+    }, 15000);
+    const markSettled = () => {
+      joinSettled = true;
+      clearTimeout(joinTimer);
+    };
+    s.once('party:joined', markSettled);
+    s.once('party:error', markSettled);
     
     const doJoin = () => {
       s.emit('party:join', { partyId: targetId, key: privateKey, userId: myId, displayName: displayName.trim(), avatar: partyAvatar });
@@ -464,13 +518,6 @@ export default function PartyMode({ open, onClose, hostTrack, hostLiveLyric, hos
     
     if (s.connected) doJoin();
     else s.once('connect', doJoin);
-    
-    setTimeout(() => {
-      if (!s.connected) {
-        setConnecting(false);
-        setError('Connection timed out.');
-      }
-    }, 15000);
   }
 
   function sendChat() {

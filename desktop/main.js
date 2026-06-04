@@ -1207,6 +1207,15 @@ let partyIo = null;
 let partyTunnel = null;
 let partyRooms = new Map();
 let partyLocalPort = null;
+const PARTY_TUNNEL_TIMEOUT_MS = 12000;
+
+function withPartyTimeout(promise, timeoutMs, label) {
+    let timer = null;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out.`)), timeoutMs);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 async function stopPartyServer() {
     if (partyTunnel) {
@@ -1479,11 +1488,16 @@ async function startPartyServer() {
                 let tunnelError = null;
                 for (const candidateCode of [reservedPartyCode, generateKey(8), generateKey(8)]) {
                     try {
-                        partyTunnel = await localtunnel({ port: localPort, local_host: '127.0.0.1', subdomain: `aether-party-${candidateCode.toLowerCase()}` });
+                        partyTunnel = await withPartyTimeout(
+                            localtunnel({ port: localPort, local_host: '127.0.0.1', subdomain: `aether-party-${candidateCode.toLowerCase()}` }),
+                            PARTY_TUNNEL_TIMEOUT_MS,
+                            'Party tunnel'
+                        );
                         reservedPartyCode = candidateCode;
                         break;
                     } catch (err) {
                         tunnelError = err;
+                        console.warn('[Party] Tunnel candidate failed', candidateCode, err?.message || err);
                     }
                 }
                 if (!partyTunnel) throw tunnelError || new Error('Could not create Party tunnel.');
@@ -1504,7 +1518,7 @@ async function startPartyServer() {
                     success: false,
                     code: 'PARTY_TUNNEL_FAILED',
                     error: err?.message || 'Aether could not create a public Party link. Check your network and try again.',
-                    recovery: 'Your music player still works. Try again, switch networks, or use a non-restricted connection.',
+                    recovery: 'Your music player still works. Try again, switch networks, or use a hosted Party server.',
                 });
             }
         });
@@ -2647,37 +2661,77 @@ const scheduleRPCReconnect = (delayMs = 12000) => {
     }, Math.max(2000, delayMs));
 };
 
+const RPC_TEXT_LIMIT = 127;
+const cleanRPCText = (value, fallback = '') => {
+    const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+    const fallbackText = String(fallback ?? '').replace(/\s+/g, ' ').trim();
+    return (text || fallbackText).slice(0, RPC_TEXT_LIMIT);
+};
+
+const cleanRPCImageKey = (value, fallback) => {
+    const text = String(value || '').trim();
+    if (/^https?:\/\//i.test(text) && text.length <= 256) return text;
+    return fallback;
+};
+
 const buildRPCActivity = (details = {}) => {
-    const title = String(details.title || '').trim();
-    const artist = String(details.artist || '').trim();
+    const isIdle = details.idle === true || details.hasTrack === false;
+    const title = cleanRPCText(details.title || details.trackTitle, isIdle ? 'Music Lobby' : 'Untitled track');
+    const artist = cleanRPCText(details.artist || details.author, '');
     const isPlaying = details.isPlaying !== false;
-    const currentTime = Math.max(0, Number(details.currentTime) || 0);
-    const duration = Math.max(0, Number(details.duration) || 0);
-    const startedAt = duration > 0 && currentTime <= duration
-        ? Date.now() - currentTime
+    const isVideo = Boolean(details.isVideo || details.videoMode);
+    const currentTime = Math.max(0, Number(details.currentTime ?? details.position ?? 0) || 0);
+    const durationSeconds = Math.max(0, Number(details.duration ?? details.durationSeconds ?? 0) || 0);
+    const startedAt = isPlaying && durationSeconds > 0 && currentTime <= durationSeconds
+        ? Date.now() - currentTime * 1000
         : null;
+
+    if (isIdle) {
+        const idleStart = Number(details.startTime || details.startedAt || 0) || Date.now();
+        const activity = {
+            type: 0,
+            details: 'Currently in Aether',
+            state: cleanRPCText(artist || details.state || details.message, 'Music Lobby'),
+            largeImageKey: 'cover',
+            largeImageText: 'Aether Music Lobby',
+            smallImageKey: 'pause',
+            smallImageText: 'Idle in Aether',
+            startTimestamp: idleStart,
+            instance: false
+        };
+        if (details.partySize) {
+            activity.partySize = details.partySize;
+            activity.partyMax = details.partyMax || 10;
+            activity.partyId = details.partyId || 'aether_party';
+            activity.state = cleanRPCText(`Party Lobby - ${activity.state}`, activity.state);
+        }
+        return activity;
+    }
+
+    const largeImageKey = cleanRPCImageKey(details.thumbnail || details.artwork || details.image, isVideo ? 'video' : 'cover');
+    const largeImageText = artist || title;
     const activity = {
-        type: isPlaying ? 2 : 0,
-        details: (title || 'Music Lobby').slice(0, 127),
+        type: isVideo ? 3 : 2,
+        details: title,
         state: isPlaying
-            ? (artist ? `by ${artist}`.slice(0, 127) : 'Listening on Aether')
-            : (artist ? `Paused • ${artist}`.slice(0, 127) : 'Paused'),
-        largeImageKey: details.thumbnail || 'cover',
-        largeImageText: (title || 'Aether').slice(0, 127),
-        smallImageKey: 'icon',
-        smallImageText: 'Aether',
+            ? cleanRPCText(artist, isVideo ? 'Watching in Aether' : 'Listening in Aether')
+            : cleanRPCText(artist || 'Paused in Aether', 'Paused in Aether'),
+        largeImageKey,
+        largeImageText: cleanRPCText(largeImageText, 'Aether'),
+        smallImageKey: isPlaying ? 'play' : 'pause',
+        smallImageText: isPlaying ? (isVideo ? 'Watching in Aether' : 'Listening to Aether') : 'Paused in Aether',
         instance: false
     };
     if (details.partySize) {
         activity.partySize = details.partySize;
         activity.partyMax = details.partyMax || 10;
         activity.partyId = details.partyId || 'aether_party';
-        activity.state = `In Party • ${activity.state}`;
+        activity.state = cleanRPCText(`In Party - ${activity.state}`, activity.state);
     }
     if (isPlaying && startedAt) {
         activity.startTimestamp = startedAt;
-        if (duration > 0) {
-            activity.endTimestamp = startedAt + duration;
+        if (durationSeconds > 0) {
+            activity.endTimestamp = startedAt + durationSeconds * 1000;
         }
     }
     return activity;
@@ -2686,8 +2740,33 @@ const buildRPCActivity = (details = {}) => {
 const pushRPCActivity = async (details = {}) => {
     if (!rpcClient || !rpcClient.user) return false;
     const activity = buildRPCActivity(details);
+    const timestamps = {};
+    if (activity.startTimestamp) timestamps.start = activity.startTimestamp;
+    if (activity.endTimestamp) timestamps.end = activity.endTimestamp;
+    const assets = {
+        large_image: activity.largeImageKey,
+        large_text: activity.largeImageText,
+        small_image: activity.smallImageKey,
+        small_text: activity.smallImageText,
+    };
+    const party = activity.partyId ? {
+        id: activity.partyId,
+        ...(activity.partySize || activity.partyMax ? { size: [activity.partySize || 1, activity.partyMax || 10] } : {}),
+    } : undefined;
     try {
-        await rpcClient.setActivity(activity);
+        await rpcClient.request('SET_ACTIVITY', {
+            pid: process.pid,
+            activity: {
+                type: activity.type,
+                details: activity.details,
+                state: activity.state,
+                timestamps: Object.keys(timestamps).length ? timestamps : undefined,
+                assets,
+                party,
+                buttons: activity.buttons,
+                instance: Boolean(activity.instance),
+            },
+        });
         return true;
     } catch (err) {
         console.error(`[Aether] setActivity FAULT: ${err.message}`);

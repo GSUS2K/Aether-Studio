@@ -9,13 +9,13 @@ export function createUpdateDiscordRichPresenceAction(props) {
     if (!track) {
       await discordSdkRef.current.commands.setActivity({
         activity: {
-          name: "AH Music",
+          name: "Aether",
           type: 0,
-          details: "In Music Lobby",
-          state: "Searching for Nodes...",
+          details: "Currently in Aether",
+          state: "Music Lobby",
           assets: {
             large_image: "https://i.imgur.com/8Q8W8Xn.png",
-            large_text: "Aether // Studio"
+            large_text: "Aether Music Lobby"
           }
         }
       });
@@ -23,13 +23,13 @@ export function createUpdateDiscordRichPresenceAction(props) {
     }
     await discordSdkRef.current.commands.setActivity({
       activity: {
-        name: "AH Music",
+        name: "Aether",
         type: 2,
-        details: track.title.slice(0, 127),
-        state: `by ${track.author}`.slice(0, 127),
+        details: String(track.title || "Untitled track").slice(0, 127),
+        state: String(track.author || "Unknown artist").slice(0, 127),
         assets: {
           large_image: track.thumbnail || "https://cdn.discordapp.com/embed/avatars/0.png",
-          large_text: `NOVA // Q: ${queue.length}`.slice(0, 127)
+          large_text: String(track.author || track.title || "Aether").slice(0, 127)
         },
         timestamps: {
           start: Date.now() - playbackMs

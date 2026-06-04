@@ -20,8 +20,8 @@ export const DiscoveryGridSection = memo(function DiscoveryGridSection({
   return (
     <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 pb-6">
       <AnimatePresence>
-        {discoveryItems.map((t) => (
-          <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} key={t.id} className="performance-list-item glass-card p-4 flex items-center gap-4 hover:border-brand-accent group overflow-hidden relative transition-all active:scale-[0.98] border-white/5">
+        {discoveryItems.map((t, index) => (
+          <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} key={t.youtubeId || t.id || t.actualUrl || t.url || `${t.title || 'track'}-${t.author || 'artist'}-${index}`} className="performance-list-item glass-card p-4 flex items-center gap-4 hover:border-brand-accent group overflow-hidden relative transition-all active:scale-[0.98] border-white/5">
             <img src={window.__AETHER_PROXY_URL?.(t.thumbnail) || t.thumbnail} className="w-14 h-14 rounded-2xl object-cover z-10" alt="" />
             <div className="flex-1 min-w-0 z-10">
               <div className="text-[13px] font-black truncate group-hover:text-brand-accent transition-colors uppercase tracking-widest">{t.title}</div>
@@ -45,7 +45,7 @@ export const DiscoveryGridSection = memo(function DiscoveryGridSection({
           </motion.div>
         ))}
       </AnimatePresence>
-      {!isSearching && searchResults.length === 0 && window.__AETHER_NEURAL_RECS?.length === 0 && !hasCompletedSearch && (
+      {!isSearching && discoveryItems.length === 0 && searchResults.length === 0 && window.__AETHER_NEURAL_RECS?.length === 0 && !hasCompletedSearch && (
         <div className="h-full flex flex-col items-center justify-center gap-4 opacity-10 text-center py-4">
           <div className="relative">
             <Search size={32} strokeWidth={1} />

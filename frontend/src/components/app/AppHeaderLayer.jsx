@@ -1,12 +1,12 @@
 export function AppHeaderLayer(props) {
   const {
-  APP_VERSION, BUILD_VERSION, HeaderSearchBox, HeaderSleepTimerControls, Layers, Minimize2, Monitor, RefreshCw,
+  APP_VERSION, BUILD_VERSION, ChevronLeft, HeaderSearchBox, HeaderSleepTimerControls, Home, Layers, Minimize2, Monitor, RefreshCw,
   SlidersHorizontal, Users, X, clearDiscoveryResults, clearSearchHistoryForScope, closeHeaderSurfaces, commandPaletteShortcutLabel, discardSearchHistoryItem,
-  e, experienceCenterInitialPage, handleHeaderDoubleClick, handleOfflineLibrarySearch, handleSearch, handleSetSleepTimer, hasActiveSearchState, headerAccentButtonClass,
-  headerIconButtonClass, headerSearchInputRef, isAuraMode, isDualLayoutLocked, isExperienceCenterOpen, isOfflineMode, isPartyModeOpen, isSearching,
-  isVerticalStack, item, offlineLibrarySearchTerm, openDiagnosticsPage, playbackModeLabel, runAfterInputPaint, searchHistoryByScope, searchQuery,
+  experienceCenterInitialPage, getHeaderSearchSuggestions, handleHeaderDoubleClick, handleHeaderSuggestionPick, handleOfflineLibrarySearch, handleSetSleepTimer, hasActiveSearchState, headerAccentButtonClass,
+  headerIconButtonClass, headerSearchInputRef, isAuraMode, isDualLayoutLocked, isExperienceCenterOpen, isHomeOpen, isOfflineMode, isPartyModeOpen, isSearching,
+  isVerticalStack, offlineLibrarySearchTerm, openDiagnosticsPage, playbackModeLabel, runAfterInputPaint, runSuggestedSearch, searchHistoryByScope, searchQuery,
   setExperienceCenterInitialPage, setIsAuraStageOpen, setIsExperienceCenterOpen, setIsPartyModeOpen, setIsVerticalStack, setOfflineLibrarySearchTerm, setSearchQuery, setSleepCustomMinutes,
-  setSleepFadeEnabled, setStopAfterTrack, showImmersiveLyricsOverlay, showShortcutHints, showWindowsHeaderWindowControls, sleepCustomMinutes, sleepDeadline, sleepFadeEnabled,
+  setIsHomeOpen, setSleepFadeEnabled, setStopAfterTrack, showImmersiveLyricsOverlay, showShortcutHints, showWindowsHeaderWindowControls, sleepCustomMinutes, sleepDeadline, sleepFadeEnabled,
   sleepRemainingStr, sleepTimerControlsRef, sleepTimerValue, stopAfterTrack, toggleWindowMaximize, topHeaderClass, updateInfo, videoMode,
   workspaceModeLabel,
   } = props;
@@ -37,6 +37,12 @@ export function AppHeaderLayer(props) {
 
             <div className="order-3 flex w-full items-center justify-center gap-2 ultra-compact-hide no-drag md:order-2 md:flex-[1_1_980px] md:max-w-[1260px] md:px-3 lg:px-5" data-no-maximize="true">
               <button onClick={() => runAfterInputPaint(() => {
+        closeHeaderSurfaces('home');
+        setIsHomeOpen(!isHomeOpen);
+      })} className={`${headerIconButtonClass} shrink-0 ${isHomeOpen ? 'bg-brand-accent/15 border-brand-accent/35 text-brand-accent' : ''}`} title={isHomeOpen ? 'Back to Studio' : 'Home'} aria-label={isHomeOpen ? 'Back to Studio' : 'Home'}>
+                {isHomeOpen ? <ChevronLeft size={17} /> : <Home size={15} />}
+              </button>
+              <button onClick={() => runAfterInputPaint(() => {
         closeHeaderSurfaces();
         setExperienceCenterInitialPage('home');
         setIsExperienceCenterOpen(true);
@@ -56,7 +62,7 @@ export function AppHeaderLayer(props) {
                 <Layers size={15} />
               </button>
               <div className="min-w-[280px] flex-1">
-                <HeaderSearchBox searchQuery={isOfflineMode ? offlineLibrarySearchTerm : searchQuery} isSearching={isOfflineMode ? false : isSearching} hasActiveSearchState={isOfflineMode ? Boolean(offlineLibrarySearchTerm) : hasActiveSearchState} isAuraMode={isAuraMode} disabled={!isOfflineMode && videoMode === 'dual'} placeholder={isOfflineMode ? 'Search downloaded tracks' : 'Search tracks, artists, or paste a YouTube link'} onSearch={isOfflineMode ? handleOfflineLibrarySearch : handleSearch} inputRef={headerSearchInputRef} commandPaletteShortcutLabel={commandPaletteShortcutLabel} showShortcutHints={showShortcutHints} searchHistory={searchHistoryByScope[isOfflineMode ? 'offline' : 'online'] || []} historyLabel={isOfflineMode ? 'Downloaded searches' : 'Recent searches'} onHistoryPick={isOfflineMode ? handleOfflineLibrarySearch : handleSearch} onHistoryRemove={item => discardSearchHistoryItem(isOfflineMode ? 'offline' : 'online', item)} onHistoryClear={() => clearSearchHistoryForScope(isOfflineMode ? 'offline' : 'online')} onClear={() => {
+                <HeaderSearchBox searchQuery={isOfflineMode ? offlineLibrarySearchTerm : searchQuery} isSearching={isOfflineMode ? false : isSearching} hasActiveSearchState={isOfflineMode ? Boolean(offlineLibrarySearchTerm) : hasActiveSearchState} isAuraMode={isAuraMode} disabled={!isOfflineMode && videoMode === 'dual'} placeholder={isOfflineMode ? 'Search downloaded tracks' : 'Search tracks, artists, or paste a YouTube link'} onSearch={isOfflineMode ? handleOfflineLibrarySearch : runSuggestedSearch} inputRef={headerSearchInputRef} commandPaletteShortcutLabel={commandPaletteShortcutLabel} showShortcutHints={showShortcutHints} searchHistory={searchHistoryByScope[isOfflineMode ? 'offline' : 'online'] || []} historyLabel={isOfflineMode ? 'Downloaded searches' : 'Recent searches'} onHistoryPick={isOfflineMode ? handleOfflineLibrarySearch : runSuggestedSearch} getSuggestions={isOfflineMode ? undefined : getHeaderSearchSuggestions} onSuggestionPick={isOfflineMode ? undefined : handleHeaderSuggestionPick} onHistoryRemove={item => discardSearchHistoryItem(isOfflineMode ? 'offline' : 'online', item)} onHistoryClear={() => clearSearchHistoryForScope(isOfflineMode ? 'offline' : 'online')} onClear={() => {
           if (isOfflineMode) {
             setOfflineLibrarySearchTerm('');
           } else {
